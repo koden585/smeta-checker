@@ -1,0 +1,14 @@
+.env
+.env.*
+
+.venv/
+venv/
+
+__pycache__/
+*.py[cod]
+
+.idea/
+
+activate.txt
+drawing_test.py
+report_drawing.py
