@@ -8,10 +8,22 @@ historical ``run_audit``/``tracking`` shapes for the UI, baseline and scripts.
 
 from __future__ import annotations
 
+import copy
 from enum import StrEnum
-from typing import Any
+from typing import Any, NamedTuple
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+
+
+class LlmCredentials(NamedTuple):
+    """Resolved provider: key/folder/model plus the transport/backend to use."""
+
+    api_key: str
+    folder: str
+    model_name: str
+    base_url: str
+    provider: str
 
 
 class AuditStatus(StrEnum):
@@ -39,6 +51,97 @@ class EvidenceKind(StrEnum):
     VOLUME = "volume"
     UNIT = "unit"
     COMMENT = "comment"
+    TECHNOLOGY = "technology"
+
+
+class ClaimState(StrEnum):
+    """Per-requirement outcome; unknown stays explicit, never silent."""
+
+    CONFIRMED = "confirmed"
+    CONTRADICTION = "contradiction"
+    NOT_FOUND = "not_found"
+    SOURCE_CONFLICT = "source_conflict"
+    REVIEW_REQUIRED = "review_required"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class ClaimKind(StrEnum):
+    """Requirement family derived from VOR cells, never from PDF text."""
+
+    PRESENCE = "presence"
+    QUANTITY = "quantity"
+    UNIT = "unit"
+    GEOMETRY = "geometry"
+    METHOD = "method"
+    ATTRIBUTE = "attribute"
+    BASIS = "basis"
+    WORKBOOK = "workbook"
+
+
+class ClaimSpec(BaseModel):
+    """One checkable VOR requirement with its source cells."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    claim_id: str = Field(min_length=1)
+    kind: ClaimKind
+    label: str = ""
+    cells: list[str] = Field(default_factory=list)
+    expected_text: str = ""
+    expected_value: str = ""
+    expected_unit: str = ""
+    required: bool = True
+    predicate: str = ""
+    property_label: str = ""
+
+
+class EvidenceFact(BaseModel):
+    """One code-validated fact bound to prepared source IDs."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    claim_id: str = Field(min_length=1)
+    value: str = ""
+    unit: str = ""
+    source_ids: list[str] = Field(default_factory=list)
+    value_source_id: str = ""
+    unit_source_id: str = ""
+    subject_source_ids: list[str] = Field(default_factory=list)
+    relation_source_ids: list[str] = Field(default_factory=list)
+    locators: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ClaimCheck(BaseModel):
+    """Evaluated requirement with machine-readable reason codes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    claim_id: str = Field(min_length=1)
+    kind: ClaimKind
+    state: ClaimState
+    reasons: list[str] = Field(default_factory=list)
+    facts: list[EvidenceFact] = Field(default_factory=list)
+    required: bool = True
+
+
+def claim_status(checks, execution_errors=(), *, pdf_evaluated=True):
+    """One precedence rule for all new evaluator/worker/report consumers."""
+    def value(check, name, default=None):
+        return check.get(name, default) if isinstance(check, dict) else getattr(check, name, default)
+    required = [check for check in checks if value(check, "required", True)]
+    if any(value(check, "state") == ClaimState.CONTRADICTION for check in required):
+        return AuditStatus.ERROR.value
+    if execution_errors and not pdf_evaluated:
+        return AuditStatus.TECHNICAL_ERROR.value
+    if execution_errors or not required or any(
+            value(check, "state") not in {ClaimState.CONFIRMED, ClaimState.NOT_APPLICABLE}
+            for check in required):
+        return AuditStatus.INCOMPLETE.value
+    if not pdf_evaluated:
+        # Only workbook Excel checks confirmed while PDF was never evaluated
+        # (truncated answer, exhausted budget, bind failure): not an audit OK.
+        return AuditStatus.INCOMPLETE.value
+    return AuditStatus.OK.value
 
 
 class ErrorKind(StrEnum):
@@ -98,6 +201,128 @@ class VorMeta(BaseModel):
         return getattr(self, key, default)
 
 
+class SourceHeading(BaseModel):
+    """Original section boundary, independent of quantities."""
+
+    model_config = ConfigDict(extra="forbid")
+    address: str
+    text: str
+
+
+class PositionSource(BaseModel):
+    """Identity and coordinates of an unfiltered source record."""
+
+    model_config = ConfigDict(extra="forbid")
+    document_sha256: str
+    format: str
+    sheet: str = ""
+    row: int = Field(ge=1)
+    header_row: int = Field(ge=1)
+    position_id: str
+    cells: dict[str, str] = Field(default_factory=dict)
+    continuation_rows: list[int] = Field(default_factory=list)
+    sections: list[SourceHeading] = Field(default_factory=list)
+    scope_key: str = ""
+    scope_reason: str = "unknown"
+
+
+def position_source_dict(position: Any) -> dict[str, Any] | None:
+    """Serialize provenance from typed rows or prepared plain-data siblings."""
+    source = getattr(position, "position_source", None)
+    if isinstance(source, PositionSource):
+        return source.model_dump(mode="json")
+    return copy.deepcopy(source) if isinstance(source, dict) else None
+
+
+def expected_scope_hint(source: Any) -> str | None:
+    """Legacy None means provenance omitted; "" is explicit unknown scope."""
+    if source is None:
+        return None
+    if isinstance(source, PositionSource):
+        return source.scope_key
+    if isinstance(source, dict):
+        return str(source.get("scope_key", ""))
+    return None
+
+
+def serialize_position_result(
+    task: dict[str, Any],
+    res_item: dict[str, Any],
+    track_item: dict[str, Any],
+    pdf_versions: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Single stored payload shape for direct, Celery and finalize paths."""
+    payload = {
+        "status": res_item.get("Статус аудита"),
+        "work_name": track_item.get("work_name", task.get("w_name")),
+        "work_found": bool(res_item.get("work_found")),
+        "volume_confirmed": bool(res_item.get("volume_confirmed")),
+        "unit_confirmed": bool(res_item.get("unit_confirmed")),
+        "comment_confirmed": bool(res_item.get("comment_confirmed")),
+        "found_volume": res_item.get("Фактический объем", "-"),
+        "found_unit": track_item.get("found_unit", "-"),
+        "found_page": track_item.get("found_page"),
+        "found_pages": list(track_item.get("found_pages") or []),
+        "vor_pages": list(track_item.get("vor_pages") or []),
+        "evidence": [dict(item) for item in track_item.get("evidence") or []],
+        "volume_calculation": track_item.get("volume_calculation"),
+        "technology": track_item.get("technology", {}),
+        "quantity_basis": track_item.get("quantity_basis", "unknown"),
+        "quantity_kind": track_item.get("quantity_kind", "direct"),
+        "consumption": track_item.get("consumption"),
+        "workbook_calculation": track_item.get("workbook_calculation", {}),
+        "workbook_notes": list(track_item.get("workbook_notes") or []),
+        "checks": [dict(check) for check in track_item.get("checks", [])],
+        "execution_errors": [dict(item) for item in track_item.get("execution_errors", [])],
+        "evaluation_version": track_item.get("evaluation_version", ""),
+        "corpus_id": track_item.get("corpus_id", task.get("corpus_id", "")),
+        "position_source": track_item.get("position_source")
+        or task.get("position_source"),
+        "position_type": track_item.get("position_type", task.get("position_type", "")),
+        "discrepancy_details": res_item.get("Детали расхождений", ""),
+        "search_complete": bool(track_item.get("search_complete")),
+        "requests": track_item.get("requests", 0),
+        "contexts": track_item.get("contexts", 0),
+        "budget_tokens": res_item.get("budget_tokens", track_item.get("budget_tokens")),
+        "usage": dict(track_item.get("usage") or res_item.get("usage") or {}),
+        "estimated_cost": track_item.get("estimated_cost"),
+        "pdf_name": track_item.get("pdf_name", ""),
+        "trace_id": track_item.get("trace_id"),
+        "trace_url": track_item.get("trace_url"),
+    }
+    versions = pdf_versions or {}
+    pdf_name = track_item.get("pdf_name") or ""
+    if pdf_name in versions:
+        row = versions[pdf_name]
+        payload["pdf_version_id"] = str(row.id)
+        payload["pdf_sha256"] = row.sha256
+    return payload
+
+
+class SourceLocator(BaseModel):
+    """Prepared evidence coordinates, never supplied by the model."""
+
+    model_config = ConfigDict(extra="forbid")
+    source_id: str
+    document_id: str = ""
+    page: int = Field(ge=1)
+    text: str = ""
+    bbox: list[float] = Field(default_factory=list)
+    origin: str = "native"
+    table_id: str = ""
+    row_id: str = ""
+    column_id: str = ""
+    header_ids: list[str] = Field(default_factory=list)
+    group_id: str = ""
+    scope_key: str = ""
+    role: str = ""
+    quality: str = "usable"
+    confidence: float | None = None
+    rotation: int = 0
+    crop: list[float] = Field(default_factory=list)
+    transform: list[float] = Field(default_factory=list)
+
+
 class VorPosition(BaseModel):
     """One validated VOR row plus its derived binding references.
 
@@ -118,6 +343,10 @@ class VorPosition(BaseModel):
     explicit_refs: list[str] = Field(default_factory=list)
     comment: str = ""
     formula: str = ""
+    formula_refs: dict[str, Any] = Field(default_factory=dict)
+    position_type: str = ""
+    calculation: dict[str, Any] = Field(default_factory=dict)
+    position_source: PositionSource | None = None
     document_id: str = ""
     bind_error: str | None = None
     prep_error: str | None = None
@@ -162,6 +391,10 @@ class VorPosition(BaseModel):
             "w_page": self.page_ref,
             "w_comment": self.comment,
             "w_formula": self.formula,
+            "position_type": self.position_type,
+            "calculation": copy.deepcopy(self.calculation),
+            "formula_refs": copy.deepcopy(self.formula_refs),
+            "position_source": self.position_source.model_dump(mode="json") if self.position_source else None,
             "target_pdf_name": self.document_id,
             "explicit_refs": list(self.explicit_refs),
             "bind_error": self.bind_error,
@@ -187,6 +420,10 @@ class VorPosition(BaseModel):
             explicit_refs=list(task.get("explicit_refs", []) or []),
             comment=str(task.get("w_comment", "") or ""),
             formula=str(task.get("w_formula", "") or ""),
+            position_type=str(task.get("position_type", "") or ""),
+            calculation=copy.deepcopy(task.get("calculation", {}) or {}),
+            formula_refs=copy.deepcopy(task.get("formula_refs", {}) or {}),
+            position_source=task.get("position_source"),
             document_id=str(task.get("target_pdf_name", "") or ""),
             bind_error=task.get("bind_error"),
             prep_error=task.get("prep_error"),
@@ -286,6 +523,42 @@ class VolumeCalculation(BaseModel):
     thickness: VolumeOperand
 
 
+class TechnologyStatus(StrEnum):
+    NOT_CHECKED = "not_checked"
+    NOT_APPLICABLE = "not_applicable"
+    CONFIRMED = "confirmed"
+    UNCONFIRMED = "unconfirmed"
+    DIFFERENT = "different"
+
+
+class TechnologyAssessment(BaseModel):
+    """Technology is independent of operation presence and quantity."""
+
+    model_config = ConfigDict(extra="forbid")
+    status: TechnologyStatus = TechnologyStatus.NOT_CHECKED
+    expected: str = ""
+    actual: str = ""
+    cross_pages: list[int] = Field(default_factory=list)
+
+
+class ConsumptionAssessment(BaseModel):
+    """V = S × q reconciliation: workbook rate vs schedule-derived q_pd."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rate: str = ""
+    unit: str = ""
+    area: str = ""
+    schedule_volume: str = ""
+    schedule_page: int | None = None
+    schedule_item: str = ""
+    derived_rate: str = ""
+    delta: str = ""
+    delta_percent: str = ""
+    matches: bool | None = None
+    uncertainties: list[str] = Field(default_factory=list)
+
+
 class AuditResult(BaseModel):
     """Validated per-position outcome; ``status`` never overrides evidence."""
 
@@ -308,6 +581,17 @@ class AuditResult(BaseModel):
     budget_tokens: int | None = Field(default=None, ge=0)
     usage: dict[str, int] = Field(default_factory=dict)
     volume_calculation: VolumeCalculation | None = None
+    technology: TechnologyAssessment = Field(default_factory=TechnologyAssessment)
+    quantity_basis: str = "unknown"
+    consumption: ConsumptionAssessment | None = None
+    stock_chain: dict[str, Any] | None = None
+    workbook_calculation: dict[str, Any] = Field(default_factory=dict)
+    workbook_notes: list[dict[str, Any]] = Field(default_factory=list)
+    position_source: PositionSource | None = None
+    checks: list[ClaimCheck] = Field(default_factory=list)
+    execution_errors: list[AuditError] = Field(default_factory=list)
+    evaluation_version: str = ""
+    corpus_id: str = ""
     recoverable: bool | None = None
     error: AuditError | None = None
 
@@ -319,7 +603,7 @@ class AuditResult(BaseModel):
         if not isinstance(value, dict):
             raise ValueError("usage must be a mapping")
         cleaned: dict[str, int] = {}
-        for key in ("input", "output", "total"):
+        for key in ("input", "output", "total", "reasoning"):
             item = value.get(key)
             if item is None:
                 continue
@@ -369,18 +653,29 @@ class AuditResult(BaseModel):
         return value
 
     def model_post_init(self, _context: Any) -> None:
+        if self.status == AuditStatus.OK and self.evaluation_version == "evidence-claims-v1":
+            required = [check for check in self.checks if check.required]
+            identity = {check.claim_id: check.state for check in required}
+            if any(identity.get(name) != ClaimState.CONFIRMED
+                   for name in ("presence", "quantity", "unit")):
+                raise ValueError("ОК requires independently bound presence/quantity/unit")
+            if not required or any(
+                    check.state not in {ClaimState.CONFIRMED, ClaimState.NOT_APPLICABLE}
+                    for check in required):
+                raise ValueError("ОК requires every required claim check")
+            if self.execution_errors:
+                raise ValueError("ОК requires no unresolved execution errors")
+            return
         if self.status == AuditStatus.OK and not (
             self.work_found
             and self.volume_confirmed
             and self.unit_confirmed
-            and self.comment_confirmed
         ):
             raise ValueError("ОК requires all confirmations")
-        if not self.work_found:
-            # Absence of proof is not absence of work; keep explicit unknowns.
-            object.__setattr__(self, "found_page", "-")
-            object.__setattr__(self, "found_volume", "-")
-            object.__setattr__(self, "found_unit", "-")
+        if self.status == AuditStatus.OK and self.technology.status in {
+            TechnologyStatus.DIFFERENT, TechnologyStatus.UNCONFIRMED,
+        }:
+            raise ValueError("ОК requires a resolved technology assessment")
 
     def to_legacy(self) -> dict[str, Any]:
         """Historical dict shape; evidence keeps ``document_id`` for provenance."""
@@ -418,88 +713,58 @@ class AuditResult(BaseModel):
         return cls(**payload)
 
 
-class LlmEvidenceRef(BaseModel):
-    """Model-selected quote pointer; resolved against the sent fragments."""
+class LlmClaimProposal(BaseModel):
+    """One model-proposed fact: claim ID plus prepared source IDs only."""
 
     model_config = ConfigDict(extra="forbid")
 
-    source_id: str = Field(min_length=1)
-    kind: EvidenceKind
+    claim_id: str = Field(min_length=1)
+    source_ids: list[str] = Field(min_length=1)
+    value_source_id: str = ""
+    unit_source_id: str = ""
+    subject_source_ids: list[str] = Field(default_factory=list)
+    relation_source_ids: list[str] = Field(default_factory=list)
 
-
-class LlmVolumeOperandRef(BaseModel):
-    """Model-proposed S×t operand; value/unit checked against its quote."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    value: str | int | float = Field()
-    unit: str = Field(min_length=1)
-    source_id: str = Field(min_length=1)
-
-    @field_validator("value", mode="before")
+    @field_validator("source_ids", "subject_source_ids", "relation_source_ids", mode="before")
     @classmethod
-    def _stringify_value(cls, value: Any) -> Any:
-        if isinstance(value, bool):
-            raise ValueError("operand value must not be boolean")
-        return str(value).strip() if value is not None else value
+    def _require_id_lists(cls, value: Any) -> Any:
+        if value is None:
+            return []
+        if not isinstance(value, list) or any(
+                not isinstance(item, str) or not item.strip() for item in value):
+            raise ValueError("source IDs must be a list of non-empty strings")
+        return [item.strip() for item in value]
 
-
-class LlmVolumeCalculationRef(BaseModel):
-    """Raw S×t proposal before verbatim-evidence checks."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    area: LlmVolumeOperandRef
-    thickness: LlmVolumeOperandRef
+    @field_validator("value_source_id", "unit_source_id", mode="before")
+    @classmethod
+    def _strip_optional_id(cls, value: Any) -> Any:
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise ValueError("optional source ID must be a string")
+        return value.strip()
 
 
 class LlmAuditResponse(BaseModel):
-    """Wire shape of one LLM answer; context checks stay in ``audit_core``."""
+    """Wire shape of one LLM answer: claim proposals, never verdicts."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
-    work_found: StrictBool
-    volume_confirmed: StrictBool
-    unit_confirmed: StrictBool
-    comment_confirmed: StrictBool
-    found_volume: str | int | float | None
-    found_unit: str | int | float | None
-    found_page: str | int | None
-    evidence: list[dict[str, Any]]
-    discrepancy_details: str | int | float | None
-    volume_calculation: dict[str, Any] | None = None
+    # Individual records are validated by the evaluator, so a malformed
+    # proposal cannot discard unrelated valid evidence in the same answer.
+    claims: list[Any]
+    discrepancy_details: str | int | float | None = ""
 
-    @field_validator("found_volume", "found_unit", "discrepancy_details", mode="before")
+    @field_validator("discrepancy_details", mode="before")
     @classmethod
-    def _stringify_text(cls, value: Any) -> Any:
+    def _stringify_details(cls, value: Any) -> Any:
         if value is None:
-            return value
+            return ""
         if isinstance(value, bool):
-            raise ValueError("text field must not be boolean")
+            raise ValueError("discrepancy_details must not be boolean")
         if not isinstance(value, (str, int, float)):
-            raise ValueError("text field has an unsupported type")
+            raise ValueError("discrepancy_details has an unsupported type")
         return str(value).strip()
-
-    @field_validator("found_page", mode="before")
-    @classmethod
-    def _stringify_page(cls, value: Any) -> Any:
-        if value is None:
-            return value
-        if isinstance(value, bool):
-            raise ValueError("found_page must not be boolean")
-        if not isinstance(value, (str, int, float)):
-            raise ValueError("found_page has an unsupported type")
-        return str(value).strip()
-
-    @field_validator("evidence", mode="before")
-    @classmethod
-    def _require_evidence_list(cls, value: Any) -> Any:
-        if not isinstance(value, list):
-            raise ValueError("evidence must be a list")
-        for item in value:
-            if not isinstance(item, dict):
-                raise ValueError("evidence items must be objects")
-        return value
 
 
 class AuditSettings(BaseModel):
@@ -510,6 +775,12 @@ class AuditSettings(BaseModel):
     yandex_cloud_folder: str = ""
     yandex_cloud_api_key: str = ""
     yandex_cloud_model: str = "qwen3.6-35b-a3b/latest"
+    # Generic OpenAI-compatible backend (AnyModel gateway). Empty values keep
+    # the historical Yandex path: base_url defaults to Yandex, the model keeps
+    # the ``gpt://`` shape and the folder rides the ``project`` slot.
+    llm_base_url: str = "https://ai.api.cloud.yandex.net/v1"
+    llm_api_key: str = ""
+    llm_model: str = ""
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
     langfuse_base_url: str = "https://cloud.langfuse.com"
@@ -545,6 +816,43 @@ class AuditSettings(BaseModel):
 
         llm_hosts = _csv("AUDIT_ALLOWED_LLM_HOSTS") or ("ai.api.cloud.yandex.net",)
 
+        llm_api_key = get_setting(
+            "AUDIT_LLM_API_KEY",
+            get_setting(
+                "ANYMODEL_API_KEY", "",
+                file_values=file_values, secrets=secrets,
+            ),
+            file_values=file_values,
+            secrets=secrets,
+        )
+        llm_model = get_setting(
+            "AUDIT_LLM_MODEL",
+            get_setting(
+                "ANYMODEL_MODEL", "",
+                file_values=file_values, secrets=secrets,
+            ),
+            file_values=file_values,
+            secrets=secrets,
+        )
+        # AnyModel keys select the gateway default; a bare AUDIT_* override
+        # without a chat host stays on Yandex (the adapter still routes by
+        # host, so an explicit Yandex base keeps the Responses shape).
+        anymodel_base = get_setting(
+            "ANYMODEL_BASE_URL", "",
+            file_values=file_values, secrets=secrets,
+        )
+        llm_base_url = get_setting(
+            "AUDIT_LLM_BASE_URL",
+            anymodel_base
+            or (
+                "https://anymodel.org/v1"
+                if llm_api_key.strip() or llm_model.strip()
+                else "https://ai.api.cloud.yandex.net/v1"
+            ),
+            file_values=file_values,
+            secrets=secrets,
+        )
+
         return cls(
             yandex_cloud_folder=get_setting(
                 "YANDEX_CLOUD_FOLDER", "", file_values=file_values, secrets=secrets
@@ -558,6 +866,9 @@ class AuditSettings(BaseModel):
                 file_values=file_values,
                 secrets=secrets,
             ),
+            llm_base_url=llm_base_url,
+            llm_api_key=llm_api_key,
+            llm_model=llm_model,
             langfuse_public_key=get_setting(
                 "LANGFUSE_PUBLIC_KEY", "", file_values=file_values, secrets=secrets
             ),
@@ -664,3 +975,38 @@ class AuditSettings(BaseModel):
                 or 0
             ),
         )
+
+    def llm_credentials(self) -> LlmCredentials:
+        """Pick Yandex or a chat gateway; explicit keys beat implicit defaults.
+
+        AnyModel keys (``ANYMODEL_*``/``AUDIT_LLM_*``) select the chat backend
+        with the raw catalog id. Otherwise Yandex keeps the historical
+        ``gpt://folder/model`` shape.
+        """
+        if self.llm_api_key.strip() and self.llm_model.strip():
+            return LlmCredentials(
+                api_key=self.llm_api_key.strip(),
+                folder="",
+                model_name=self.llm_model.strip(),
+                base_url=self.llm_base_url.strip()
+                or "https://ai.api.cloud.yandex.net/v1",
+                provider=self._chat_provider_label(self.llm_base_url),
+            )
+        return LlmCredentials(
+            api_key=self.yandex_cloud_api_key,
+            folder=self.yandex_cloud_folder,
+            model_name=self.yandex_cloud_model,
+            base_url="https://ai.api.cloud.yandex.net/v1",
+            provider="Yandex Cloud (Qwen)",
+        )
+
+    @staticmethod
+    def _chat_provider_label(base_url: str) -> str:
+        """Human backend label; unknown chat hosts stay generic."""
+        try:
+            host = (urlparse(str(base_url)).hostname or "").lower()
+        except ValueError:
+            host = ""
+        if host == "anymodel.org":
+            return "AnyModel (chat)"
+        return f"{host or base_url} (chat)"

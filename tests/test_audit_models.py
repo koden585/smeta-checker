@@ -20,6 +20,7 @@ from audit_models import (
     EvidenceKind,
     VorMeta,
     VorPosition,
+    expected_scope_hint,
 )
 from audit_reports import build_user_report
 from vor_parse import load_vor_positions
@@ -54,6 +55,29 @@ class VorModelTests(unittest.TestCase):
         self.assertEqual(
             VorPosition.from_legacy_task(task).model_dump(), position.model_dump()
         )
+    def test_position_source_round_trip_preserves_identity(self):
+        csv = (
+            "№ п.п.;Наименование работ;Объём работ / Количество;Ед. изм.;"
+            "Ссылка на ПД;Наименование файла;Номер страниц (через пробел)\n"
+            "1;Copper cable;45;m;;project.pdf;1\n"
+        )
+
+        class FakeFile(io.BytesIO):
+            def getvalue(self):
+                return super().getvalue()
+
+        positions, _ = load_vor_positions(
+            FakeFile(csv.encode("utf-8-sig")), "vor.csv"
+        )
+        task = positions[0].legacy_task()
+        self.assertEqual(task["position_source"]["row"], 1)
+        self.assertEqual(
+            VorPosition.from_legacy_task(task).position_source,
+            positions[0].position_source,
+        )
+        self.assertIsNone(expected_scope_hint(None))
+        self.assertEqual(expected_scope_hint({}), "")
+        self.assertEqual(expected_scope_hint({"scope_key": "КНС"}), "КНС")
 
     def test_missing_required_columns_are_explicit(self):
         csv = "№ п.п.;Наименование работ\n1;Copper cable\n"
@@ -123,6 +147,15 @@ class AuditResultModelTests(unittest.TestCase):
                 comment_confirmed=True,
             )
 
+    def test_ok_accepts_advisory_comment_but_requires_work_volume_unit(self):
+        flags = dict(work_found=True, volume_confirmed=True, unit_confirmed=True,
+                     comment_confirmed=False)
+        result = AuditResult(status="ОК", **flags)
+        self.assertFalse(result.comment_confirmed)
+        for field in ("work_found", "volume_confirmed", "unit_confirmed"):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                AuditResult(status="ОК", **{**flags, field: False})
+
     def test_missing_work_keeps_explicit_unknowns(self):
         result = AuditResult(
             status="Ошибка",
@@ -134,9 +167,9 @@ class AuditResultModelTests(unittest.TestCase):
             found_unit="m",
             found_page="2",
         )
-        self.assertEqual(result.found_page, "-")
-        self.assertEqual(result.found_volume, "-")
-        self.assertEqual(result.found_unit, "-")
+        self.assertEqual(result.found_page, "2")
+        self.assertEqual(result.found_volume, "45")
+        self.assertEqual(result.found_unit, "m")
 
     def test_legacy_roundtrip_preserves_shape(self):
         legacy = {
@@ -240,6 +273,47 @@ class AuditSettingsModelTests(unittest.TestCase):
                 file_values={"AUDIT_API_TOKEN": "tok-123"}, secrets=None
             )
         self.assertEqual(settings.api_token, "tok-123")
+
+    def test_llm_defaults_to_yandex(self):
+        with patch.dict(os.environ, {}, clear=True):
+            settings = AuditSettings.load(file_values={}, secrets=None)
+        self.assertEqual(settings.llm_base_url, "https://ai.api.cloud.yandex.net/v1")
+        self.assertEqual(settings.llm_api_key, "")
+        self.assertEqual(settings.llm_model, "")
+        llm = settings.llm_credentials()
+        self.assertEqual(llm.base_url, "https://ai.api.cloud.yandex.net/v1")
+        self.assertEqual(llm.provider, "Yandex Cloud (Qwen)")
+
+    def test_anymodel_settings_select_chat_backend(self):
+        with patch.dict(os.environ, {}, clear=True):
+            settings = AuditSettings.load(
+                file_values={
+                    "ANYMODEL_API_KEY": "am-key",
+                    "ANYMODEL_MODEL": "ds/deepseek-v4-flash",
+                },
+                secrets=None,
+            )
+        llm = settings.llm_credentials()
+        self.assertEqual(llm.api_key, "am-key")
+        self.assertEqual(llm.folder, "")
+        self.assertEqual(llm.model_name, "ds/deepseek-v4-flash")
+        self.assertEqual(llm.base_url, "https://anymodel.org/v1")
+        self.assertEqual(llm.provider, "AnyModel (chat)")
+
+    def test_anymodel_key_without_model_keeps_yandex(self):
+        with patch.dict(os.environ, {}, clear=True):
+            settings = AuditSettings.load(
+                file_values={
+                    "ANYMODEL_API_KEY": "am-key",
+                    "YANDEX_CLOUD_API_KEY": "ya-key",
+                    "YANDEX_CLOUD_FOLDER": "ya-folder",
+                },
+                secrets=None,
+            )
+        llm = settings.llm_credentials()
+        self.assertEqual(llm.api_key, "ya-key")
+        self.assertEqual(llm.folder, "ya-folder")
+        self.assertEqual(llm.provider, "Yandex Cloud (Qwen)")
 
     def test_error_kinds_are_explicit(self):
         self.assertEqual(

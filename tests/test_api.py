@@ -52,19 +52,15 @@ def _ok_client_factory():
         def __init__(self, **_kwargs):
             self.responses = SimpleNamespace(create=self.create)
 
-        def create(self, **_kwargs):
+        def create(self, **kwargs):
+            import re
+            source_id = re.findall(r"\[([a-z0-9]+)\] ", kwargs["input"])[0]
             body = {
-                "work_found": True,
-                "volume_confirmed": True,
-                "unit_confirmed": True,
-                "comment_confirmed": True,
-                "found_volume": "45 m",
-                "found_unit": "m",
-                "found_page": "1",
-                "evidence": [
-                    {"source_id": "p1q1", "kind": "work"},
-                    {"source_id": "p1q1", "kind": "volume"},
-                    {"source_id": "p1q1", "kind": "unit"},
+                "claims": [
+                    {"claim_id": "presence", "source_ids": [source_id]},
+                    {"claim_id": "quantity", "source_ids": [source_id],
+                     "value_source_id": source_id, "unit_source_id": source_id},
+                    {"claim_id": "unit", "source_ids": [source_id]},
                 ],
                 "discrepancy_details": "Confirmed",
             }

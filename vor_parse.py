@@ -1,17 +1,98 @@
 """VOR workbook parsing: header metadata, work rows, continuation refs.
 
 Pandas lives only at this import boundary; callers receive validated models.
+Numeric quantity formulas (column D, e.g. ``=ROUND(...)``) are snapshotted
+once per load via openpyxl and evaluated by ``vor_formula``; the textual
+E-column formula stays in ``VorPosition.formula`` untouched.
 """
-
 from __future__ import annotations
 
+import csv
+import hashlib
 import io
 import re
 
 import pandas as pd
 
-from audit_models import VorMeta, VorPosition
+from audit_models import PositionSource, SourceHeading, VorMeta, VorPosition
 from pdf_binding import split_pdf_refs
+from vor_formula import calculate_cell, snapshot_cells
+
+
+
+
+def _col_letter(index):
+    """1-based column number to Excel letters (no openpyxl dependency)."""
+    letters = ""
+    while index > 0:
+        index, rest = divmod(index - 1, 26)
+        letters = chr(65 + rest) + letters
+    return letters
+
+_SCOPE_SITE_RE = re.compile(
+    r"\(\s*(?:площадка|участок|зона)\s+([^()]{1,64})\)", re.IGNORECASE
+)
+
+
+def _clean_text(value):
+    """Strip a raw cell to text; NaN/None/placeholder markers become empty."""
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    if text.lower() in {"", "nan", "none", "-", "nat"}:
+        return ""
+    return text
+
+
+def _is_section_row(row):
+    """Detect an explicit section boundary without guessing its meaning.
+
+    A section row carries group text in the first or second cell while every
+    later cell is empty. Continuation rows never reach here as section
+    candidates: their trailing ``.pdf`` reference keeps the tail non-empty.
+    """
+    name = _clean_text(row.iloc[0]) or _clean_text(row.iloc[1])
+    if not name or name.isdigit() or len(name) <= 3:
+        return False
+    if _clean_text(row.iloc[0]) and _clean_text(row.iloc[1]):
+        return False
+    for value in row.iloc[2:]:
+        if _clean_text(value):
+            return False
+    return True
+
+
+def _section_designations(text):
+    """Designated site tokens from one heading, e.g. ``(площадка КНС)``."""
+    found = []
+    for match in _SCOPE_SITE_RE.finditer(text or ""):
+        token = re.sub(r"[^A-ZА-ЯЁ0-9]", "", match.group(1).upper())
+        if token and token not in found:
+            found.append(token)
+    return found
+
+
+def _scope_from_sections(sections):
+    """Derive scope only from heading context, never from quantities.
+
+    Returns ``(scope_key, scope_reason)``; an undeterminable site stays
+    unknown instead of being guessed from a matching number.
+    """
+    designations = []
+    for _address, text in sections:
+        for token in _section_designations(text):
+            if token not in designations:
+                designations.append(token)
+    if len(designations) == 1:
+        return designations[0], "section_heading"
+    if len(designations) > 1:
+        return "", "ambiguous"
+    return "", "unknown"
 
 
 def _read_vor_frame(file_source, filename):
@@ -53,19 +134,20 @@ def _read_vor_frame(file_source, filename):
     # Чтение метаданных из шапки
     for line in lines[:20]:
         line_clean = line.replace('"', "").replace(";", "  ")
-        if "наименование стройки" in line_clean.lower():
-            parts = [p.strip() for p in line_clean.split("  ") if p.strip()]
-            if len(parts) > 1:
-                meta["object_name"] = parts[-1]
+        cells = [part.strip() for part in line.split("\t") if part.strip()]
+        value = cells[-1] if len(cells) > 1 else ""
+        if "наименование объекта капитального строительства" in line_clean.lower():
+            if value:
+                meta["object_name"] = value
+        elif "наименование стройки" in line_clean.lower():
+            if meta["object_name"] == "Не указано" and value:
+                meta["object_name"] = value
         elif "ведомость объемов работ №" in line_clean.lower():
-            parts = [p.strip() for p in line_clean.split("  ") if p.strip()]
-            if len(parts) > 1:
-                meta["doc_number"] = parts[-1]
+            if value:
+                meta["doc_number"] = value
         elif "основание" in line_clean.lower():
-            parts = [p.strip() for p in line_clean.split("  ") if p.strip()]
-            if len(parts) > 1:
-                meta["basis_code"] = parts[-1]
-
+            if value:
+                meta["basis_code"] = value
     header_idx = -1
     for idx, line in enumerate(lines):
         ll = line.lower()
@@ -77,13 +159,72 @@ def _read_vor_frame(file_source, filename):
         header_idx = 0
 
     # 3. Чтение итоговой таблицы
-    if filename.endswith(".csv"):
+    doc_format = "csv" if filename.endswith(".csv") else "xlsx"
+    doc_sha = hashlib.sha256(content).hexdigest()
+    sheet_name = ""
+    record_numbers: dict = {}
+    cells_snapshot = None
+    if doc_format == "csv":
         delimiter = ";" if ";" in lines[header_idx] else ","
-        df = pd.read_csv(
-            io.StringIO("\n".join(lines)), skiprows=header_idx, sep=delimiter
+        records = list(
+            csv.reader(io.StringIO("\n".join(lines)), delimiter=delimiter)
         )
+        header_cells = records[header_idx] if len(records) > header_idx else []
+        fieldnames = [
+            re.sub(r"\s+", " ", str(cell)).strip() or f"col{i + 1}"
+            for i, cell in enumerate(header_cells)
+        ]
+        body = records[header_idx + 1:] if len(records) > header_idx else []
+        rows: list = []
+        record_no = 0
+        data_index = 0
+        for record in body:
+            cells = [
+                re.sub(r"\s+", " ", str(cell)).strip() if cell is not None else ""
+                for cell in record
+            ]
+            # Pad short records; the 1-based logical record number is assigned
+            # before any filtering, so blank/service rows never shift the
+            # identity of a later work record.
+            while len(cells) < len(fieldnames):
+                cells.append("")
+            record_no += 1
+            if all(not cell for cell in cells):
+                continue
+            lowered = [cell.lower() for cell in cells]
+            if lowered and lowered[0] == "1" and len(lowered) > 1 and lowered[1] == "2":
+                continue
+            record_numbers[data_index] = record_no
+            row = {}
+            for name, cell in zip(fieldnames, cells[: len(fieldnames)]):
+                # Pandas inferred numerics before; preserve its display dtype
+                # while keeping logical CSV records (no Excel addresses).
+                if re.fullmatch(r"[+-]?\d+", cell or ""):
+                    row[name] = int(cell)
+                elif re.fullmatch(r"[+-]?\d*\.\d+", cell or ""):
+                    row[name] = float(cell)
+                else:
+                    row[name] = cell
+            rows.append(row)
+            data_index += 1
+        df = pd.DataFrame(rows, columns=fieldnames)
     else:
         df = pd.read_excel(io.BytesIO(content), skiprows=header_idx)
+        import openpyxl
+
+        book_formulas = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+        try:
+            book_cached = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+            try:
+                sheet_formulas = book_formulas[book_formulas.sheetnames[0]]
+                sheet_cached = book_cached[book_cached.sheetnames[0]]
+                sheet_name = str(book_formulas.sheetnames[0])
+                cells_snapshot = snapshot_cells(sheet_formulas, sheet_cached)
+            finally:
+                book_cached.close()
+        finally:
+            book_formulas.close()
+
 
     df.columns = [re.sub(r"\s+", " ", str(c)).strip() for c in df.columns]
 
@@ -118,6 +259,55 @@ def _read_vor_frame(file_source, filename):
 
     keep = df.apply(is_work_row, axis=1)
     df_clean = df[keep].copy()
+    # Section context: walk source rows in order; an explicit section row
+    # assigns context to following positions until the next boundary. A row
+    # with an unclear role keeps the current context instead of guessing.
+    provenance_sections: dict = {}
+    pending_continuations: dict = {}
+    continuation_rows_by_owner: dict = {}
+    active_sections: list = []
+    header_row = header_idx + 1
+    source_row_by_label: dict = {}
+    if doc_format == "csv":
+        for data_label, _row in df.iterrows():
+            record_no = int(record_numbers.get(data_label, 0) or 0)
+            if record_no >= 1:
+                source_row_by_label[data_label] = record_no
+    else:
+        for data_label, _row in df.iterrows():
+            try:
+                excel_row = int(data_label) + header_idx + 2
+            except (TypeError, ValueError):
+                continue
+            if excel_row >= 1:
+                source_row_by_label[data_label] = excel_row
+    for data_label, row in df.iterrows():
+        if bool(keep.get(data_label, False)):
+            provenance_sections[data_label] = list(active_sections)
+            continuation_rows_by_owner[data_label] = list(
+                pending_continuations.get(data_label, [])
+            )
+        elif is_continuation_row(row):
+            continue
+        elif _is_section_row(row):
+            source_row = source_row_by_label.get(data_label, 0)
+            first = _clean_text(row.iloc[0])
+            second = _clean_text(row.iloc[1])
+            text = first or second
+            if doc_format == "csv":
+                address = f"record:{source_row}" if source_row >= 1 else "record:?"
+            elif source_row >= 1:
+                column = 1 if first else 2
+                address = f"{_col_letter(column)}{source_row}"
+            else:
+                address = "A?" if first else "B?"
+            if text:
+                # A new explicit boundary starts a fresh context; nested
+                # designated paths accumulate only within one boundary span.
+                active_sections = [(address, text)]
+        elif pd.notna(row.iloc[0]) or pd.notna(row.iloc[1]):
+            active_sections = []
+            pending_continuations = {}
     # Присоединяем ссылки строк-продолжений к предыдущей позиции-владельцу:
     # сами строки-продолжения никогда не идут в модель как позиции с nan-именем.
     file_col_guess = next(
@@ -143,6 +333,14 @@ def _read_vor_frame(file_source, filename):
             if bool(keep.get(idx, False)) and idx in df_clean.index:
                 owner_idx = idx
             elif owner_idx is not None and is_continuation_row(row):
+                cont_row = source_row_by_label.get(idx, 0)
+                if cont_row >= 1:
+                    pending_continuations.setdefault(owner_idx, [])
+                    if cont_row not in pending_continuations[owner_idx]:
+                        pending_continuations[owner_idx].append(cont_row)
+                    continuation_rows_by_owner.setdefault(owner_idx, [])
+                    if cont_row not in continuation_rows_by_owner[owner_idx]:
+                        continuation_rows_by_owner[owner_idx].append(cont_row)
                 for col in (file_col_guess, page_col_guess):
                     if col is None:
                         continue
@@ -154,8 +352,29 @@ def _read_vor_frame(file_source, filename):
                         df_clean.at[owner_idx, col] = extra
                     elif extra not in current.splitlines():
                         df_clean.at[owner_idx, col] = current + "\n" + extra
+            elif _is_section_row(row):
+                owner_idx = None
             elif pd.notna(row.iloc[0]) or pd.notna(row.iloc[1]):
                 owner_idx = None
+    # Provenance for numeric quantity formulas: the once-per-load snapshot
+    # ({address: formula/cached/plain}) plus the skipped header offset, so a
+    # filtered row maps back to its original Excel row. Kept in attrs, never
+    # as user-visible columns. CSV loads carry no formula snapshot.
+    df_clean.attrs["vor_header_idx"] = header_idx
+    df_clean.attrs["vor_doc_sha"] = doc_sha
+    df_clean.attrs["vor_doc_format"] = doc_format
+    df_clean.attrs["vor_sheet"] = sheet_name
+    df_clean.attrs["vor_header_row"] = header_row
+    df_clean.attrs["vor_record_numbers"] = dict(record_numbers)
+    df_clean.attrs["vor_source_rows"] = dict(source_row_by_label)
+    df_clean.attrs["vor_sections"] = {
+        key: list(value) for key, value in provenance_sections.items()
+    }
+    df_clean.attrs["vor_continuations"] = {
+        key: list(value) for key, value in continuation_rows_by_owner.items()
+    }
+    if cells_snapshot is not None:
+        df_clean.attrs["vor_cells"] = cells_snapshot
     return df_clean, meta
 
 
@@ -192,6 +411,10 @@ def _vor_positions(df):
         None,
     )
     formula_col = next((c for c in df.columns if "формула" in str(c).lower()), None)
+    type_col = next(
+        (c for c in df.columns if "тип позиции" in str(c).lower()),
+        None,
+    )
     missing = [
         label
         for label, col in (
@@ -207,8 +430,39 @@ def _vor_positions(df):
             + ", ".join(missing)
             + ". Проверьте шапку ВОР."
         )
+    # Numeric-column + source-identity provenance: df.attrs carries the
+    # once-per-load snapshot ({address: formula/cached/plain}), the skipped
+    # header offset, and the section/continuation/record maps, so a filtered
+    # row maps back to its original source row even with section headers
+    # and continuation rows removed.
+    cells = df.attrs.get("vor_cells") or {}
+    try:
+        header_offset = int(df.attrs.get("vor_header_idx", 0) or 0)
+    except (TypeError, ValueError):
+        header_offset = 0
+    doc_sha = str(df.attrs.get("vor_doc_sha", "") or "")
+    doc_format = str(df.attrs.get("vor_doc_format", "") or "")
+    if doc_format not in {"xlsx", "csv"}:
+        doc_format = ""
+    sheet = str(df.attrs.get("vor_sheet", "") or "")
+    try:
+        header_row = int(df.attrs.get("vor_header_row", 0) or 0)
+    except (TypeError, ValueError):
+        header_row = 0
+    if header_row < 1:
+        header_row = header_offset + 1
+    source_rows = df.attrs.get("vor_source_rows") or {}
+    sections_by_label = df.attrs.get("vor_sections") or {}
+    continuations_by_label = df.attrs.get("vor_continuations") or {}
+    col_letters = {col: _col_letter(idx + 1) for idx, col in enumerate(df.columns)}
+    vol_letter = col_letters.get(vol_col, "")
+    formula_letter = col_letters.get(formula_col, "") if formula_col else ""
+    orig_labels = list(df.index)
+    df_reset = df.reset_index(drop=True)
     positions = []
-    for index, (_, row) in enumerate(df.reset_index(drop=True).iterrows()):
+    for index in range(len(df_reset)):
+        row = df_reset.iloc[index]
+
         def cell(col):
             return "" if col is None else row.get(col, "")
 
@@ -221,10 +475,127 @@ def _vor_positions(df):
         file_ref = str(cell(file_col)).strip()
         comment = str(cell(comment_col)).strip()
         formula = str(cell(formula_col)).strip()
+        position_type = str(cell(type_col)).strip()
         if comment.lower() == "nan":
             comment = ""
         if formula.lower() == "nan":
             formula = ""
+        if position_type.lower() == "nan":
+            position_type = ""
+        label = orig_labels[index]
+        calculation: dict = {}
+        excel_row = 0
+        if cells and vol_letter:
+            try:
+                excel_row = int(label) + header_offset + 2
+            except (TypeError, ValueError):
+                excel_row = 0
+            address = f"{vol_letter}{excel_row}"
+            if excel_row >= 1 and cells.get(address, {}).get("formula"):
+                calculation = calculate_cell(address, cells)
+        formula_cell = (
+            f"{formula_letter}{excel_row}"
+            if formula_letter and excel_row >= 1 else "")
+        formula_refs: dict = {}
+        if formula_cell:
+            formula_refs = {"display_cell": formula_cell}
+            display = (cells.get(formula_cell) or {}) if cells else {}
+            if display.get("formula"):
+                formula_refs["display_formula"] = display["formula"]
+        # Generated workbooks saved without an Excel engine leave the cached
+        # quantity empty (pandas reads NaN or the raw "=..." text): fill the
+        # claimed volume only from a successful safe calculation. A present
+        # cached value always stays the caller's claim; staleness is exposed
+        # via calculation["cached_mismatch"], never by overwriting volume.
+        # On failure the raw value is left untouched (previous behaviour).
+        if volume.lower() in {"", "nan", "none", "-"} or volume.startswith("="):
+            if calculation.get("status") == "calculated" and calculation.get("value"):
+                volume = str(calculation["value"])
+        try:
+            source_row = int(source_rows.get(label, 0) or 0)
+        except (TypeError, ValueError):
+            source_row = 0
+        if doc_format == "xlsx" and source_row < 1 and excel_row >= 1:
+            try:
+                source_row = int(excel_row)
+            except (TypeError, ValueError):
+                source_row = 0
+        position_source = None
+        if doc_sha and doc_format in {"xlsx", "csv"} and source_row >= 1:
+            raw_sections = sections_by_label.get(label, []) or []
+            section_entries = []
+            for entry in raw_sections:
+                try:
+                    entry_address, entry_text = entry
+                except (TypeError, ValueError):
+                    continue
+                if str(entry_text or ""):
+                    section_entries.append(
+                        (str(entry_address or ""), str(entry_text))
+                    )
+            scope_key, scope_reason = _scope_from_sections(section_entries)
+            tracked_cols = [
+                name_col, vol_col, unit_col, ref_col, page_col, file_col,
+                comment_col, formula_col, type_col,
+            ]
+            field_cells: dict = {}
+            num_text = _clean_text(row.iloc[0])
+            if doc_format == "xlsx":
+                if num_text:
+                    field_cells[f"{_col_letter(1)}{source_row}"] = num_text
+                for col in tracked_cols:
+                    if col is None:
+                        continue
+                    letter = col_letters.get(col, "")
+                    if not letter:
+                        continue
+                    value = _clean_text(row.get(col, ""))
+                    if not value:
+                        # pandas renders a stored-but-uncached ``=...``
+                        # quantity as NaN; the snapshot still identifies the
+                        # source cell and its formula text.
+                        snapshot = cells.get(f"{letter}{source_row}") or {}
+                        value = str(snapshot.get("formula") or "")
+                    if value:
+                        field_cells[f"{letter}{source_row}"] = value
+            else:
+                if num_text:
+                    field_cells[str(df.columns[0])] = num_text
+                for col in tracked_cols:
+                    if col is None:
+                        continue
+                    value = _clean_text(row.get(col, ""))
+                    if value:
+                        field_cells[str(col)] = value
+            cont_rows = []
+            for item in continuations_by_label.get(label, []) or []:
+                try:
+                    cont_row = int(item)
+                except (TypeError, ValueError):
+                    continue
+                if cont_row >= 1 and cont_row not in cont_rows:
+                    cont_rows.append(cont_row)
+            digest = doc_sha[:16]
+            if doc_format == "xlsx":
+                position_id = f"{digest}:{sheet}:{source_row}"
+            else:
+                position_id = f"{digest}:csv:record:{source_row}"
+            position_source = PositionSource(
+                document_sha256=doc_sha,
+                format=doc_format,
+                sheet=sheet if doc_format == "xlsx" else "",
+                row=source_row,
+                header_row=header_row,
+                position_id=position_id,
+                cells=field_cells,
+                continuation_rows=cont_rows,
+                sections=[
+                    SourceHeading(address=address, text=text)
+                    for address, text in section_entries
+                ],
+                scope_key=scope_key,
+                scope_reason=scope_reason,
+            )
         positions.append(
             VorPosition(
                 index=index,
@@ -238,6 +609,13 @@ def _vor_positions(df):
                 explicit_refs=split_pdf_refs(file_ref),
                 comment=comment,
                 formula=formula,
+                formula_refs=formula_refs,
+                position_type=position_type,
+                calculation=calculation,
+                position_source=position_source,
+                document_id="",
+                bind_error=None,
+                prep_error=None,
             )
         )
     return positions

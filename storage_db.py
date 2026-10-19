@@ -171,6 +171,7 @@ class Repository:
         model_name: str,
         project_name: str = "default",
         pdf_sources: dict[str, Any] | None = None,
+        provider: str = "Yandex Cloud (Qwen)",
     ) -> UUID:
         """Persist one VOR audit as a new run; returns the run id.
 
@@ -197,6 +198,7 @@ class Repository:
             vor_version.id,
             {
                 "model": model_name,
+                "provider": provider,
                 "pdf_versions": {
                     key: str(version.id) for key, version in pdf_versions.items()
                 },
@@ -231,32 +233,9 @@ class Repository:
         stored payload shape never diverges from the Streamlit path.
         """
         for task, track, result in zip(tasks, tracking, results):
-            payload = {
-                "status": result.get("Статус аудита"),
-                "work_name": task.get("w_name"),
-                "work_found": bool(result.get("work_found")),
-                "volume_confirmed": bool(result.get("volume_confirmed")),
-                "unit_confirmed": bool(result.get("unit_confirmed")),
-                "comment_confirmed": bool(result.get("comment_confirmed")),
-                "found_volume": result.get("Фактический объем", "-"),
-                "found_unit": track.get("found_unit", "-"),
-                "found_pages": list(track.get("found_pages") or []),
-                "vor_pages": list(track.get("vor_pages") or []),
-                "evidence": [dict(item) for item in track.get("evidence") or []],
-                "discrepancy_details": result.get("Детали расхождений", ""),
-                "search_complete": bool(track.get("search_complete")),
-                "requests": track.get("requests", 0),
-                "contexts": track.get("contexts", 0),
-                "budget_tokens": track.get("budget_tokens", result.get("budget_tokens")),
-                "usage": dict(track.get("usage") or result.get("usage") or {}),
-                "pdf_name": track.get("pdf_name", ""),
-                "trace_id": track.get("trace_id"),
-                "trace_url": track.get("trace_url"),
-            }
-            pdf_name = track.get("pdf_name") or ""
-            if pdf_name in pdf_versions:
-                payload["pdf_version_id"] = str(pdf_versions[pdf_name].id)
-                payload["pdf_sha256"] = pdf_versions[pdf_name].sha256
+            from audit_models import serialize_position_result
+            payload = serialize_position_result(
+                task, result, track, pdf_versions)
             self.save_position_result(run_id, int(task.get("idx", 0)), payload)
         self.save_run_report(run_id, "excel", bytes(excel_bytes))
         self.save_run_report(run_id, "word", bytes(word_bytes))

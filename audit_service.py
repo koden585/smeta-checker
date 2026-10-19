@@ -14,16 +14,17 @@ from functools import partial
 import pandas as pd
 
 from audit_core import (
-    INCOMPLETE,
     TECHNICAL_ERROR,
+    build_claim_specs,
     empty_result,
     parse_page_reference,
     result_level,
     technical_error,
 )
 from audit_llm import audit_position_hybrid
-from audit_models import AuditResult
+from audit_models import AuditResult, expected_scope_hint, position_source_dict, claim_status
 from audit_reports import build_user_report, generate_excel_report, generate_word_report
+from audit_snapshot import decode_snapshot, encode_snapshot
 from audit_tracing import TracingRun
 from pdf_binding import resolve_pdf_name, resolve_position_pdfs
 from pdf_text import PDFTextSource
@@ -83,7 +84,92 @@ def preflight_bindings(loaded_vors, target_vor_selection, pdf_pool_keys):
     return preflight_rows, has_critical_error
 
 
+def independent_position_checks(task):
+    """Workbook/schedule facts that never depend on the auditor outcome."""
+    workbook_notes: list = []
+    if task.get("calculation"):
+        from vor_consistency import check_display_consistency
+        workbook_notes = check_display_consistency(
+            task.get("calculation"), task.get("w_formula", ""),
+            task.get("formula_refs"))
+        index = task.get("text_index")
+        pages = task.get("primary_phys_pages") or []
+        if index is not None and pages:
+            from vor_consistency import check_length_operands
+            texts = getattr(index, "texts", []) or []
+            related = {p: texts[p - 1] for p in pages
+                       if 0 < p <= len(texts)}
+            workbook_notes += check_length_operands(
+                task.get("calculation"), related)
+    workbook_notes += [dict(h) for h in (task.get("scheme_notes") or [])]
+    quantity_kind = "direct"
+    if task.get("text_index") is not None:
+        from quantity_graph import classify_quantity
+        quantity_kind, _ = classify_quantity(
+            task.get("w_name", ""), task.get("w_comment", ""), task.get("w_unit", ""),
+            task.get("w_formula", ""), task.get("calculation", {}))
+    return workbook_notes, quantity_kind
+
+
+def _independent_checks(task, notes, consumption=None):
+    checks = []
+    index = task.get("text_index")
+    reference = str(task.get("w_page") or "").strip()
+    if index is not None and reference.casefold() not in {"", "-", "nan", "none", "null"}:
+        indices, description, _ = parse_page_reference(reference, len(index.texts))
+        if not indices or "недопустимые" in description:
+            checks.append({
+                "claim_id": "reference:pages", "kind": "basis", "required": True,
+                "state": "contradiction", "reasons": ["invalid_pdf_page_reference"],
+                "facts": [],
+            })
+    for index, note in enumerate(notes):
+        kind = note.get("kind", "unknown")
+        checks.append({
+            "claim_id": f"workbook:{note.get('display_cell', note.get('cell', index))}:{kind}",
+            "kind": "workbook", "required": True,
+            "state": ("review_required" if kind in {
+                "scheme-divisor-mismatch", "length-operand-conflicts"} else "contradiction"),
+            "reasons": [kind], "facts": [],
+        })
+    calculation = task.get("calculation") or {}
+    if calculation:
+        state = calculation.get("status")
+        checks.append({
+            "claim_id": "workbook:formula", "kind": "workbook", "required": True,
+            "state": ("contradiction" if state == "error" else
+                      "confirmed" if state == "calculated" else "review_required"),
+            "reasons": ["workbook_arithmetic_" + str(state)], "facts": [],
+        })
+    if consumption:
+        checks.append({
+            "claim_id": "quantity:consumption", "kind": "quantity", "required": True,
+            "state": ("confirmed" if consumption.get("matches") is True else
+                      "contradiction" if consumption.get("matches") is False else "review_required"),
+            "reasons": list(consumption.get("uncertainties") or ["schedule_reconciliation"]),
+            "facts": [],
+        })
+    return checks
+
+
+def _position_view(task):
+    """Minimal position view for claim specs from a worker task dict."""
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        work_name=task.get("w_name", ""),
+        volume=task.get("w_vol", ""),
+        unit=task.get("w_unit", ""),
+        comment=task.get("w_comment", ""),
+        formula=task.get("w_formula", ""),
+        position_type=task.get("position_type", ""),
+        calculation=task.get("calculation", {}),
+        position_source=task.get("position_source"),
+    )
+
+
 def worker_check_row(task, audit_position):
+    workbook_notes, quantity_kind = independent_position_checks(task)
+    consumption = None
     if task.get("prep_error"):
         audit = technical_error(task["prep_error"])
     elif task.get("bind_error"):
@@ -104,6 +190,11 @@ def worker_check_row(task, audit_position):
             page_ref=task["w_page"],
             comment_text=task["w_comment"],
             formula_text=task["w_formula"],
+            position_type=task.get("position_type", ""),
+            calculation=task.get("calculation", {}),
+            expected_scope=expected_scope_hint(task.get("position_source")),
+            claim_specs=task.get("claim_specs") or build_claim_specs(
+                _position_view(task)),
         )
     validated = (
         audit
@@ -111,15 +202,20 @@ def worker_check_row(task, audit_position):
         else AuditResult.from_legacy(dict(audit))
     )
     document_id = task.get("target_pdf_name") or ""
+    update: dict = {}
     if document_id:
-        validated = validated.model_copy(
-            update={
-                "evidence": [
-                    item.model_copy(update={"document_id": document_id})
-                    for item in validated.evidence
-                ]
-            }
-        )
+        update["evidence"] = [
+            item.model_copy(update={"document_id": document_id})
+            for item in validated.evidence
+        ]
+    if validated.position_source is None and task.get("position_source") is not None:
+        from audit_models import PositionSource
+        source = task.get("position_source")
+        update["position_source"] = (
+            PositionSource.model_validate(source)
+            if isinstance(source, dict) else source)
+    if update:
+        validated = validated.model_copy(update=update)
     audit = validated.to_legacy()
     evidence = [dict(e) for e in (audit.get("evidence") or []) if isinstance(e, dict)]
     found_pages = sorted(
@@ -139,14 +235,71 @@ def worker_check_row(task, audit_position):
     display_page = ("Стр. " + ", ".join(map(str, found_pages))) if found_pages else "-"
     details_text = str(audit.get("discrepancy_details") or "")
     final_status = audit.get("status", "Ошибка")
+    if task.get("text_index") is not None:
+        from quantity_graph import reconcile_position_schedule
+        consumption = reconcile_position_schedule(
+            task,
+            {"evidence": [{"page": e.get("page"), "kind": e.get("kind")}
+                          for e in evidence]},
+        )
+        if consumption is not None and consumption.get("matches") is False:
+            from audit_measurements import format_ru
+            chain = consumption.get("stock_chain") or {}
+            if chain:
+                details_text += (
+                    f" Расхождение с ПД: потребность в материале с запасом — "
+                    f"в ВОР {chain['material_volume']} {task.get('w_unit')} "
+                    f"(работа {chain['work_volume']} × {chain['factor']}, позиция №{chain['material_number']}), "
+                    f"в спецификации — {consumption['schedule_volume']} {task.get('w_unit')} "
+                    f"(стр. {consumption['schedule_page']}, {consumption['schedule_item']}). "
+                    f"Разница — {consumption['delta']} {task.get('w_unit')} "
+                    f"({consumption['delta_percent']}%). "
+                    f"В ВОР принят расход {consumption['rate']} {consumption['unit']}, "
+                    f"из количества в ПД следует {consumption['derived_rate']} {consumption['unit']}."
+                )
+            else:
+                details_text += (
+                    f" Расхождение с ПД: в ВОР {format_ru(task.get('w_vol'))} {task.get('w_unit')}, "
+                    f"в спецификации — {consumption['schedule_volume']} {task.get('w_unit')} "
+                    f"(стр. {consumption['schedule_page']}, {consumption['schedule_item']}). "
+                    f"Разница — {consumption['delta']} {task.get('w_unit')} "
+                    f"({consumption['delta_percent']}%). "
+                    f"В ВОР принят расход {consumption['rate']} {consumption['unit']}, "
+                    f"из количества в ПД следует {consumption['derived_rate']} {consumption['unit']}."
+                )
+        elif (consumption is not None and consumption.get("matches") is True
+                and (consumption.get("stock_chain") or {})):
+            chain = consumption["stock_chain"]
+            details_text += (
+                f" Потребность в материале сходится: работа {chain['work_volume']} "
+                f"× {chain['factor']} = {chain['material_volume']} {task.get('w_unit')} "
+                f"(позиция №{chain['material_number']}), в спецификации — "
+                f"{consumption['schedule_volume']} {task.get('w_unit')} "
+                f"(стр. {consumption['schedule_page']}). "
+                f"Обоснованность нормы {consumption['rate']} {consumption['unit']} "
+                f"в ПД не подтверждена — отдельный вопрос."
+            )
     # Core owns out-of-reference findings; the adapter
     # additionally preserves malformed/part-invalid input.
+    for note in workbook_notes:
+        kind = note.get("kind", "")
+        if kind in {"scheme-divisor-mismatch", "length-operand-conflicts"}:
+            details_text += f" Вопрос к исходным данным ВОР: {note['message']}."
+        else:
+            details_text += f" Внутренняя несогласованность ВОР: {note['message']}."
+    checks = list(audit.get("checks") or [])
+    checks.extend(_independent_checks(task, workbook_notes, consumption))
+    if checks:
+        errors = list(audit.get("execution_errors") or [])
+        if audit.get("status") == TECHNICAL_ERROR:
+            errors.append({"kind": "provider", "message": details_text or "Execution failed"})
+        pdf_checks = [check for check in audit.get("checks") or []
+                      if check.get("kind") != "workbook"]
+        final_status = claim_status(checks, errors, pdf_evaluated=bool(pdf_checks))
+        audit["checks"] = checks
+        audit["execution_errors"] = errors
     vor_pages_int = task["primary_phys_pages"] if task["primary_phys_pages"] else []
-    if (
-        not task["target_indices"] or "недопустимые" in task["loc_desc"]
-    ) and not task.get("bind_error"):
-        if final_status not in {TECHNICAL_ERROR, INCOMPLETE}:
-            final_status = "Ошибка"
+    if any(check["claim_id"] == "reference:pages" for check in checks):
         details_text = task["loc_desc"] + ". " + details_text
 
     def _yn(v):
@@ -160,7 +313,7 @@ def worker_check_row(task, audit_position):
         f"Работа: {_yn(work_found)}; Объём: {_yn(vol_ok)}; "
         f"Ед.: {_yn(unit_ok)}; Прим.: {_yn(comm_ok)}"
     )
-    kind_ru = {"work": "работа", "volume": "объём", "unit": "ед.", "comment": "прим."}
+    kind_ru = {"work": "работа", "volume": "объём", "unit": "ед.", "comment": "прим.", "technology": "технология"}
     evidence_text = (
         "; ".join(
             f"[Стр. {e.get('page')}, {kind_ru.get(e.get('kind'), e.get('kind'))}] «{e.get('quote', '')}»"
@@ -193,6 +346,16 @@ def worker_check_row(task, audit_position):
         "contexts": audit.get("contexts", 0),
         "budget_tokens": audit.get("budget_tokens"),
         "usage": dict(audit.get("usage") or {}),
+        "technology": audit.get("technology", {}),
+        "quantity_basis": audit.get("quantity_basis", "unknown"),
+        "consumption": consumption if consumption is not None else audit.get("consumption"),
+        "workbook_calculation": audit.get("workbook_calculation", {}),
+        "workbook_notes": [dict(n) for n in workbook_notes],
+        "position_source": task.get("position_source"),
+        "checks": [dict(check) for check in audit.get("checks", [])],
+        "execution_errors": [dict(item) for item in audit.get("execution_errors", [])],
+        "evaluation_version": audit.get("evaluation_version", ""),
+        "corpus_id": task.get("corpus_id", ""),
     }
     show_p = (
         list(found_pages) if found_pages else (vor_pages_int if vor_pages_int else [1])
@@ -211,12 +374,24 @@ def worker_check_row(task, audit_position):
         "found_unit": audit.get("found_unit", "-"),
         "found_volume": audit.get("found_volume", "-"),
         "volume_calculation": audit.get("volume_calculation"),
+        "technology": audit.get("technology", {}),
+        "quantity_basis": audit.get("quantity_basis", "unknown"),
+        "consumption": consumption if consumption is not None else audit.get("consumption"),
+        "quantity_kind": quantity_kind,
+        "workbook_calculation": audit.get("workbook_calculation", {}),
+        "workbook_notes": [dict(n) for n in workbook_notes],
+        "position_source": task.get("position_source"),
+        "position_type": task.get("position_type", ""),
         "search_complete": bool(audit.get("search_complete")),
         "requests": audit.get("requests", 0),
         "contexts": audit.get("contexts", 0),
         "budget_tokens": audit.get("budget_tokens"),
         "usage": dict(audit.get("usage") or {}),
         "work_name": task["w_name"],
+        "checks": [dict(check) for check in audit.get("checks", [])],
+        "execution_errors": [dict(item) for item in audit.get("execution_errors", [])],
+        "evaluation_version": audit.get("evaluation_version", ""),
+        "corpus_id": task.get("corpus_id", ""),
     }
     return task["idx"], res_item, track_item
 
@@ -236,50 +411,11 @@ def traced_worker_check_row(task, audit_position):
 
 
 def _failure_items(exc, task):
-    res_item = {
-        "Статус аудита": TECHNICAL_ERROR,
-        "Фактический объем": "-",
-        "Фактическая страница в ПД (найдено моделью)": "-",
-        "Детали расхождений": f"Сбой обработки позиции: {type(exc).__name__}: {str(exc)[:500]}",
-        "[ПД] Найденная единица": "-",
-        "[ПД] Подтверждения (работа/объём/ед./прим.)": "Работа: нет; Объём: нет; Ед.: нет; Прим.: нет",
-        "[ПД] Доказательства (цитаты со страницами)": "-",
-        "[ПД] Найденные страницы": "-",
-        "[ПД] Поиск завершён": "нет",
-        "[ПД] Запросов": 0,
-        "[ПД] Контекстов": 0,
-        "work_found": False,
-        "volume_confirmed": False,
-        "unit_confirmed": False,
-        "comment_confirmed": False,
-        "found_pages": [],
-        "evidence": [],
-        "search_complete": False,
-        "requests": 0,
-        "contexts": 0,
-        "budget_tokens": None,
-        "usage": {},
-    }
-    track_item = {
-        "pdf_name": task["target_pdf_name"],
-        "vor_pages": task["primary_phys_pages"],
-        "found_page": None,
-        "found_pages": [],
-        "evidence": [],
-        "work_found": False,
-        "volume_confirmed": False,
-        "unit_confirmed": False,
-        "comment_confirmed": False,
-        "found_unit": "-",
-        "found_volume": "-",
-        "search_complete": False,
-        "requests": 0,
-        "contexts": 0,
-        "budget_tokens": None,
-        "usage": {},
-        "work_name": task["w_name"],
-    }
-    return res_item, track_item
+    """Use the same independent checks and precedence after an auditor crash."""
+    failed = {**task, "prep_error":
+              f"Сбой обработки позиции: {type(exc).__name__}: {str(exc)[:500]}"}
+    _, result, tracking = worker_check_row(failed, None)
+    return result, tracking
 
 
 def build_run_artifacts(df_works, meta, tasks, tracking, results):
@@ -336,10 +472,12 @@ def build_run_artifacts(df_works, meta, tasks, tracking, results):
     if vol_col in df_works_clean.columns:
 
         def clean_vor_val(v):
+            from audit_measurements import format_ru
+
             s = str(v).strip()
             if s.endswith(".0") and s[:-2].replace("-", "").isdigit():
                 return s[:-2]
-            return s
+            return format_ru(s)
 
         df_works_clean[vol_col] = df_works_clean[vol_col].apply(clean_vor_val)
 
@@ -410,7 +548,7 @@ def run_audit(
     folder,
     model_name,
     trace_run=None,
-    max_workers=5,
+    max_workers=8,
     progress=None,
     client_factory=None,
     sleeper=None,
@@ -420,6 +558,8 @@ def run_audit(
     run_id=None,
     pdf_versions=None,
     allowed_llm_hosts=("ai.api.cloud.yandex.net",),
+    llm_base_url="https://ai.api.cloud.yandex.net/v1",
+    llm_provider="Yandex Cloud (Qwen)",
 ):
     """Audit selected VORs headless.
 
@@ -435,7 +575,9 @@ def run_audit(
     rows so API payloads keep ``pdf_version_id``/``pdf_sha256`` without
     re-adding versions. ``pdf_sources`` optionally maps pool keys to
     original PDF bytes/paths so stored hashes are stable (``fitz``
-    re-serialization is not deterministic).
+    re-serialization is not deterministic). ``llm_base_url`` selects the
+    transport (Yandex Responses vs chat gateways); ``llm_provider`` labels
+    traces and stored run configs.
     """
     audit_position = partial(
         audit_position_hybrid,
@@ -445,6 +587,7 @@ def run_audit(
         client_factory=client_factory,
         sleeper=sleeper,
         allowed_hosts=tuple(allowed_llm_hosts or ()),
+        base_url=llm_base_url,
     )
     own_trace = trace_run is None
     trace_run = trace_run or TracingRun()
@@ -452,6 +595,7 @@ def run_audit(
     results = {}
     issues = []
     pdf_text_sources = {}
+    executor = ThreadPoolExecutor(max_workers=max_workers)
     try:
         vors_parsed = {}
         total_items = 0
@@ -483,7 +627,14 @@ def run_audit(
         current_row_idx = 0
 
         for v_name, (df_works, positions, meta) in vors_parsed.items():
+            from vor_consistency import check_scheme_divisors
+            scheme_notes: dict = {}
+            for hit in check_scheme_divisors(positions):
+                scheme_notes.setdefault(hit.get("position", ""), []).append(hit)
             tasks = []
+            results_list = [None] * len(positions)
+            row_page_tracking = [None] * len(positions)
+            future_to_task = {}
             for position in positions:
                 r_idx = position.index
                 w_name = position.work_name
@@ -502,11 +653,13 @@ def run_audit(
                         "pages": w_page,
                         "comment": w_comment,
                         "formula": w_formula,
+                        "position_type": position.position_type,
+                        "calculation": position.calculation,
                     },
                     metadata={
                         "vor_file": v_name,
                         "position_index": r_idx,
-                        "provider": "Yandex Cloud (Qwen)",
+                        "provider": llm_provider,
                         "model": model_name,
                     },
                 )
@@ -527,6 +680,7 @@ def run_audit(
                 primary_phys_pages = []
                 text_index = None
                 prep_error = None
+                corpus_id = ""
                 with position_trace.stage(
                     "prepare-position", input={"pages": w_page}
                 ) as preparation:
@@ -602,14 +756,21 @@ def run_audit(
                                 "prepare-ocr-snapshot",
                                 input={"pages": primary_phys_pages, "work": w_name},
                             ) as observation:
-                                text_index = source.for_position(
-                                    target_indices, w_name, w_vol, w_ref, w_comment
+                                prepared = source.for_position(
+                                    target_indices, w_name, w_vol, w_ref, w_comment,
+                                    expected_scope=expected_scope_hint(
+                                        position.position_source),
                                 )
+                                # Frozen boundary: workers receive only the
+                                # restored snapshot, same contract as Celery.
+                                text_index = decode_snapshot(encode_snapshot(prepared))
+                                corpus_id = prepared.to_snapshot().get("corpus_id", "")
                                 new_ocr = source.ocr_count - before_ocr
                                 ocr_hits = source.cache_hits - before_hits
                                 table_hits = source.table_cache_hits - before_tables
                                 observation.update(
                                     output={
+                                        "corpus_id": corpus_id,
                                         "new_ocr_pages": new_ocr,
                                         "cache_hits": ocr_hits,
                                         "table_cache_hits": table_hits,
@@ -630,6 +791,8 @@ def run_audit(
                                     level="ERROR" if text_index.errors else "DEFAULT",
                                 )
                     except Exception as exc:
+                        text_index = None
+                        corpus_id = ""
                         prep_error = f"Подготовка позиции не выполнена: {type(exc).__name__}: {str(exc)[:300]}"
                         preparation.update(
                             level="ERROR",
@@ -642,6 +805,7 @@ def run_audit(
                             "pages": primary_phys_pages,
                             "reference_description": loc_desc,
                             "prep_error": prep_error,
+                            "corpus_id": corpus_id,
                         },
                         status_message=f"{target_pdf_name or 'PDF не привязан'}; {loc_desc[:200]}",
                         level="ERROR"
@@ -660,7 +824,15 @@ def run_audit(
                         "w_page": w_page,
                         "w_comment": w_comment,
                         "w_formula": w_formula,
+                        "position_type": position.position_type,
+                        "calculation": position.calculation,
+                        "formula_refs": dict(position.formula_refs or {}),
+                        "number": position.number,
+                        "file_refs": position.file_ref,
+                        "position_source": position_source_dict(position),
+                        "claim_specs": build_claim_specs(position),
                         "text_index": text_index,
+                        "corpus_id": corpus_id,
                         "target_pdf_name": target_pdf_name,
                         "explicit_refs": list(explicit_refs),
                         "bind_error": bind_error,
@@ -668,38 +840,33 @@ def run_audit(
                         "target_indices": target_indices,
                         "loc_desc": loc_desc,
                         "primary_phys_pages": primary_phys_pages,
+                        "vor_positions": list(positions),
+                        "scheme_notes": [dict(h) for h in scheme_notes.get(position.number, [])],
                     }
                 )
+                task = tasks[-1]
+                future_to_task[executor.submit(traced_worker_check_row, task, audit_position)] = task
 
-            results_list = [None] * len(tasks)
-            row_page_tracking = [None] * len(tasks)
+            for future in as_completed(future_to_task):
+                try:
+                    r_idx, res_item, track_item = future.result()
+                except Exception as exc:
+                    task = future_to_task[future]
+                    r_idx = task["idx"]
+                    res_item, track_item = _failure_items(exc, task)
+                position_trace = future_to_task[future]["position_trace"]
+                position_trace.finish(res_item)
+                track_item["trace_id"] = position_trace.trace_id
+                track_item["trace_url"] = position_trace.url()
+                results_list[r_idx] = res_item
+                row_page_tracking[r_idx] = track_item
 
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_task = {
-                    executor.submit(traced_worker_check_row, t, audit_position): t
-                    for t in tasks
-                }
-
-                for future in as_completed(future_to_task):
-                    try:
-                        r_idx, res_item, track_item = future.result()
-                    except Exception as exc:
-                        task = future_to_task[future]
-                        r_idx = task["idx"]
-                        res_item, track_item = _failure_items(exc, task)
-                    position_trace = future_to_task[future]["position_trace"]
-                    position_trace.finish(res_item)
-                    track_item["trace_id"] = position_trace.trace_id
-                    track_item["trace_url"] = position_trace.url()
-                    results_list[r_idx] = res_item
-                    row_page_tracking[r_idx] = track_item
-
-                    current_row_idx += 1
-                    pct = current_row_idx / total_items
-                    notify(
-                        pct,
-                        f"Многопоточная проверка [{current_row_idx}/{total_items}]: {v_name} (5 потоков)...",
-                    )
+                current_row_idx += 1
+                pct = current_row_idx / total_items
+                notify(
+                    pct,
+                    f"Многопоточная проверка [{current_row_idx}/{total_items}]: {v_name} ({max_workers} потоков)...",
+                )
 
             artifacts = build_run_artifacts(
                 df_works, meta, tasks, row_page_tracking, results_list
@@ -734,6 +901,7 @@ def run_audit(
                     model_name=model_name,
                     project_name=project_name,
                     pdf_sources=pdf_sources,
+                    provider=llm_provider,
                 )
 
             results[v_name] = {
@@ -748,6 +916,7 @@ def run_audit(
 
         return {"results": results, "issues": issues}
     finally:
+        executor.shutdown(wait=True)
         for source in list(pdf_text_sources.values()):
             try:
                 source.close()

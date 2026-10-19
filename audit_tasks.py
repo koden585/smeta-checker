@@ -19,9 +19,9 @@ from functools import partial
 from typing import Any, Callable
 from uuid import UUID
 
-from audit_core import technical_error
+from audit_core import build_claim_specs, technical_error
 from audit_llm import audit_position_hybrid
-from audit_models import AuditSettings
+from audit_models import AuditSettings, VorPosition, expected_scope_hint, position_source_dict, serialize_position_result
 from audit_observability import RunMetrics, bind, estimate_cost, get_logger, reset
 from audit_service import (
     build_run_artifacts,
@@ -29,6 +29,7 @@ from audit_service import (
     traced_worker_check_row,
     worker_check_row,
 )
+from audit_snapshot import load_snapshot, store_snapshot
 from audit_tracing import TracingRun
 from pdf_binding import resolve_position_pdfs
 from pdf_text import PDFTextSource
@@ -94,6 +95,9 @@ def _task_payload(
     position: Any, pdf_name: str, target_indices: list[int], page_count: int
 ) -> dict[str, Any]:
     return {
+        "number": getattr(position, "number", ""),
+        "file_ref": getattr(position, "file_ref", ""),
+        "position_source": position_source_dict(position),
         "work_name": position.work_name,
         "volume": position.volume,
         "unit": position.unit,
@@ -101,6 +105,9 @@ def _task_payload(
         "page_ref": position.page_ref,
         "comment": position.comment,
         "formula": position.formula,
+        "position_type": position.position_type,
+        "calculation": position.calculation,
+        "formula_refs": dict(getattr(position, "formula_refs", None) or {}),
         "pdf_name": pdf_name,
         "explicit_refs": list(position.explicit_refs),
         "target_indices": list(target_indices),
@@ -156,6 +163,9 @@ def _build_task_dict(
 ) -> dict[str, Any]:
     return {
         "idx": int(position.index),
+        "number": getattr(position, "number", ""),
+        "file_refs": getattr(position, "file_ref", ""),
+        "position_source": position_source_dict(position),
         "position_trace": position_trace,
         "w_name": position.work_name,
         "w_vol": position.volume,
@@ -164,6 +174,9 @@ def _build_task_dict(
         "w_page": position.page_ref,
         "w_comment": position.comment,
         "w_formula": position.formula,
+        "position_type": position.position_type,
+        "calculation": position.calculation,
+        "formula_refs": dict(getattr(position, "formula_refs", None) or {}),
         "text_index": text_index,
         "target_pdf_name": pdf_name,
         "explicit_refs": list(position.explicit_refs),
@@ -221,6 +234,10 @@ def prepare_run(
         for name, data in pdf_files.items():
             pool[name] = fitz.open(stream=bytes(data), filetype="pdf")
         df_works, positions, meta = load_vor_frame_positions(vor_bytes, vor_filename)
+        from vor_consistency import check_scheme_divisors
+        scheme_notes: dict = {}
+        for hit in check_scheme_divisors(positions):
+            scheme_notes.setdefault(hit.get("position", ""), []).append(hit)
         pool_keys = list(pool.keys())
         for position in positions:
             index = int(position.index)
@@ -243,6 +260,7 @@ def prepare_run(
                 target_indices: list[int] = []
                 loc_desc = "Страница не указана"
                 primary_pages: list[int] = []
+                snapshot_ref: dict[str, Any] = {}
                 if pdf_name and not bind_error:
                     doc = pool[pdf_name]
                     target_indices, loc_desc, primary_pages = (
@@ -250,32 +268,47 @@ def prepare_run(
                     )
                     if pdf_name not in sources:
                         sources[pdf_name] = PDFTextSource(doc)
-                    # Pre-warm: one OCR allowance now, so LLM workers reuse
-                    # memory/disk cache instead of repeating recognition.
-                    sources[pdf_name].for_position(
+                    # Frozen boundary: one prepared corpus per position, stored
+                    # content-addressed; the LLM worker restores it, never PDFs.
+                    text_index = sources[pdf_name].for_position(
                         target_indices,
                         position.work_name,
                         position.volume,
                         position.reference,
                         position.comment,
+                        expected_scope=expected_scope_hint(position.position_source),
                     )
+                    snapshot_ref = store_snapshot(context.blob_store, text_index)
+                siblings = [
+                    {"index": int(other.index), "number": other.number,
+                     "position_type": other.position_type,
+                     "unit": other.unit, "volume": other.volume,
+                     "work_name": other.work_name, "comment": other.comment,
+                     "formula": other.formula, "calculation": other.calculation,
+                     "position_source": position_source_dict(other)}
+                    for other in positions
+                ]
                 payload = _task_payload(
                     position,
                     pdf_name,
                     target_indices,
                     len(pool[pdf_name]) if pdf_name else 0,
                 )
+                payload["vor_positions"] = siblings
                 payload.update(
                     {
                         "bind_error": bind_error,
                         "loc_desc": loc_desc,
                         "primary_pages": primary_pages,
                         "vor_filename": vor_filename,
+                        "scheme_notes": [dict(h) for h in scheme_notes.get(position.number, [])],
                         "project": project,
                         "request_id": request_id,
                         "pdf_versions": {
                             key: str(row.id) for key, row in pdf_versions.items()
                         },
+                        "snapshot": dict(snapshot_ref),
+                        "corpus_id": snapshot_ref.get("corpus_id", ""),
                     }
                 )
                 context.repository.requeue_position_job(
@@ -344,24 +377,22 @@ def audit_position(
     position_index: int,
     *,
     worker: str,
-    pdf_files: dict[str, bytes] | None = None,
+    pdf_files: dict[str, bytes] | None = None,  # legacy compat, never read
     pdf_versions: dict[str, Any] | None = None,
     request_id: str = "",
     dispatch: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Network stage: audit one position through the LLM, persist its result.
 
-    Runs on the ``llm`` queue. Rebuilds the PageTextIndex snapshot from the
-    persistent PDF cache (same ``PDFTextSource`` + ``for_position`` path as
-    the in-process runner), calls the same ``worker_check_row`` adapter, and
-    stores the outcome in both ``position_results`` and ``position_jobs``.
-    Idempotent: a finished ``done`` job returns its stored payload.
-    With ``dispatch`` set (Celery path), the last finished position enqueues
-    ``finalize_run`` on the ``pdf`` queue; without it (tests/fallback) the
-    caller runs ``finalize_run`` itself.
+    Runs on the ``llm`` queue. Restores the frozen ``PageTextIndex`` snapshot
+    persisted by ``prepare_run`` (content-addressed blob, hash-verified) and
+    calls the same ``worker_check_row`` adapter; no PDF handle is opened here.
+    A missing or corrupt snapshot is an explicit prep error, never a silent
+    re-extraction of another corpus. Idempotent: a finished ``done`` job
+    returns its stored payload. With ``dispatch`` set (Celery path), the last
+    finished position enqueues ``finalize_run`` on the ``pdf`` queue; without
+    it (tests/fallback) the caller runs ``finalize_run`` itself.
     """
-    import fitz
-
     started = time.monotonic()
     job = context.repository.load_position_job(run_id, position_index)
     if job.status == "done" and job.result:
@@ -384,63 +415,113 @@ def audit_position(
             details = (
                 bind_error or f"Не удалось привязать PDF к строке. Искали: '{w_name}'"
             )
-            res_item = {
-                "Статус аудита": "Ошибка",
-                "Фактический объем": "-",
-                "Фактическая страница в ПД (найдено моделью)": "-",
-                "Детали расхождений": details,
-                "work_found": False,
-                "volume_confirmed": False,
-                "unit_confirmed": False,
-                "comment_confirmed": False,
-                "found_pages": [],
-                "evidence": [],
-                "search_complete": False,
-                "requests": 0,
-                "contexts": 0,
-                "budget_tokens": None,
-                "usage": {},
-            }
-            track_item = {
-                "pdf_name": payload.get("pdf_name", ""),
-                "vor_pages": list(payload.get("primary_pages") or []),
-                "found_pages": [],
-                "evidence": [],
-                "work_found": False,
-                "volume_confirmed": False,
-                "unit_confirmed": False,
-                "comment_confirmed": False,
-                "found_unit": "-",
-                "found_volume": "-",
-                "search_complete": False,
-                "requests": 0,
-                "contexts": 0,
-                "budget_tokens": None,
-                "usage": {},
-                "work_name": w_name,
-            }
-        else:
-            files = (
-                pdf_files
-                if pdf_files is not None
-                else _load_run_pdf_bytes(context, run_id)
+            task = _build_task_dict(
+                position=VorPosition(
+                    index=position_index,
+                    number=payload.get("number", ""),
+                    file_ref=payload.get("file_ref", ""),
+                    position_source=payload.get("position_source"),
+                    work_name=w_name or "position",
+                    volume=payload.get("volume", "") or "-",
+                    unit=payload.get("unit", "") or "-",
+                    reference=payload.get("reference", ""),
+                    page_ref=payload.get("page_ref", ""),
+                    comment=payload.get("comment", ""),
+                    formula=payload.get("formula", ""),
+                    position_type=payload.get("position_type", ""),
+                    calculation=payload.get("calculation", {}),
+                    formula_refs=dict(payload.get("formula_refs") or {}),
+                    explicit_refs=list(payload.get("explicit_refs") or []),
+                ),
+                pdf_name=payload.get("pdf_name", ""),
+                bind_error=details,
+                prep_error=None,
+                text_index=None,
+                target_indices=list(payload.get("target_indices") or []),
+                loc_desc=payload.get("loc_desc", "Страница не указана"),
+                primary_pages=list(payload.get("primary_pages") or []),
+                position_trace=_NullTrace(),
             )
-            data = files.get(pdf_name)
-            if data is None:
-                raise KeyError(f"PDF bytes missing for {pdf_name!r}")
-            with fitz.open(stream=bytes(data), filetype="pdf") as doc:
-                target_indices = list(payload.get("target_indices") or [])
-                source = PDFTextSource(doc)
-                try:
-                    text_index = source.for_position(
-                        target_indices,
-                        w_name,
-                        payload.get("volume", ""),
-                        payload.get("reference", ""),
-                        payload.get("comment", ""),
-                    )
-                finally:
-                    source.close()
+            from types import SimpleNamespace
+            task["vor_positions"] = [
+                SimpleNamespace(**entry)
+                for entry in (payload.get("vor_positions") or [])
+                if isinstance(entry, dict)
+            ]
+            task["scheme_notes"] = [
+                dict(h) for h in (payload.get("scheme_notes") or [])
+                if isinstance(h, dict)
+            ]
+            _, res_item, track_item = worker_check_row(
+                task, context.auditor)
+        else:
+            target_indices = list(payload.get("target_indices") or [])
+            try:
+                text_index = load_snapshot(
+                    context.blob_store, dict(payload.get("snapshot") or {}))
+            except (ValueError, FileNotFoundError) as exc:
+                prep_error = str(exc)
+                task = _build_task_dict(
+                    position=VorPosition(
+                        index=position_index,
+                        number=payload.get("number", ""),
+                        file_ref=payload.get("file_ref", ""),
+                        position_source=payload.get("position_source"),
+                        work_name=w_name or "position",
+                        volume=payload.get("volume", "") or "-",
+                        unit=payload.get("unit", "") or "-",
+                        reference=payload.get("reference", ""),
+                        page_ref=payload.get("page_ref", ""),
+                        comment=payload.get("comment", ""),
+                        formula=payload.get("formula", ""),
+                        position_type=payload.get("position_type", ""),
+                        calculation=payload.get("calculation", {}),
+                        formula_refs=dict(payload.get("formula_refs") or {}),
+                        explicit_refs=list(payload.get("explicit_refs") or []),
+                    ),
+                    pdf_name=pdf_name,
+                    bind_error=None,
+                    prep_error=prep_error,
+                    text_index=None,
+                    target_indices=target_indices,
+                    loc_desc=payload.get("loc_desc", "Страница не указана"),
+                    primary_pages=list(payload.get("primary_pages") or []),
+                    position_trace=_NullTrace(),
+                )
+                from types import SimpleNamespace
+                task["vor_positions"] = [
+                    SimpleNamespace(**entry)
+                    for entry in (payload.get("vor_positions") or [])
+                    if isinstance(entry, dict)
+                ]
+                task["scheme_notes"] = [
+                    dict(h) for h in (payload.get("scheme_notes") or [])
+                    if isinstance(h, dict)
+                ]
+                _, res_item, track_item = worker_check_row(
+                    task, context.auditor)
+                versions = (
+                    pdf_versions
+                    if pdf_versions is not None
+                    else _load_run_pdf_versions(context, run_id)
+                )
+                stored = _position_result_payload(
+                    w_name=w_name,
+                    res_item=res_item,
+                    track_item=track_item,
+                    index=position_index,
+                    pdf_versions=versions,
+                    settings=context.settings,
+                )
+                stored["corpus_id"] = payload.get("corpus_id", "")
+                context.repository.save_position_result(run_id, position_index, stored)
+                context.repository.finish_position_job(
+                    run_id, position_index, "done", result=stored
+                )
+                _maybe_chain_finalize(
+                    context, run_id, dispatch=dispatch, request_id=resolved_request
+                )
+                return {"position_index": position_index, "duplicate": False}
             trace_run = TracingRun(
                 context.settings.langfuse_public_key,
                 context.settings.langfuse_secret_key,
@@ -452,6 +533,7 @@ def audit_position(
                 mask_prompts=context.settings.telemetry_mask_prompts,
             )
             try:
+                llm = context.settings.llm_credentials()
                 position_trace = trace_run.position(
                     input={
                         "work": w_name,
@@ -461,19 +543,22 @@ def audit_position(
                         "pages": payload.get("page_ref", ""),
                         "comment": payload.get("comment", ""),
                         "formula": payload.get("formula", ""),
+                        "position_type": payload.get("position_type", ""),
+                        "calculation": payload.get("calculation", {}),
                     },
                     metadata={
                         "vor_file": payload.get("vor_filename", ""),
                         "position_index": position_index,
-                        "provider": "Yandex Cloud (Qwen)",
-                        "model": context.settings.yandex_cloud_model,
+                        "provider": llm.provider,
+                        "model": llm.model_name,
                     },
                 )
-                from audit_models import VorPosition
-
                 task = _build_task_dict(
                     position=VorPosition(
                         index=position_index,
+                        number=payload.get("number", ""),
+                        file_ref=payload.get("file_ref", ""),
+                        position_source=payload.get("position_source"),
                         work_name=w_name or "position",
                         volume=payload.get("volume", "") or "-",
                         unit=payload.get("unit", "") or "-",
@@ -481,6 +566,9 @@ def audit_position(
                         page_ref=payload.get("page_ref", ""),
                         comment=payload.get("comment", ""),
                         formula=payload.get("formula", ""),
+                        position_type=payload.get("position_type", ""),
+                        calculation=payload.get("calculation", {}),
+                        formula_refs=dict(payload.get("formula_refs") or {}),
                         explicit_refs=list(payload.get("explicit_refs") or []),
                     ),
                     pdf_name=pdf_name,
@@ -492,14 +580,33 @@ def audit_position(
                     primary_pages=list(payload.get("primary_pages") or []),
                     position_trace=position_trace,
                 )
+                from types import SimpleNamespace
+                task["claim_specs"] = build_claim_specs(SimpleNamespace(
+                    work_name=task["w_name"], volume=task["w_vol"],
+                    unit=task["w_unit"], comment=task["w_comment"],
+                    formula=task["w_formula"],
+                    position_type=task.get("position_type", ""),
+                    calculation=task.get("calculation", {}),
+                    position_source=task.get("position_source"),
+                ))
+                task["vor_positions"] = [
+                    SimpleNamespace(**entry)
+                    for entry in (payload.get("vor_positions") or [])
+                    if isinstance(entry, dict)
+                ]
+                task["scheme_notes"] = [
+                    dict(h) for h in (payload.get("scheme_notes") or [])
+                    if isinstance(h, dict)
+                ]
                 audit_fn = partial(
                     context.auditor,
-                    api_key=context.settings.yandex_cloud_api_key,
-                    folder=context.settings.yandex_cloud_folder,
-                    model_name=context.settings.yandex_cloud_model,
+                    api_key=llm.api_key,
+                    folder=llm.folder,
+                    model_name=llm.model_name,
                     client_factory=context.client_factory,
                     sleeper=(lambda _: None),
                     allowed_hosts=tuple(context.settings.allowed_llm_hosts or ()),
+                    base_url=llm.base_url,
                 )
                 _, res_item, track_item = traced_worker_check_row(task, audit_fn)
                 position_trace.finish(res_item)
@@ -520,6 +627,7 @@ def audit_position(
             pdf_versions=versions,
             settings=context.settings,
         )
+        stored["corpus_id"] = payload.get("corpus_id", "")
         context.repository.save_position_result(run_id, position_index, stored)
         context.repository.finish_position_job(
             run_id, position_index, "done", result=stored
@@ -598,53 +706,10 @@ def _position_result_payload(
     pdf_versions: dict[str, Any],
     settings: Any = None,
 ) -> dict[str, Any]:
-    """Same stored shape as ``save_vor_run_payload``; never diverges."""
-    _ = index
-    payload = {
-        "status": res_item.get("Статус аудита"),
-        "work_name": w_name,
-        "work_found": bool(res_item.get("work_found")),
-        "volume_confirmed": bool(res_item.get("volume_confirmed")),
-        "unit_confirmed": bool(res_item.get("unit_confirmed")),
-        "comment_confirmed": bool(res_item.get("comment_confirmed")),
-        "found_volume": res_item.get("Фактический объем", "-"),
-        "found_unit": track_item.get("found_unit", "-"),
-        "found_page": track_item.get("found_page"),
-        "found_pages": list(track_item.get("found_pages") or []),
-        "vor_pages": list(track_item.get("vor_pages") or []),
-        "evidence": [dict(item) for item in track_item.get("evidence") or []],
-        "volume_calculation": track_item.get("volume_calculation"),
-        "discrepancy_details": res_item.get("Детали расхождений", ""),
-        "search_complete": bool(track_item.get("search_complete")),
-        "requests": track_item.get("requests", 0),
-        "contexts": track_item.get("contexts", 0),
-        "budget_tokens": res_item.get("budget_tokens", track_item.get("budget_tokens")),
-        "usage": dict(track_item.get("usage") or {}),
-        "estimated_cost": track_item.get("estimated_cost"),
-        "pdf_name": track_item.get("pdf_name", ""),
-        "trace_id": track_item.get("trace_id"),
-        "trace_url": track_item.get("trace_url"),
-    }
-    pdf_name = track_item.get("pdf_name") or ""
-    if pdf_name in pdf_versions:
-        row = pdf_versions[pdf_name]
-        payload["pdf_version_id"] = str(row.id)
-        payload["pdf_sha256"] = row.sha256
-    _ = settings
-    return payload
-
-
-def _load_run_pdf_bytes(context: TaskContext, run_id: UUID) -> dict[str, bytes]:
-    from uuid import UUID as _UUID
-
-    record = context.repository.load_run(run_id)
-    config = record.get("config") or {}
-    mapping = config.get("pdf_versions") or {}
-    files: dict[str, bytes] = {}
-    for key, version_id in mapping.items():
-        ref = context.repository.load_version(_UUID(str(version_id)))
-        files[key] = context.blob_store.get(ref.blob_key)
-    return files
+    """Single stored shape; delegates to ``serialize_position_result``."""
+    _ = (index, settings)
+    track_item = {**track_item, "work_name": w_name}
+    return serialize_position_result({}, res_item, track_item, pdf_versions)
 
 
 def _load_run_pdf_versions(context: TaskContext, run_id: UUID) -> dict[str, Any]:
@@ -803,6 +868,7 @@ def _stored_to_items(
             "volume": "объём",
             "unit": "ед.",
             "comment": "прим.",
+            "technology": "технология",
         }
         res_item = {
             "Статус аудита": stored.get("status", TECHNICAL_ERROR),
@@ -849,6 +915,16 @@ def _stored_to_items(
             "found_unit": stored.get("found_unit", "-"),
             "found_volume": stored.get("found_volume", "-"),
             "volume_calculation": stored.get("volume_calculation"),
+            "technology": stored.get("technology", {}),
+            "quantity_basis": stored.get("quantity_basis", "unknown"),
+            "quantity_kind": stored.get("quantity_kind", "direct"),
+            "consumption": stored.get("consumption"),
+            "workbook_calculation": stored.get("workbook_calculation", {}),
+            "workbook_notes": list(stored.get("workbook_notes") or []),
+            "checks": [dict(check) for check in stored.get("checks", [])],
+            "execution_errors": [dict(item) for item in stored.get("execution_errors", [])],
+            "evaluation_version": stored.get("evaluation_version", ""),
+            "position_type": stored.get("position_type", position.position_type),
             "search_complete": bool(stored.get("search_complete")),
             "requests": stored.get("requests", 0),
             "contexts": stored.get("contexts", 0),
@@ -879,6 +955,7 @@ def _stored_to_items(
         "comment_confirmed": False,
         "budget_tokens": None,
         "usage": {},
+        "position_source": position_source_dict(position),
     }
     track_item = {
         "pdf_name": "",
@@ -897,6 +974,7 @@ def _stored_to_items(
         "budget_tokens": None,
         "usage": {},
         "work_name": position.work_name,
+        "position_source": position_source_dict(position),
     }
     return res_item, track_item
 
