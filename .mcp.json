@@ -17,6 +17,14 @@
       "headers": {
         "Authorization": "Basic ${LANGFUSE_MCP_AUTH_TOKEN}"
       }
+    },
+    "figma-console": {
+      "command": "npx",
+      "args": ["-y", "figma-console-mcp@latest"],
+      "env": {
+        "FIGMA_ACCESS_TOKEN": "${FIGMA_ACCESS_TOKEN}",
+        "ENABLE_MCP_APPS": "true"
+      }
     }
   }
 }
