@@ -20,6 +20,7 @@ from audit_models import (
     EvidenceKind,
     VorMeta,
     VorPosition,
+    expected_scope_hint,
 )
 from audit_reports import build_user_report
 from vor_parse import load_vor_positions
@@ -54,6 +55,29 @@ class VorModelTests(unittest.TestCase):
         self.assertEqual(
             VorPosition.from_legacy_task(task).model_dump(), position.model_dump()
         )
+    def test_position_source_round_trip_preserves_identity(self):
+        csv = (
+            "№ п.п.;Наименование работ;Объём работ / Количество;Ед. изм.;"
+            "Ссылка на ПД;Наименование файла;Номер страниц (через пробел)\n"
+            "1;Copper cable;45;m;;project.pdf;1\n"
+        )
+
+        class FakeFile(io.BytesIO):
+            def getvalue(self):
+                return super().getvalue()
+
+        positions, _ = load_vor_positions(
+            FakeFile(csv.encode("utf-8-sig")), "vor.csv"
+        )
+        task = positions[0].legacy_task()
+        self.assertEqual(task["position_source"]["row"], 1)
+        self.assertEqual(
+            VorPosition.from_legacy_task(task).position_source,
+            positions[0].position_source,
+        )
+        self.assertIsNone(expected_scope_hint(None))
+        self.assertEqual(expected_scope_hint({}), "")
+        self.assertEqual(expected_scope_hint({"scope_key": "КНС"}), "КНС")
 
     def test_missing_required_columns_are_explicit(self):
         csv = "№ п.п.;Наименование работ\n1;Copper cable\n"
@@ -143,9 +167,9 @@ class AuditResultModelTests(unittest.TestCase):
             found_unit="m",
             found_page="2",
         )
-        self.assertEqual(result.found_page, "-")
-        self.assertEqual(result.found_volume, "-")
-        self.assertEqual(result.found_unit, "-")
+        self.assertEqual(result.found_page, "2")
+        self.assertEqual(result.found_volume, "45")
+        self.assertEqual(result.found_unit, "m")
 
     def test_legacy_roundtrip_preserves_shape(self):
         legacy = {

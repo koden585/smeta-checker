@@ -5,11 +5,11 @@ volume against the evaluated D-expression and the human-visible E-text.
 No LLM, no PDF access; every finding names concrete cell addresses.
 """
 
-from __future__ import annotations
-
 import re
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
+
+from audit_measurements import _numbers, close_amounts
 
 _NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
 _ADDRESS_RE = re.compile(r"\$?([A-Za-z]{1,3})\$?([0-9]{1,7})")
@@ -25,12 +25,7 @@ def _to_decimal(token: str) -> Decimal | None:
 def _display_numbers(cached: Any) -> set[Decimal]:
     if not isinstance(cached, str):
         return set()
-    out: set[Decimal] = set()
-    for token in _NUMBER_RE.findall(cached):
-        value = _to_decimal(token)
-        if value is not None:
-            out.add(value)
-    return out
+    return set(_numbers(cached))
 
 
 def _addresses_in_display(formula: str | None) -> list[str]:
@@ -81,12 +76,10 @@ def check_display_consistency(
     claimed = _to_decimal(str(calc.get("value")))
     if claimed is not None:
         known.setdefault(claimed, str(calc.get("cell") or "claimed"))
-    tol_base = max([abs(v) for v in known] + [Decimal(1)])
-    tol = tol_base * Decimal("1e-9")
 
     def _matches(value: Decimal) -> str | None:
         for candidate, label in known.items():
-            if abs(candidate - value) <= tol:
+            if close_amounts(candidate, value):
                 return label
         return None
 

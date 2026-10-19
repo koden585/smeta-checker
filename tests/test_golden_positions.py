@@ -234,10 +234,9 @@ class GoldenReportTests(unittest.TestCase):
 
 
 class GoldenEvidenceChainTests(unittest.TestCase):
-    """№2 diagnostic chain (8th run EV14): verbatim spec row 1.1 must
-    validate to ОК despite comment_confirmed=true without a comment
-    quote and a technology block. Live-model verdicts are NOT pinned;
-    only that correct evidence survives validation."""
+    """№2 diagnostic chain: verbatim spec row 1.1 must validate to ОК.
+    Live-model verdicts are NOT pinned; only that correct evidence
+    survives validation."""
 
     ROW_11 = ("<tr><td>1.1</td><td>Геотекстиль Дорнит, плотностью 500 г/м2</td>"
               "<td></td><td></td><td></td><td>м2</td><td>631,2</td>"
@@ -246,29 +245,27 @@ class GoldenEvidenceChainTests(unittest.TestCase):
               "характеристика</th><th>Поставщик</th></tr>")
 
     def test_spec_row_validates_to_ok(self):
-        quote = self.HEADER + self.ROW_11 + "</table>"
-        ctx = {88: quote}
+        quote_sources = {"p88q1": {"page": 88, "quote": self.ROW_11}}
         data = {
-            "status": "Ошибка", "work_found": True, "found_page": "88",
-            "found_volume": "631,2", "found_unit": "м2",
-            "volume_confirmed": True, "unit_confirmed": True,
-            "comment_confirmed": True,
-            "evidence": [
-                {"page": 88, "quote": quote, "kind": "work"},
-                {"page": 88, "quote": quote, "kind": "volume"},
-                {"page": 88, "quote": quote, "kind": "unit"}],
-            "technology": {"status": "confirmed", "expected": "плотность",
-                           "actual": "плотностью 500"},
+            "claims": [
+                {"claim_id": "presence", "source_ids": ["p88q1"]},
+                {"claim_id": "quantity", "source_ids": ["p88q1"],
+                 "value_source_id": "p88q1", "unit_source_id": "p88q1"},
+                {"claim_id": "unit", "source_ids": ["p88q1"]},
+            ],
             "discrepancy_details": "Найдено в спецификации",
         }
         result = parse_audit_response(
-            json.dumps(data), ctx, position_type="Материал",
+            json.dumps(data), {88: self.ROW_11}, position_type="Материал",
             expected_volume="631.1999999999999", expected_unit="м2",
-            expected_work="Геотекстиль Дорнит, плотностью 500 г/м2")
+            expected_work="Геотекстиль Дорнит, плотностью 500 г/м2",
+            quote_sources=quote_sources)
         self.assertEqual(result["status"], "ОК")
-        self.assertEqual(result["found_volume"], "631,2")
+        self.assertEqual(result["found_volume"], "631.2")
         self.assertEqual(result["found_page"], "88")
         self.assertFalse(result["comment_confirmed"])
         self.assertEqual(result["technology"]["status"], "not_applicable")
+        by_id = {c["claim_id"]: c for c in result["checks"]}
+        self.assertEqual(by_id["quantity"]["state"], "confirmed")
 if __name__ == "__main__":
     unittest.main()

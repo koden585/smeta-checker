@@ -39,18 +39,16 @@ class FakeClient:
         prompt = input
         if "Проверяемая работа: Pump station" in prompt:
             raise RuntimeError("Simulated provider failure")
+        import re
+        sources = re.findall(r"\[([a-z0-9]+)\] ([^\n]+)", prompt)
+        work_sid = next(sid for sid, text in sources if "Copper cable" in text)
+        quantity_sid = next(sid for sid, text in sources if "45" in text)
         data = {
-            "work_found": True,
-            "volume_confirmed": True,
-            "unit_confirmed": True,
-            "comment_confirmed": True,
-            "found_volume": "45 m",
-            "found_unit": "m",
-            "found_page": "1",
-            "evidence": [
-                {"source_id": "p1q1", "kind": "work"},
-                {"source_id": "p2q2", "kind": "volume"},
-                {"source_id": "p2q2", "kind": "unit"},
+            "claims": [
+                {"claim_id": "presence", "source_ids": [work_sid]},
+                {"claim_id": "quantity", "source_ids": [quantity_sid],
+                 "value_source_id": quantity_sid, "unit_source_id": quantity_sid},
+                {"claim_id": "unit", "source_ids": [quantity_sid]},
             ],
             "discrepancy_details": "Confirmed with multi-page evidence",
         }
@@ -163,7 +161,7 @@ class AppFlowTests(unittest.TestCase):
             table = saved["df"]
             self.assertEqual(table["Статус аудита"].tolist(), ["ОК", "Технический сбой", "ОК"])
             self.assertEqual(table["[ПД] Фактическая страница"].tolist(), ["Стр. 1, 2", "-", "Стр. 1, 2"])
-            self.assertEqual(table["[ПД] Найденная единица"].tolist(), ["m", "-", "m"])
+            self.assertEqual(table["[ПД] Найденная единица"].tolist(), ["м", "-", "м"])
             self.assertEqual(table["[ПД] Найденные страницы"].tolist(), ["1, 2", "-", "1, 2"])
             self.assertTrue(all("Работа: да" in v for v in table["[ПД] Подтверждения (работа/объём/ед./прим.)"].tolist()[:1] + table["[ПД] Подтверждения (работа/объём/ед./прим.)"].tolist()[2:]))
             self.assertIn("Copper cable 45 m", table["[ПД] Доказательства (цитаты со страницами)"].iloc[0])

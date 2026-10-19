@@ -29,9 +29,9 @@ class BaselineTests(unittest.TestCase):
 
     def test_statuses_pages_volumes_units(self):
         expected = [
-            ("ОК", "Стр. 2", "45", "m", [2]),
-            ("ОК", "Стр. 2", "45", "m", [2]),
-            ("Ошибка", "Стр. 3", "2", "pcs", [3]),
+            ("ОК", "Стр. 2", "45", "м", [2]),
+            ("ОК", "Стр. 2", "45", "м", [2]),
+            ("Ошибка", "Стр. 3", "2", "шт", [3]),
             ("Неполная проверка", "-", "-", "-", []),
             ("Технический сбой", "-", "-", "-", []),
         ]
@@ -49,7 +49,7 @@ class BaselineTests(unittest.TestCase):
             (True, True, True, True, True),
             (True, True, True, True, True),
             (True, False, True, True, True),
-            (False, False, False, False, False),
+            (False, False, False, True, False),
             (False, False, False, False, False),
         ]
         for case, flags in zip(self.summary["cases"], expected):

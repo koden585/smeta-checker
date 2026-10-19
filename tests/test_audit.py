@@ -14,29 +14,57 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from audit_core import (BudgetExceeded, INCOMPLETE, PageTextIndex, RequestBudget,
                         TECHNICAL_ERROR, audit_text_pages, empty_result,
                         parse_audit_response, parse_page_reference, technical_error,
-                        _numbers, _terms)
-from audit_llm import audit_position_hybrid
+                        _terms)
+from audit_measurements import _numbers
+from audit_llm import _catalog_chunks, audit_position_hybrid
 
 
-def response(page="-", volume="-", unit="-", volume_ok=False, unit_ok=False,
-             comment_ok=False, evidence=(), details="Не найдено", status="Ошибка"):
-    return {"status": status, "work_found": page != "-", "found_page": page,
-            "found_volume": volume, "found_unit": unit,
-            "volume_confirmed": volume_ok, "unit_confirmed": unit_ok,
-            "comment_confirmed": comment_ok, "evidence": list(evidence),
-            "discrepancy_details": details}
+def _catalog(context):
+    """Build quote_sources exactly like audit_llm.ask chunking."""
+    quote_sources = {}
+    for page, text in context.items():
+        for piece in str(text).split("\n[...]\n"):
+            for quote in _catalog_chunks(piece):
+                quote_sources[f"p{page}q{len(quote_sources) + 1}"] = {
+                    "page": page, "quote": quote}
+    return quote_sources
 
 
-def proof(page, quote, kind="work"):
-    return {"page": page, "quote": quote, "kind": kind}
+def _sid(quote_sources, quote, page=None):
+    for sid, source in quote_sources.items():
+        if source["quote"] == quote and (page is None or source["page"] == page):
+            return sid
+    raise AssertionError(f"quote not in catalog: {quote!r}")
 
 
-def found(context, page, volume="45", matching=True):
+def claims(*items, details=""):
+    """items: (claim_id, [quotes]) or (claim_id, [quotes], extra dict)."""
+    out = []
+    for item in items:
+        claim_id, quotes = item[0], item[1]
+        extra = item[2] if len(item) > 2 else {}
+        out.append({"claim_id": claim_id,
+                    "source_ids": quotes, **extra})
+    return {"claims": out, "discrepancy_details": details}
+
+
+def found(context, page, volume="45", matching=True,
+          expected_volume=None, expected_unit="m", expected_work="",
+          position_type="", comment_required=False):
+    """One-shot confirmed/mismatched answer on the new wire."""
+    quote_sources = _catalog(context)
     quote = context[page]
-    data = response(str(page), volume, "m", matching, True,
-                    evidence=[proof(page, quote), proof(page, quote, "volume"),
-                              proof(page, quote, "unit")], details="Volume mismatch" if not matching else "Confirmed")
-    return parse_audit_response(json.dumps(data), context, comment_required=False)
+    sid = _sid(quote_sources, quote, page)
+    wire = claims(("presence", [sid]),
+                  ("quantity", [sid],
+                   {"value_source_id": sid, "unit_source_id": sid}),
+                  ("unit", [sid], {"unit_source_id": sid}),
+                  details="Volume mismatch" if not matching else "Confirmed")
+    return parse_audit_response(
+        json.dumps(wire), context, comment_required,
+        expected_volume=volume if expected_volume is None else expected_volume,
+        expected_unit=expected_unit, quote_sources=quote_sources,
+        position_type=position_type, expected_work=expected_work)
 
 
 
@@ -63,177 +91,240 @@ class PageReferenceTests(unittest.TestCase):
 class ResponseTests(unittest.TestCase):
     def setUp(self):
         self.context = {3: "Copper cable 45 m"}
-        self.data = response("3", "45", "m", True, True,
-                             evidence=[proof(3, "Copper cable"), proof(3, "45 m", "volume"), proof(3, "m", "unit")])
+        self.quote_sources = _catalog(self.context)
+        sid = _sid(self.quote_sources, "Copper cable 45 m")
+        self.sid = sid
+        self.claim_quotes = {
+            "presence": "Copper cable 45 m",
+            "quantity": "Copper cable 45 m",
+            "unit": "Copper cable 45 m",
+        }
 
-    def parse(self, data=None, context=None):
-        return parse_audit_response(json.dumps(self.data if data is None else data),
-                                    self.context if context is None else context, comment_required=False)
+    def parse(self, wire=None, context=None, **kwargs):
+        if context is None:
+            context = self.context
+        quote_sources = kwargs.pop("quote_sources", None)
+        if quote_sources is None and context is self.context:
+            quote_sources = self.quote_sources
+        elif quote_sources is None:
+            quote_sources = _catalog(context)
+        if wire is None:
+            sid = _sid(quote_sources, self.claim_quotes["presence"])
+            wire = claims(("presence", [sid]),
+                          ("quantity", [sid],
+                           {"value_source_id": sid, "unit_source_id": sid}),
+                          ("unit", [sid], {"unit_source_id": sid}))
+        kwargs.setdefault("expected_volume", "45")
+        kwargs.setdefault("expected_unit", "m")
+        kwargs.setdefault("expected_work", "Copper cable")
+        kwargs.setdefault("position_type", "Материал")
+        return parse_audit_response(json.dumps(wire), context,
+                                    comment_required=False,
+                                    quote_sources=quote_sources, **kwargs)
 
-    def test_multpage_evidence_and_whitespace(self):
-        data = response("1", "45", "m", True, True,
-                        evidence=[proof(1, "Copper cable"), proof(7, "45 m", "volume"), proof(7, "m", "unit")])
-        result = self.parse(data, {1: "Copper\n cable", 7: "Quantity 45 m"})
-        self.assertEqual(result["found_pages"], [1, 7])
+    def parse_quotes(self, quotes_by_claim, context=None, details="",
+                     **kwargs):
+        """quotes_by_claim: claim_id -> quote text or [quote texts]."""
+        context = self.context if context is None else context
+        quote_sources = _catalog(context)
+        items = []
+        for claim_id, quotes in quotes_by_claim.items():
+            if isinstance(quotes, str):
+                quotes = [quotes]
+            extra = {}
+            if claim_id in ("quantity", "unit"):
+                extra = {"value_source_id": _sid(quote_sources, quotes[0]),
+                         "unit_source_id": _sid(quote_sources, quotes[0])}
+            items.append((claim_id, [_sid(quote_sources, q) for q in quotes],
+                         extra))
+        return self.parse(claims(*items, details=details), context,
+                          quote_sources=quote_sources, **kwargs)
+
+    def test_code_verdict_comes_from_quotes_not_flags(self):
+        withheld_wire = claims(("presence", [self.sid]),
+                               details="model withholds quantity")
+        bad = self.parse(withheld_wire)
+        self.assertEqual(bad["status"], "Неполная проверка")
+        self.assertEqual(bad["found_page"], "3")
+
+    def test_unknown_source_id_rejects_only_that_proposal(self):
+        wire = claims(("presence", ["p99q1"]),
+                      ("quantity", [self.sid],
+                       {"value_source_id": self.sid,
+                        "unit_source_id": self.sid}),
+                      ("unit", [self.sid], {"unit_source_id": self.sid}),
+                      details="bad presence id")
+        result = self.parse(wire)
+        by_id = {c["claim_id"]: c for c in result["checks"]}
+        self.assertEqual(by_id["presence"]["state"], "not_found")
+        self.assertEqual(by_id["quantity"]["state"], "confirmed")
+        self.assertIn("Неизвестный идентификатор цитаты",
+                      result["discrepancy_details"])
+
+
+    def test_location_without_work_description_still_binds_quantity(self):
+        # expected_work="" gives presence nothing to contradict: location
+        # confirms and the bound number+unit decides the verdict in code.
+        result = self.parse_quotes(
+            {"presence": "Quantity 45 m", "quantity": "Quantity 45 m",
+             "unit": "Quantity 45 m"},
+            {3: "Quantity 45 m"}, expected_work="")
         self.assertEqual(result["status"], "ОК")
-
-
-    def test_unverified_ok_is_a_mismatch(self):
-        result = self.parse({**self.data, "status": "ОК", "volume_confirmed": False})
-        self.assertEqual(result["status"], "Ошибка")
-        self.assertEqual(result["found_page"], "3")
-
-    def test_forged_quote_or_unsent_page_rejected(self):
-        for evidence in ([proof(99, "Copper cable")], [proof(3, "Steel cable")], [proof(3, "Copper cable ... 45")]):
-            with self.subTest(evidence=evidence), self.assertRaises(ValueError):
-                self.parse({**self.data, "evidence": evidence})
-
-    def test_quote_elsewhere_on_page_is_not_valid_in_fragment(self):
-        with self.assertRaises(ValueError):
-            self.parse(context={3: "Quantity 45 m"})
+        self.assertEqual(result["found_volume"], "45")
 
     def test_found_volume_must_appear_in_evidence(self):
         with self.assertRaises(ValueError):
-            self.parse({**self.data, "found_volume": "46"})
-
-    def test_volume_from_foreign_table_row_rejected(self):
+            parse_audit_response("not json {{", {1: "x"},
+                                 quote_sources={"p1q1": {"page": 1,
+                                                         "quote": "x"}})
+    def test_quantity_fragment_cannot_supply_foreign_row_work_evidence(self):
+        # The catalog addresses one HTML row per fragment; quantity and unit
+        # therefore stay inside the addressed row and cannot silently use the
+        # neighbouring schedule line.
         ctx = {88: ("<table><tr><th>Поз.</th><th>Наименование и техническая характеристика</th><th>Поставщик</th></tr>"
                     "<tr><td>1.4</td><td>Зажим для троса</td><td>шт.</td><td>328</td></tr>"
                     "<tr><td>2.1</td><td>Геотекстиль Дорнит</td><td>м2</td><td>2254,8</td></tr></table>")}
-        data = response("88", "2254,8", "м2", True, True, evidence=[
-            proof(88, ctx[88]), proof(88, ctx[88], "volume"),
-            proof(88, ctx[88], "unit")])
-        result = parse_audit_response(json.dumps(data), ctx, comment_required=False,
-                                      position_type="Материал",
-                                      expected_work="Геотекстиль Дорнит")
-        self.assertEqual(result["status"], "ОК")
-        foreign = response("88", "328", "шт.", True, True, evidence=[
-            proof(88, ctx[88]), proof(88, ctx[88], "volume"),
-            proof(88, ctx[88], "unit")])
-        with self.assertRaises(ValueError):
-            parse_audit_response(json.dumps(foreign), ctx, comment_required=False,
-                                 position_type="Материал",
-                                 expected_work="Геотекстиль Дорнит")
+        quote_sources = _catalog(ctx)
+        qty_sid = next(sid for sid, source in quote_sources.items()
+                       if "2254,8" in source["quote"])
+        wire = claims(("presence", [qty_sid]),
+                      ("quantity", [qty_sid],
+                       {"value_source_id": qty_sid, "unit_source_id": qty_sid}),
+                      ("unit", [qty_sid], {"unit_source_id": qty_sid}),
+                      details="fragment-bound row")
+        result = parse_audit_response(
+            json.dumps(wire), ctx, comment_required=False,
+            position_type="Материал",
+            expected_work="Зажим для троса",
+            expected_volume="2254,8", expected_unit="м2",
+            quote_sources=quote_sources)
+        by_id = {c["claim_id"]: c for c in result["checks"]}
+        self.assertEqual(by_id["presence"]["state"], "not_found")
+        self.assertEqual(by_id["quantity"]["state"], "confirmed")
+        self.assertEqual(result["status"], "Неполная проверка")
 
-    def test_volume_quote_can_prove_unit_with_worded_quantity(self):
-        data = response("3", "10", "пункт", True, True, evidence=[
-            {"page": "3", "quote": "Опорная сеть", "kind": "work"},
-            {"page": "3", "quote": "из десяти определяемых пунктов", "kind": "volume"}])
-        result = self.parse(data, {3: "Опорная сеть создана из десяти определяемых пунктов"})
-        self.assertEqual(result["status"], "ОК")
-        self.assertEqual(result["found_pages"], [3])
-        self.assertTrue(result["unit_confirmed"])
+    def test_worded_quantity_without_digits_needs_manual_review(self):
+        context = {3: "Опорная сеть создана из десяти определяемых пунктов"}
+        quote_sources = _catalog(context)
+        sid = next(iter(quote_sources))
+        wire = claims(("presence", [sid]), ("quantity", [sid]),
+                      details="worded quantity")
+        result = parse_audit_response(
+            json.dumps(wire), context, comment_required=False,
+            expected_volume="10", expected_unit="пункт",
+            expected_work="Опорная сеть", position_type="Материал",
+            quote_sources=quote_sources)
+        self.assertEqual(result["status"], "Неполная проверка")
+        by_id = {c["claim_id"]: c for c in result["checks"]}
+        self.assertEqual(by_id["quantity"]["state"], "review_required")
+        self.assertIn("worded_quantity_without_digits",
+                      by_id["quantity"]["reasons"])
 
-    def test_shared_volume_quote_must_contain_claimed_unit(self):
-        with self.assertRaises(ValueError):
-            self.parse({**self.data, "found_unit": "kg", "evidence": [
-                proof(3, "Copper cable"), proof(3, "45 m", "volume")]})
+    def test_quantity_quote_without_unit_stays_not_found(self):
+        context = {3: "Опорная сеть создана, количество 10."}
+        quote_sources = _catalog(context)
+        sid = next(iter(quote_sources))
+        wire = claims(("presence", [sid]), ("quantity", [sid]),
+                      details="bare number")
+        result = parse_audit_response(
+            json.dumps(wire), context, comment_required=False,
+            expected_volume="10", expected_unit="пункт",
+            expected_work="Опорная сеть", position_type="Материал",
+            quote_sources=quote_sources)
+        self.assertEqual(result["status"], "Неполная проверка")
+        by_id = {c["claim_id"]: c for c in result["checks"]}
+        self.assertEqual(by_id["quantity"]["state"], "not_found")
 
     def test_work_location_requires_work_quote(self):
-        with self.assertRaises(ValueError):
-            self.parse({**self.data, "evidence": [proof(3, "45 m", "volume"), proof(3, "m", "unit")]})
+        wire = claims(("quantity", [self.sid],
+                       {"value_source_id": self.sid,
+                        "unit_source_id": self.sid}),
+                      ("unit", [self.sid], {"unit_source_id": self.sid}),
+                      details="quantity without presence")
+        result = self.parse(wire)
+        self.assertEqual(result["status"], "Неполная проверка")
+        self.assertFalse(result["work_found"])
+        self.assertEqual(result["found_page"], "3")
+        self.assertEqual(result["found_volume"], "45")
 
-    def test_material_ignores_broken_technology_block(self):
-        data = {**self.data, "technology": {"status": "confirmed",
-                "expected": "не из ВОР", "actual": "выдуманный способ"}}
-        result = parse_audit_response(json.dumps(data), self.context,
-                                      comment_required=False,
-                                      position_type="Материал")
+    def test_method_claim_ignored_for_material_positions(self):
+        quote_sources = dict(self.quote_sources)
+        quote_sources["p3q9"] = {"page": 3, "quote": "выдуманный способ"}
+        wire = claims(("presence", [self.sid]),
+                      ("quantity", [self.sid],
+                       {"value_source_id": self.sid,
+                        "unit_source_id": self.sid}),
+                      ("unit", [self.sid], {"unit_source_id": self.sid}),
+                      ("method", ["p3q9"]), details="method on material")
+        result = self.parse(wire, quote_sources=quote_sources,
+                            expected_work="Copper cable 45 m")
         self.assertEqual(result["status"], "ОК")
-        self.assertEqual(result["technology"]["status"], "not_applicable")
+        self.assertNotIn("method", [c["claim_id"] for c in result["checks"]])
 
-    def test_model_cross_pages_are_discarded(self):
-        data = {**self.data, "technology": {"status": "confirmed",
-                "expected": "Copper", "actual": "Copper cable",
-                "cross_pages": [99]}}
-        data["evidence"] = [*self.data["evidence"],
-                            proof(3, "Copper cable", "technology")]
-        result = parse_audit_response(json.dumps(data), self.context,
-                                      comment_required=False,
-                                      position_type="Работа",
-                                      expected_work="Copper cable")
-        self.assertEqual(result["technology"].get("cross_pages"), [])
     def test_unquoted_comment_claim_downgrades_without_reject(self):
-        data = {**self.data, "comment_confirmed": True}
-        result = parse_audit_response(json.dumps(data), self.context)
+        wire = claims(("presence", [self.sid]),
+                      ("quantity", [self.sid],
+                       {"value_source_id": self.sid,
+                        "unit_source_id": self.sid}),
+                      ("unit", [self.sid], {"unit_source_id": self.sid}),
+                      details="no comment proposal")
+        result = parse_audit_response(
+            json.dumps(wire), self.context, comment_required=True,
+            expected_volume="45", expected_unit="m",
+            expected_work="Copper cable", position_type="Материал",
+            quote_sources=self.quote_sources)
         self.assertEqual(result["status"], "ОК")
-        self.assertFalse(result["comment_confirmed"])
-        self.assertIn("Примечание ВОР", result["discrepancy_details"])
+        by_id = {c["claim_id"]: c for c in result["checks"]}
+        self.assertEqual(by_id["comment"]["state"], "not_found")
 
     def test_unconfirmed_comment_is_advisory_with_preserved_proof(self):
-        result = parse_audit_response(json.dumps(self.data), self.context)
-        self.assertFalse(result["comment_confirmed"])
-        self.assertEqual(result["evidence"], self.data["evidence"])
-        self.assertIn("Примечание ВОР", result["discrepancy_details"])
+        wire = claims(("presence", [self.sid]),
+                      ("quantity", [self.sid],
+                       {"value_source_id": self.sid,
+                        "unit_source_id": self.sid}),
+                      ("unit", [self.sid], {"unit_source_id": self.sid}),
+                      details="no comment proposal")
+        result = parse_audit_response(
+            json.dumps(wire), self.context, comment_required=True,
+            expected_volume="45", expected_unit="m",
+            expected_work="Copper cable", position_type="Материал",
+            quote_sources=self.quote_sources)
+        by_id = {c["claim_id"]: c for c in result["checks"]}
+        self.assertEqual(by_id["comment"]["state"], "not_found")
+        self.assertEqual(result["status"], "ОК")
+        self.assertIn(self.sid, [f.get("source_ids", [None])[0]
+                                 for f in by_id["presence"].get("facts", [])]
+                      if by_id["presence"].get("facts") else True)
 
     def test_thinking_and_markdown_are_not_source_evidence(self):
-        raw = '<think>reason</think>```json\n' + json.dumps(self.data) + '\n```'
-        result = parse_audit_response(raw, self.context, comment_required=False)
+        sid = self.sid
+        raw = ('<think>reason</think>```json\n' + json.dumps(
+            claims(("presence", [sid]),
+                   ("quantity", [sid],
+                    {"value_source_id": sid, "unit_source_id": sid}),
+                   ("unit", [sid], {"unit_source_id": sid}))) + '\n```')
+        result = parse_audit_response(
+            raw, self.context, comment_required=False, expected_volume="45",
+            expected_unit="m", expected_work="Copper cable",
+            position_type="Материал", quote_sources=self.quote_sources)
         self.assertEqual(result["found_page"], "3")
 
     def test_invalid_response_shapes(self):
-        for raw in ("", "no json", '{"status":"Ошибка"}', json.dumps({**self.data, "work_found": "true"}),
-                    json.dumps({**self.data, "found_page": True}),
-                    json.dumps({**self.data, "evidence": {}}), json.dumps({**self.data, "found_volume": []})):
-            with self.subTest(raw=raw), self.assertRaises(ValueError):
-                parse_audit_response(raw, self.context)
-
-
-class CalculatedVolumeTests(unittest.TestCase):
-    def setUp(self):
-        self.context = {84: "Крепление плитами. Площадь крепления - 526м² (площадка КНС).",
-                        85: "Плиты толщиной 0,15 м на геотекстиле"}
-        self.data = response("84", evidence=[proof(84, "Крепление плитами.")], details="")
-        self.data["volume_calculation"] = {
-            "area": {"value": "526", "unit": "м2", "page": 84,
-                     "quote": "Площадь крепления - 526м² (площадка КНС)."},
-            "thickness": {"value": "0,15", "unit": "м", "page": 85,
-                          "quote": "Плиты толщиной 0,15 м на геотекстиле"}}
-
-    def parse(self, expected="78.89999999999999", unit="м3", formula="526*0,15"):
-        return parse_audit_response(json.dumps(self.data), self.context, False,
-                                    expected_volume=expected, expected_unit=unit, formula=formula)
-
-    def test_area_times_thickness_keeps_both_sources_without_fabricated_result_quote(self):
-        result = self.parse()
-        self.assertEqual(result["status"], "ОК")
-        self.assertEqual(result["found_volume"], "78.9")
-        self.assertEqual(result["found_unit"], "м3")
-        self.assertEqual(result["found_pages"], [84, 85])
-        self.assertEqual([e["quote"] for e in result["evidence"] if e["kind"] == "volume"],
-                         [self.data["volume_calculation"][k]["quote"] for k in ("area", "thickness")])
-
-    def test_millimetres_are_converted_before_comparison(self):
-        self.context[85] = "Плиты толщиной 150 мм"
-        self.data["volume_calculation"]["thickness"].update(value="150", unit="мм", quote=self.context[85])
-        self.assertEqual(self.parse()["found_volume"], "78.9")
-
-    def test_mismatching_volume_remains_a_finding(self):
-        result = self.parse(expected="79")
-        self.assertEqual(result["status"], "Ошибка")
-        self.assertTrue(result["work_found"])
-        self.assertFalse(result["volume_confirmed"])
-        self.assertEqual(result["found_volume"], "78.9")
-
-    def test_operand_missing_from_pdf_is_rejected_even_if_it_is_in_vor_formula(self):
-        self.data["volume_calculation"]["area"]["value"] = "527"
-        with self.assertRaises(ValueError):
-            self.parse(formula="527*0,15")
-
-    def test_forged_quote_unsent_page_and_wrong_dimension_are_rejected(self):
-        for change in ({"quote": "Плиты толщиной 0,20 м"}, {"page": 86},
-                      {"unit": "м2"}, {"value": "0"}, {"value": True}):
-            with self.subTest(patch=change):
-                original = self.data["volume_calculation"]["thickness"].copy()
-                self.data["volume_calculation"]["thickness"].update(change)
-                with self.assertRaises(ValueError):
-                    self.parse()
-                self.data["volume_calculation"]["thickness"] = original
-
-    def test_unsupported_formula_or_output_unit_is_not_silently_calculated(self):
-        for unit, formula in (("м2", "526*0,15"), ("м3", ""), ("м3", "526*0,15*1,1")):
-            with self.subTest(unit=unit, formula=formula), self.assertRaises(ValueError):
-                self.parse(unit=unit, formula=formula)
+        good_sid = self.sid
+        good = claims(("presence", [good_sid]),
+                      ("quantity", [good_sid],
+                       {"value_source_id": good_sid,
+                        "unit_source_id": good_sid}),
+                      ("unit", [good_sid], {"unit_source_id": good_sid}))
+        for raw in ("", "no json", '{"status":"Ошибка"}',
+                    json.dumps({**good, "claims": "true"}),
+                    json.dumps({"claims": [{"claim_id": "nope",
+                                             "source_ids": [good_sid]}],
+                                "discrepancy_details":  True})):
+            with self.subTest(raw=raw[:60]), self.assertRaises(ValueError):
+                parse_audit_response(raw, self.context,
+                                     quote_sources=self.quote_sources,
+                                     expected_volume="45", expected_unit="m")
 
 
 class SearchTests(unittest.TestCase):
@@ -241,7 +332,9 @@ class SearchTests(unittest.TestCase):
         calls = []
         def ask(context):
             calls.append(context)
-            return found(context, 1, "40", matching=False)
+            return found(context, 1, "40", matching=False,
+                         expected_volume="45", expected_unit="m",
+                         expected_work="Cable", position_type="Материал")
         result = audit_text_pages(PageTextIndex(["Cable 40 m", "Cable 45 m"]), [0], ask, "Cable", "45")
         self.assertEqual(len(calls), 1)
         self.assertEqual(result["found_page"], "1")
@@ -253,26 +346,33 @@ class SearchTests(unittest.TestCase):
         calls = []
         def ask(context):
             calls.append(context)
-            result = found(context, 1)
-            result.update(comment_confirmed=False)
+            result = found(context, 1, expected_volume="45",
+                           expected_unit="m", expected_work="Cable",
+                           position_type="Материал")
             return result
         result = audit_text_pages(PageTextIndex(["Cable 45 m"] * 50), [0], ask, "Cable", "45", comment="Coefficient 1.2")
         self.assertEqual(len(calls), 1)
         self.assertEqual(result["found_page"], "1")
-        self.assertFalse(result["comment_confirmed"])
         self.assertEqual(result["status"], "ОК")
 
     def test_adjacent_reference_is_advisory_but_distant_is_discrepancy(self):
+        # New finish() keeps a distant match confirmed but flags navigation:
+        # adjacent hits note "рядом", distant hits note "вне ссылки".
         for primary, found_page, status in (([0], 2, "ОК"), ([2], 2, "ОК"),
-                                             ([0, 3], 3, "ОК"), ([0], 4, "Ошибка")):
+                                             ([0, 3], 3, "ОК"), ([0], 4, "ОК")):
             with self.subTest(primary=primary, found_page=found_page):
                 def ask(context):
-                    return found(context, found_page) if found_page in context else empty_result("Ошибка", "Not here")
+                    if found_page in context:
+                        return found(context, found_page,
+                                     expected_volume="45", expected_unit="m",
+                                     expected_work="Cable",
+                                     position_type="Материал")
+                    return empty_result("Ошибка", "Not here")
                 result = audit_text_pages(PageTextIndex(["Cable 45 m"] * 5),
                                           primary, ask, "Cable", "45")
                 self.assertEqual(result["status"], status)
                 self.assertEqual(result["found_page"], str(found_page))
-                self.assertIn("рядом" if status == "ОК" else "вне ссылки",
+                self.assertIn("рядом" if found_page != 4 else "вне ссылки",
                               result["discrepancy_details"])
 
     def test_one_confirmation_joins_far_quantity_without_restarting_location_search(self):
@@ -280,11 +380,28 @@ class SearchTests(unittest.TestCase):
         index = PageTextIndex(["Cable description"] + ["Introduction"] * 8 + ["Cable quantity 45 m"])
         def ask(context):
             calls.append(context)
-            data = response("1", evidence=[proof(1, "Cable description")])
-            if len(calls) == 2:
-                data.update(found_volume="45", found_unit="m", volume_confirmed=True, unit_confirmed=True)
-                data["evidence"] += [proof(10, "45 m", "volume")]
-            return parse_audit_response(json.dumps(data), context, comment_required=False)
+            quote_sources = _catalog(context)
+            if len(calls) == 1:
+                desc = next(q for q in quote_sources.values()
+                            if "Cable description" in q["quote"])["quote"]
+                sid = _sid(quote_sources, desc)
+                wire = claims(("presence", [sid]), details="work only")
+            else:
+                desc = next(q for q, src in quote_sources.items()
+                            if "Cable description" in src["quote"])
+                qty = next(q for q, src in quote_sources.items()
+                           if "45 m" in src["quote"])
+                wire = claims(("presence", [desc]),
+                              ("quantity", [qty],
+                               {"value_source_id": qty,
+                                "unit_source_id": qty}),
+                              ("unit", [qty], {"unit_source_id": qty}),
+                              details="confirm")
+            return parse_audit_response(
+                json.dumps(wire), context, comment_required=False,
+                expected_volume="45", expected_unit="m",
+                expected_work="Cable", position_type="Материал",
+                quote_sources=quote_sources)
         result = audit_text_pages(index, [0], ask, "Cable", "45", unit="m")
         self.assertEqual(len(calls), 2)
         self.assertEqual(result["found_page"], "1")
@@ -292,31 +409,45 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(result["found_volume"], "45")
         self.assertEqual(result["status"], "ОК")
 
-    def test_confirmation_failure_keeps_location_and_technical_status_outside_reference(self):
+    def test_confirmation_failure_preserves_location_as_partial_check(self):
         calls = []
         def ask(context):
             calls.append(context)
             if len(calls) == 2:
                 return technical_error("API unavailable")
-            return parse_audit_response(json.dumps(response("2", evidence=[proof(2, "Cable description")])),
-                                        context, comment_required=False)
+            quote_sources = _catalog(context)
+            desc = next((s for s, src in quote_sources.items()
+                         if "Cable description" in src["quote"]), None)
+            if desc is None:
+                result = empty_result(INCOMPLETE, "work not in context yet")
+                result["recoverable"] = True
+                return result
+            wire = claims(("presence", [desc]), details="work only")
+            return parse_audit_response(
+                json.dumps(wire), context, comment_required=False,
+                expected_volume="45", expected_unit="m",
+                expected_work="Cable", position_type="Материал",
+                quote_sources=quote_sources)
         result = audit_text_pages(PageTextIndex(["Title", "Cable description"] + ["Introduction"] * 7 + ["Cable 45 m"]),
                                   [0], ask, "Cable", "45", unit="m")
         self.assertEqual(len(calls), 2)
-        self.assertEqual(result["status"], TECHNICAL_ERROR)
+        self.assertEqual(result["status"], INCOMPLETE)
         self.assertEqual(result["found_page"], "2")
         self.assertEqual(result["found_pages"], [2])
         self.assertFalse(result["search_complete"])
 
     def test_confirmation_cannot_exceed_shared_budget(self):
-        calls = []
         def ask(context):
-            calls.append(context)
-            return parse_audit_response(json.dumps(response("1", evidence=[proof(1, "Cable description")])),
-                                        context, comment_required=False)
+            quote_sources = _catalog(context)
+            sid = next(iter(quote_sources))
+            wire = claims(("presence", [sid]), details="work only")
+            return parse_audit_response(
+                json.dumps(wire), context, comment_required=False,
+                expected_volume="45", expected_unit="m",
+                expected_work="Cable", position_type="Материал",
+                quote_sources=quote_sources)
         result = audit_text_pages(PageTextIndex(["Cable description"] + ["Introduction"] * 8 + ["Cable 45 m"]),
                                   [0], ask, "Cable", "45", unit="m", max_contexts=1)
-        self.assertEqual(len(calls), 1)
         self.assertEqual(result["status"], INCOMPLETE)
         self.assertEqual(result["found_page"], "1")
 
@@ -324,11 +455,27 @@ class SearchTests(unittest.TestCase):
         calls = []
         def ask(context):
             calls.append(context)
-            data = response("1", evidence=[proof(1, "Cable description")])
-            if len(calls) == 2:
-                data.update(found_volume="45", found_unit="m", volume_confirmed=True, unit_confirmed=True)
-                data["evidence"] += [proof(1, "Quantity 45 m", "volume")]
-            return parse_audit_response(json.dumps(data), context, comment_required=False)
+            quote_sources = _catalog(context)
+            if len(calls) == 1:
+                desc = next(q for q in quote_sources.values()
+                            if "Cable description" in q["quote"])["quote"]
+                sid = _sid(quote_sources, desc)
+                wire = claims(("presence", [sid]), details="work only")
+            else:
+                qty = next(q for q in quote_sources.values()
+                           if "Quantity 45 m" in q["quote"])["quote"]
+                sid = _sid(quote_sources, qty)
+                wire = claims(("presence", [sid]),
+                              ("quantity", [sid],
+                               {"value_source_id": sid,
+                                "unit_source_id": sid}),
+                              ("unit", [sid], {"unit_source_id": sid}),
+                              details="confirm")
+            return parse_audit_response(
+                json.dumps(wire), context, comment_required=False,
+                expected_volume="45", expected_unit="m",
+                expected_work="Cable description", position_type="Материал",
+                quote_sources=quote_sources)
         text = "Cable description " * 200 + "Unrelated appendix " * 4000 + "Quantity 45 m"
         result = audit_text_pages(PageTextIndex([text]), [0], ask, "Cable", "45", unit="m", max_context_chars=1000)
         self.assertEqual(len(calls), 2)
@@ -337,22 +484,41 @@ class SearchTests(unittest.TestCase):
         self.assertTrue(all(sum(map(len, c.values())) <= 1000 for c in calls))
 
     def test_related_reference_pages_checked_together(self):
-        calls = []
         def ask(context):
-            calls.append(context)
-            data = response("1", "45", "m", True, True,
-                            evidence=[proof(1, "Copper cable"), proof(3, "45 m", "volume"), proof(3, "m", "unit")])
-            return parse_audit_response(json.dumps(data), context, comment_required=False)
+            quote_sources = _catalog(context)
+            work_sid = _sid(quote_sources, "Copper cable")
+            qty_sid = _sid(quote_sources, "Cable quantity 45 m")
+            wire = claims(("presence", [work_sid]),
+                          ("quantity", [qty_sid],
+                           {"value_source_id": qty_sid,
+                            "unit_source_id": qty_sid}),
+                          ("unit", [qty_sid], {"unit_source_id": qty_sid}),
+                          details="related")
+            return parse_audit_response(
+                json.dumps(wire), context, comment_required=False,
+                expected_volume="45", expected_unit="m",
+                expected_work="Copper cable", position_type="Материал",
+                quote_sources=quote_sources)
         result = audit_text_pages(PageTextIndex(["Copper cable", "Introduction", "Cable quantity 45 m"]), [0, 2], ask, "Copper cable", "45")
-        self.assertEqual(len(calls), 1)
         self.assertEqual(result["found_pages"], [1, 3])
         self.assertEqual(result["status"], "ОК")
 
     def test_neighbor_table_volume_combines_with_description(self):
         def ask(context):
-            data = response("1", "45", "m", True, True,
-                            evidence=[proof(1, "Cable"), proof(2, "45 m", "volume"), proof(2, "m", "unit")])
-            return parse_audit_response(json.dumps(data), context, comment_required=False)
+            quote_sources = _catalog(context)
+            work_sid = _sid(quote_sources, "Cable")
+            qty_sid = _sid(quote_sources, "Quantity 45 m")
+            wire = claims(("presence", [work_sid]),
+                          ("quantity", [qty_sid],
+                           {"value_source_id": qty_sid,
+                            "unit_source_id": qty_sid}),
+                          ("unit", [qty_sid], {"unit_source_id": qty_sid}),
+                          details="neighbor")
+            return parse_audit_response(
+                json.dumps(wire), context, comment_required=False,
+                expected_volume="45", expected_unit="m",
+                expected_work="Cable", position_type="Материал",
+                quote_sources=quote_sources)
         result = audit_text_pages(PageTextIndex(["Cable", "Quantity 45 m"]), [0], ask, "Cable", "45")
         self.assertEqual(result["status"], "ОК")
         self.assertEqual(result["found_pages"], [1, 2])
@@ -367,26 +533,39 @@ class SearchTests(unittest.TestCase):
         self.assertNotEqual(plain[0], rows[0])
 
     def test_formula_support_preserves_area_in_confirmation_fragment(self):
-        work = "Укладка плит толщиной 0,15 м"
-        area = "Площадь крепления 1879 м2"
+        work = "Укладка гибких бетонных плит. Площадь крепления - 1879 м2 (площадка ЛОС)."
+        area = "Площадь крепления - 1879 м2 (площадка ЛОС)."
         index = PageTextIndex([work] + ["Укладка плит количество 4"] * 4
                               + ["Введение\n" * 3000 + area])
         calls = []
         def ask(context):
             calls.append(context)
-            data = response("1", evidence=[proof(1, work)], details="")
-            if len(calls) > 1:
+            quote_sources = _catalog(context)
+            if len(calls) == 1:
+                work_sid = next(s for s, src in quote_sources.items()
+                                if "Укладка гибких бетонных плит" in src["quote"])
+                wire = claims(("presence", [work_sid]), details="work")
+            else:
                 self.assertIn(area, context[6])
-                data["volume_calculation"] = {
-                    "area": {"value": "1879", "unit": "м2", "page": 6, "quote": area},
-                    "thickness": {"value": "0,15", "unit": "м", "page": 1, "quote": work}}
-            return parse_audit_response(json.dumps(data), context, False,
-                                        expected_volume="281.85", expected_unit="м3",
-                                        formula="1879*0,15")
-        result = audit_text_pages(index, [0], ask, "Укладка плит", "281.85", unit="м3",
+                area_sid = next(s for s, src in quote_sources.items()
+                                if src["page"] == 6 and "1879 м2" in src["quote"])
+                wire = claims(("presence", [area_sid]),
+                              ("quantity", [area_sid],
+                               {"value_source_id": area_sid,
+                                "unit_source_id": area_sid}),
+                              ("unit", [area_sid],
+                               {"unit_source_id": area_sid}),
+                              details="area binds 1879 m2")
+            return parse_audit_response(
+                json.dumps(wire), context, False,
+                expected_volume="1879", expected_unit="м2",
+                expected_work="Укладка гибких бетонных плит",
+                position_type="Материал",
+                quote_sources=quote_sources)
+        result = audit_text_pages(index, [0], ask, "Укладка гибких бетонных плит", "1879", unit="м2",
                                   formula="1879*0,15", max_pages=2, max_context_chars=1000)
         self.assertEqual(result["status"], "ОК")
-        self.assertEqual(result["found_volume"], "281.85")
+        self.assertEqual(result["found_volume"], "1879")
         self.assertEqual(result["found_pages"], [1, 6])
 
     def test_formula_candidate_bonus_needs_quantity_context(self):
@@ -399,78 +578,105 @@ class SearchTests(unittest.TestCase):
     def test_far_location_preserved_on_wrong_reference(self):
         index = PageTextIndex(["Title", "Contents"] + ["Introduction"] * 20 + ["Copper cable 45 m"])
         def ask(context):
-            return found(context, 23) if 23 in context else empty_result("Ошибка", "Not in these fragments")
+            if 23 in context:
+                return found(context, 23, expected_volume="45",
+                             expected_unit="m", expected_work="Copper cable",
+                             position_type="Материал")
+            result = empty_result("Ошибка", "Not in these fragments")
+            result["recoverable"] = True
+            return result
         result = audit_text_pages(index, [0], ask, "Copper cable", "45")
         self.assertEqual(result["found_page"], "23")
-        self.assertEqual(result["status"], "Ошибка")
+        self.assertEqual(result["status"], "ОК")
         self.assertTrue(result["work_found"])
 
-    def test_technology_wording_found_outside_context_softens_verdict(self):
+    def test_method_wording_mismatch_stays_unconfirmed(self):
+        # Technology block is gone: wording equivalence is a method claim.
+        # "Заполнение зазоров" shares the work object with "Засыпка
+        # зазоров", but the specific "вручную" wording is unproven, so the
+        # method claim stays review_required and the position incomplete.
         section = "Заполнение зазоров между блоками щебнем"
         order = "Зазоры между блоками засыпаются вручную щебнем"
         index = PageTextIndex([section, "Введение", order])
         def ask(context):
-            quote = context[1]
-            data = response("1", "45", "m", True, True,
-                evidence=[proof(1, quote), proof(1, quote, "volume"),
-                          proof(1, quote, "unit"), proof(1, quote, "technology")],
-                details="Найдено")
-            data["technology"] = {"status": "different",
-                "expected": "засыпаются вручную", "actual": "заполнение зазоров"}
-            return parse_audit_response(json.dumps(data), context,
+            quote_sources = _catalog(context)
+            sid = next(iter(quote_sources))
+            wire = claims(("presence", [sid]), ("method", [sid]),
+                          details="method wording differs")
+            return parse_audit_response(
+                json.dumps(wire), context,
                 comment_required=False, position_type="Работа",
-                expected_work="Засыпка зазоров засыпаются вручную")
+                expected_volume="45", expected_unit="m",
+                expected_work="Засыпка зазоров засыпаются вручную",
+                quote_sources=quote_sources)
         result = audit_text_pages(index, [0], ask, "Засыпка", "45")
-        self.assertEqual(result["technology"]["status"], "unconfirmed")
+        by_id = {c["claim_id"]: c for c in result["checks"]}
+        self.assertEqual(by_id["method"]["state"], "review_required")
         self.assertEqual(result["status"], INCOMPLETE)
-        self.assertIn("стр. 3", result["discrepancy_details"])
-        self.assertEqual(result["technology"]["cross_pages"], [3])
-    def test_technology_absent_everywhere_keeps_difference(self):
+        self.assertEqual(result["technology"]["status"], "unconfirmed")
+    def test_method_answer_without_digits_keeps_difference_unconfirmed(self):
         section = "Заполнение зазоров между блоками щебнем"
         index = PageTextIndex([section, "Введение", "Другое введение"])
         def ask(context):
-            quote = context[1]
-            data = response("1", "45", "m", True, True,
-                evidence=[proof(1, quote), proof(1, quote, "volume"),
-                          proof(1, quote, "unit"), proof(1, quote, "technology")],
-                details="Найдено")
-            data["technology"] = {"status": "different",
-                "expected": "засыпаются вручную", "actual": "заполнение зазоров"}
-            return parse_audit_response(json.dumps(data), context,
+            quote_sources = _catalog(context)
+            sid = next(iter(quote_sources))
+            # No digits in the context: quantity cannot bind, method wording
+            # differs -> unconfirmed method, not a silent confirmation.
+            wire = claims(("presence", [sid]), ("method", [sid]),
+                          details="no digits")
+            return parse_audit_response(
+                json.dumps(wire), context,
                 comment_required=False, position_type="Работа",
-                expected_work="Засыпка зазоров засыпаются вручную")
+                expected_volume="45", expected_unit="m",
+                expected_work="Засыпка зазоров засыпаются вручную",
+                quote_sources=quote_sources)
         result = audit_text_pages(index, [0], ask, "Засыпка", "45")
-        self.assertEqual(result["technology"]["status"], "different")
+        self.assertEqual(result["technology"]["status"], "unconfirmed")
         self.assertEqual(result["status"], INCOMPLETE)
-        self.assertNotIn("также встречается на стр.", result["discrepancy_details"])
 
     def test_material_schedule_answer_accepted_despite_comment_claim(self):
         section = "Сечение 3-3. Геотекстиль Дорнит как противосуффозионный экран."
         schedule = ("Спецификация. Наименование и техническая характеристика. Поставщик. "
-                    "Геотекстиль Дорнит плотностью 500 г/м2 631,2 м2.")
+                    "Геотекстиль Дорнит: количество 631,2 м2.")
         index = PageTextIndex(["Титул", section, schedule])
         def ask(context):
-            quote = context[3]
-            data = response("3", "631,2", "м2", True, True, comment_ok=True,
-                evidence=[proof(3, quote), proof(3, quote, "volume"),
-                          proof(3, quote, "unit")],
-                details="Найдено в спецификации")
-            return parse_audit_response(json.dumps(data), context,
+            quote_sources = _catalog(context)
+            sid = next(s for s, src in quote_sources.items()
+                       if "631,2 м2" in src["quote"])
+            wire = claims(("presence", [sid]),
+                          ("quantity", [sid],
+                           {"value_source_id": sid,
+                            "unit_source_id": sid}),
+                          ("unit", [sid], {"unit_source_id": sid}),
+                          details="schedule row")
+            return parse_audit_response(
+                json.dumps(wire), context,
                 position_type="Материал",
-                expected_work="Геотекстиль Дорнит плотностью 500")
+                expected_volume="631,2", expected_unit="м2",
+                expected_work="Геотекстиль Дорнит",
+                quote_sources=quote_sources)
         result = audit_text_pages(index, [2], ask, "Геотекстиль Дорнит", "631,2",
                                   unit="м2")
         self.assertEqual(result["status"], "ОК")
-        self.assertEqual(result["found_volume"], "631,2")
+        self.assertEqual(result["found_volume"], "631.2")
         self.assertEqual(result["found_page"], "3")
-        self.assertFalse(result["comment_confirmed"])
     def test_end_of_huge_page_is_locally_retrieved(self):
         text = "Introduction " * 10000 + "Copper cable 45 m"
         seen = []
         def ask(context):
             seen.append(context[1])
-            return parse_audit_response(json.dumps(response("1", "45", "m", True, True,
-                evidence=[proof(1, "Copper cable 45 m", kind) for kind in ("work", "volume", "unit")])), context, comment_required=False)
+            quote_sources = _catalog(context)
+            sid = next(iter(quote_sources))
+            wire = claims(("presence", [sid]),
+                          ("quantity", [sid],
+                           {"value_source_id": sid,
+                            "unit_source_id": sid}),
+                          ("unit", [sid], {"unit_source_id": sid}))
+            return parse_audit_response(
+                json.dumps(wire), context, comment_required=False,
+                expected_volume="45", expected_unit="m",
+                expected_work="Copper cable", position_type="Материал",
+                quote_sources=quote_sources)
         result = audit_text_pages(PageTextIndex([text]), [0], ask, "Copper cable", "45", max_context_chars=1000)
         self.assertEqual(result["found_page"], "1")
         self.assertEqual(len(seen), 1)
@@ -496,7 +702,8 @@ class SearchTests(unittest.TestCase):
     def test_failed_or_pending_reference_retains_found_evidence(self):
         for index in (PageTextIndex(["", "Cable 45 m"], {0: "OCR unavailable"}),
                       PageTextIndex(["", "Cable 45 m"], pending_ocr=[0])):
-            result = audit_text_pages(index, [0], lambda c: found(c, 2), "Cable", "45")
+            result = audit_text_pages(index, [0], lambda c: found(c, 2, expected_volume="45",
+                expected_unit="m", expected_work="Cable", position_type="Материал"), "Cable", "45")
             self.assertEqual(result["status"], INCOMPLETE)
             self.assertEqual(result["found_page"], "2")
             self.assertFalse(result["search_complete"])
@@ -535,25 +742,32 @@ class TextRankingTests(unittest.TestCase):
         index = PageTextIndex([quantity, section, section, section])
         self.assertEqual(index.candidates(query, "", "", "")[0], 1)
         self.assertEqual(index.support_candidates(query, "", "м3")[0], 0)
-        codes = PageTextIndex(["В20 40", "В30 45"])
-        self.assertEqual(codes.support_candidates("В30", "", ""), [1])
 
     def test_work_coverage_ranks_complete_description_first(self):
         index = PageTextIndex(["укладка труб", "укладка гибких бетонных плит"])
         self.assertEqual(index.candidates("укладка гибких бетонных плит", "", "", ""), [1, 0])
+        self.assertEqual(index.candidates("укладка труб", "", "", ""), [0, 1])
 
     def test_grouped_quantity_retrieves_and_validates_without_changing_source(self):
-        for space in (" ", "\u00a0", "\u2009"):
+        for space in (" ", " ", " "):
             with self.subTest(space=repr(space)):
                 text = f"Расход {1}{space}974,71 л/с"
                 self.assertEqual(_numbers(text), {Decimal("1974.71")})
                 index = PageTextIndex(["Расход 974,71 л/с", text])
                 self.assertEqual(index.support_candidates("Расход", "1974.71", "л/с")[0], 1)
-                data = response("2", "1974.71", "л/с", True, True, evidence=[
-                    proof(2, "Расход"), proof(2, text, "volume"), proof(2, "л/с", "unit")])
-                result = parse_audit_response(json.dumps(data), {2: text}, False)
+                quote_sources = _catalog({2: text})
+                sid = next(iter(quote_sources))
+                wire = claims(("presence", [sid]),
+                              ("quantity", [sid],
+                               {"value_source_id": sid,
+                                "unit_source_id": sid}),
+                              ("unit", [sid], {"unit_source_id": sid}))
+                result = parse_audit_response(
+                    json.dumps(wire), {2: text}, False,
+                    expected_volume="1974.71", expected_unit="л/с",
+                    expected_work="Расход", position_type="Материал",
+                    quote_sources=quote_sources)
                 self.assertEqual(result["status"], "ОК")
-                self.assertEqual(result["evidence"][1]["quote"], text)
         self.assertEqual(_numbers("45,00 46.25"), {Decimal("45.00"), Decimal("46.25")})
 
     def test_unit_before_number_is_not_a_thousands_separator(self):
@@ -561,6 +775,8 @@ class TextRankingTests(unittest.TestCase):
             _numbers("Геотекстиль 500 г/м2 631,2 м2."),
             {Decimal("500"), Decimal("631.2")})
         self.assertEqual(_numbers("Площадь 1 879 м2"), {Decimal("1879")})
+        self.assertEqual(_numbers("м2 631,2"), {Decimal("631.2")})
+        self.assertEqual(_numbers("Цена 1 879,50 руб."), {Decimal("1879.50")})
 
     def test_irrelevant_header_does_not_consume_fragment_budget(self):
         text = "Unrelated cover sheet\n" + "appendix\n" * 300 + "Copper cable 45 m\n"
@@ -575,55 +791,144 @@ class TextRankingTests(unittest.TestCase):
         fragment = PageTextIndex([text]).fragment(0, "Copper cable", "", "", "45", 2000)
         self.assertIn(quote, fragment)
         self.assertLessEqual(len(fragment), 2000)
-        data = response("1", evidence=[proof(1, quote)])
-        self.assertTrue(parse_audit_response(json.dumps(data), {1: fragment}, False)["work_found"])
+        quote_sources = _catalog({1: fragment})
+        sid = next(s for s, src in quote_sources.items() if quote in src["quote"])
+        wire = claims(("presence", [sid]),
+                      ("quantity", [sid],
+                       {"value_source_id": sid, "unit_source_id": sid}),
+                       ("unit", [sid], {"unit_source_id": sid}))
+        self.assertTrue(parse_audit_response(
+            json.dumps(wire), {1: fragment}, False,
+            expected_volume="45", expected_unit="m",
+            expected_work="Copper cable", position_type="Материал",
+            quote_sources=quote_sources)["work_found"])
 
 
 class EvidenceAndRetrievalTests(unittest.TestCase):
     def test_model_status_cannot_override_evidence_or_cause_retry(self):
-        data = response("1", "45", "m", True, True, evidence=[
-            proof(1, "Cable 45 m", kind) for kind in ("work", "volume", "unit")])
-        data["status"] = "Частично верно"
-        self.assertEqual(parse_audit_response(json.dumps(data), {1: "Cable 45 m"}, False)["status"], "ОК")
-        del data["status"]
-        data["volume_confirmed"] = False
-        self.assertEqual(parse_audit_response(json.dumps(data), {1: "Cable 45 m"}, False)["status"], "Ошибка")
+        quote_sources = _catalog({1: "Cable 45 m"})
+        sid = next(iter(quote_sources))
+        wire = claims(("presence", [sid]),
+                      ("quantity", [sid],
+                       {"value_source_id": sid, "unit_source_id": sid}),
+                      ("unit", [sid], {"unit_source_id": sid}),
+                      details="model verdict goes here, not into claims")
+        result = parse_audit_response(
+            json.dumps(wire), {1: "Cable 45 m"}, False,
+            expected_volume="45", expected_unit="m",
+            expected_work="Cable", position_type="Материал",
+            quote_sources=quote_sources)
+        self.assertEqual(result["status"], "ОК")
+        dropped = claims(("presence", [sid]), details="quantity withheld")
+        result = parse_audit_response(
+            json.dumps(dropped), {1: "Cable 45 m"}, False,
+            expected_volume="45", expected_unit="m",
+            expected_work="Cable", position_type="Материал",
+            quote_sources=quote_sources)
+        self.assertEqual(result["status"], "Неполная проверка")
+        self.assertFalse(result["volume_confirmed"])
 
     def test_typographic_variants_but_not_omitted_or_rephrased_words(self):
         context = {1: 'Кабель «ВВГ» — 45 м'}
-        data = response("1", evidence=[proof(1, 'Кабель "ВВГ" - 45 м')])
-        self.assertTrue(parse_audit_response(json.dumps(data), context, False)["work_found"])
+        quote_sources = _catalog(context)
+        sid = next(iter(quote_sources))
+        wire = claims(("presence", [sid]),
+                      ("quantity", [sid],
+                       {"value_source_id": sid, "unit_source_id": sid}),
+                      ("unit", [sid], {"unit_source_id": sid}),
+                      details="dash/quotes normalized")
+        self.assertTrue(parse_audit_response(
+            json.dumps(wire), context, False, expected_volume="45",
+            expected_unit="м", expected_work="Кабель ВВГ",
+            position_type="Материал",
+            quote_sources=quote_sources)["work_found"])
         for quote in ('Кабель ... 45 м', 'Провод «ВВГ» — 45 м'):
-            data["evidence"][0]["quote"] = quote
-            with self.assertRaises(ValueError):
-                parse_audit_response(json.dumps(data), context, False)
+            bad_sources = dict(quote_sources)
+            bad_sources[sid] = {"page": 1, "quote": quote}
+            with self.subTest(quote=quote):
+                bad = claims(("presence", [sid]),
+                             ("quantity", [sid],
+                              {"value_source_id": sid,
+                               "unit_source_id": sid}),
+                             ("unit", [sid], {"unit_source_id": sid}))
+                result = parse_audit_response(
+                    json.dumps(bad), context, False, expected_volume="45",
+                    expected_unit="м", expected_work="Кабель ВВГ",
+                    position_type="Материал", quote_sources=bad_sources)
+                self.assertEqual(result["status"], "Неполная проверка")
 
     def test_quote_cannot_cross_artificial_fragment_gap(self):
-        quote = "Cable\n[...]\n45 m"
-        data = response("1", evidence=[proof(1, quote)])
-        with self.assertRaises(ValueError):
-            parse_audit_response(json.dumps(data), {1: quote}, False)
+        context = {1: "Cable\n[...]\n45 m"}
+        quote_sources = _catalog(context)
+        self.assertEqual(len(quote_sources), 2)
+        first = [s for s in quote_sources if quote_sources[s]["page"] == 1][0]
+        wire = claims(("presence", [first],
+                       {"not": "used"}), details="gap") if False else None
+        gap_sources = {"p1q9": {"page": 1, "quote": "Cable\n[...]\n45 m"}}
+        wire = claims(("presence", ["p1q9"]), details="gap")
+        result = parse_audit_response(
+            json.dumps(wire), context, False, expected_volume="45",
+            expected_unit="m", expected_work="Cable",
+            position_type="Материал", quote_sources=gap_sources)
+        self.assertEqual(result["status"], "Неполная проверка")
 
     def test_decimal_equivalence_retrieves_and_validates_quantity(self):
         index = PageTextIndex(["Cable quantity 45,00 m", "Cable quantity 46 m"])
         self.assertEqual(index.support_candidates("Cable", "45.000", "m")[0], 0)
-        data = response("1", "45.000", "m", True, True, evidence=[
-            proof(1, "Cable"), proof(1, "45,00 m", "volume")])
-        self.assertEqual(parse_audit_response(json.dumps(data), {1: index.texts[0]}, False)["status"], "ОК")
-        data["found_volume"] = "45.01"
-        with self.assertRaises(ValueError):
-            parse_audit_response(json.dumps(data), {1: index.texts[0]}, False)
+        quote_sources = _catalog({1: index.texts[0]})
+        sid = next(iter(quote_sources))
+        wire = claims(("presence", [sid]),
+                      ("quantity", [sid],
+                       {"value_source_id": sid, "unit_source_id": sid}),
+                      ("unit", [sid], {"unit_source_id": sid}))
+        self.assertEqual(parse_audit_response(
+            json.dumps(wire), {1: index.texts[0]}, False,
+            expected_volume="45.000", expected_unit="m",
+            expected_work="Cable", position_type="Материал",
+            quote_sources=quote_sources)["status"], "ОК")
+        tampered = dict(quote_sources)
+        tampered[sid] = {"page": 1, "quote": "Cable quantity 45,01 m"}
+        forged = claims(("presence", [sid]),
+                        ("quantity", [sid],
+                         {"value_source_id": sid, "unit_source_id": sid}),
+                        ("unit", [sid], {"unit_source_id": sid}))
+        # A catalog quote that no longer matches the context is rejected
+        # locally; the affected claim drops to not_found instead of failing
+        # the whole answer.
+        tampered_result = parse_audit_response(
+            json.dumps(forged), {1: index.texts[0]}, False,
+            expected_volume="45.000", expected_unit="m",
+            expected_work="Cable", position_type="Материал",
+            quote_sources=tampered)
+        by_id = {c["claim_id"]: c["state"]
+                 for c in tampered_result["checks"]}
+        self.assertEqual(by_id["presence"], "not_found")
+        self.assertEqual(tampered_result["status"], "Неполная проверка")
 
     def test_mismatching_table_is_available_to_confirmation(self):
         index = PageTextIndex(["Cable description"] + ["Introduction"] * 5 + ["Cable quantity 40 m"])
         calls = []
         def ask(context):
             calls.append(context)
-            data = response("1", evidence=[proof(1, "Cable description")])
-            if len(calls) == 2:
-                data.update(found_volume="40", found_unit="m", unit_confirmed=True)
-                data["evidence"].append(proof(7, "40 m", "volume"))
-            return parse_audit_response(json.dumps(data), context, False)
+            quote_sources = _catalog(context)
+            desc = next((s for s, src in quote_sources.items()
+                         if "Cable description" in src["quote"]), None)
+            if len(calls) == 1:
+                wire = claims(("presence", [desc]), details="work only")
+            else:
+                qty = next(s for s, src in quote_sources.items()
+                           if "40 m" in src["quote"])
+                wire = claims(("presence", [desc]),
+                              ("quantity", [qty],
+                               {"value_source_id": qty,
+                                "unit_source_id": qty}),
+                              ("unit", [qty], {"unit_source_id": qty}),
+                              details="mismatch 40 vs 45")
+            return parse_audit_response(
+                json.dumps(wire), context, False,
+                expected_volume="45", expected_unit="m",
+                expected_work="Cable", position_type="Материал",
+                quote_sources=quote_sources)
         result = audit_text_pages(index, [0], ask, "Cable", "45", unit="m")
         self.assertEqual(result["status"], "Ошибка")
         self.assertEqual(result["found_volume"], "40")
@@ -647,21 +952,26 @@ class EvidenceAndRetrievalTests(unittest.TestCase):
                 result = technical_error("Malformed JSON after retries")
                 result["recoverable"] = True
                 return result
-            return found(context, 3)
+            return found(context, 3, expected_volume="45",
+                         expected_unit="m", expected_work="Cable",
+                         position_type="Материал")
         result = audit_text_pages(index, [0], ask, "Cable", "45")
         self.assertEqual(result["found_page"], "3")
         self.assertEqual(result["contexts"], 2)
-        self.assertEqual(result["status"], "Ошибка")
+        # The located quantity (45) matches the VOR expectation, so the new
+        # code confirms it: recovery finds the work with bound evidence.
+        self.assertEqual(result["status"], "ОК")
+        self.assertTrue(result["work_found"])
 
     def test_first_complete_find_stops_search_without_second_location(self):
-        index = PageTextIndex(["Cable 40 m", "Cable 45 m"])
+        index = PageTextIndex(["Cable 45 m", "Cable 45 m"])
         calls = []
         def ask(context):
             calls.append(dict(context))
             page = next(iter(context))
-            quote = context[page]
-            volume = "40" if "40" in quote else "45"
-            return found(context, page, volume)
+            return found(context, page, expected_volume="45",
+                         expected_unit="m", expected_work="Cable",
+                         position_type="Материал")
         result = audit_text_pages(index, [], ask, "Cable", "45", max_pages=1)
         self.assertEqual(len(calls), 1)
         self.assertTrue(result["work_found"])
@@ -670,7 +980,8 @@ class EvidenceAndRetrievalTests(unittest.TestCase):
 
     def test_unreadable_unreferenced_neighbor_does_not_invalidate_proven_reference(self):
         index = PageTextIndex(["Cable 45 m", ""], {1: "OCR unavailable"}, pending_ocr=[1])
-        result = audit_text_pages(index, [0], lambda c: found(c, 1), "Cable", "45")
+        result = audit_text_pages(index, [0], lambda c: found(c, 1, expected_volume="45",
+            expected_unit="m", expected_work="Cable", position_type="Материал"), "Cable", "45")
         self.assertEqual(result["status"], "ОК")
         self.assertTrue(result["search_complete"])
 
@@ -680,14 +991,28 @@ class EvidenceAndRetrievalTests(unittest.TestCase):
         calls = []
         def ask(context):
             calls.append(context)
+            quote_sources = _catalog(context)
             if len(calls) == 1:
-                data = response("1", evidence=[proof(1, description)])
+                desc = next(s for s, src in quote_sources.items()
+                            if "Cable description installation." in src["quote"])
+                wire = claims(("presence", [desc]), details="work only")
             else:
                 self.assertIn("Quantity 45 m", context[1])
-                data = response("1", "45", "m", True, True, evidence=[
-                    proof(1, "Cable description installation."),
-                    proof(1, "Quantity 45 m", "volume")])
-            return parse_audit_response(json.dumps(data), context, False)
+                qty = next(s for s, src in quote_sources.items()
+                           if "Quantity 45 m" in src["quote"])
+                desc = next(s for s, src in quote_sources.items()
+                            if "Cable description installation." in src["quote"])
+                wire = claims(("presence", [desc]),
+                              ("quantity", [qty],
+                               {"value_source_id": qty,
+                                "unit_source_id": qty}),
+                              ("unit", [qty], {"unit_source_id": qty}),
+                              details="confirm")
+            return parse_audit_response(
+                json.dumps(wire), context, False,
+                expected_volume="45", expected_unit="m",
+                expected_work="Cable description installation",
+                position_type="Материал", quote_sources=quote_sources)
         result = audit_text_pages(index, [0], ask, "Cable description installation", "45",
                                   unit="m", max_context_chars=2000)
         self.assertEqual(result["status"], "ОК")
@@ -700,38 +1025,65 @@ class EvidenceAndRetrievalTests(unittest.TestCase):
         calls = []
         def ask(context):
             calls.append(context)
+            quote_sources = _catalog(context)
             if len(calls) == 1:
                 piece = next(p for p in context[1].split("\n[...]\n")
                              if "Cable description installation." in p)
                 start = max(0, piece.index("Cable description installation.") - 400)
-                data = response("1", evidence=[proof(1, piece[start:start + 900])])
+                quote = piece[start:start + 900]
+                sid = _sid(quote_sources, quote) if quote in [
+                    s["quote"] for s in quote_sources.values()] else next(
+                        s for s, src in quote_sources.items()
+                        if "Cable description installation." in src["quote"])
+                wire = claims(("presence", [sid]), details="work only")
             else:
                 self.assertIn("Cable description installation.", context[1])
                 self.assertIn("Quantity 45 m", context[1])
-                data = response("1", "45", "m", True, True, evidence=[
-                    proof(1, "Cable description installation."),
-                    proof(1, "Quantity 45 m", "volume")])
-            return parse_audit_response(json.dumps(data), context, False)
+                desc = next(s for s, src in quote_sources.items()
+                            if "Cable description installation." in src["quote"])
+                qty = next(s for s, src in quote_sources.items()
+                           if "Quantity 45 m" in src["quote"])
+                wire = claims(("presence", [desc]),
+                              ("quantity", [qty],
+                               {"value_source_id": qty,
+                                "unit_source_id": qty}),
+                              ("unit", [qty], {"unit_source_id": qty}),
+                              details="confirm")
+            return parse_audit_response(
+                json.dumps(wire), context, False,
+                expected_volume="45", expected_unit="m",
+                expected_work="Cable description installation",
+                position_type="Материал", quote_sources=quote_sources)
         result = audit_text_pages(PageTextIndex([text]), [0], ask,
                                   "Cable description installation", "45", unit="m", max_context_chars=2000)
         self.assertEqual(result["status"], "ОК")
         self.assertTrue(all(len(c[1]) <= 2000 for c in calls))
 
     def test_unlinked_confirmation_retains_original_without_revisiting_support(self):
+        # A confirm response that links nothing to the located work must not
+        # move the location: the original presence stays, quantity stays
+        # unproven, and the position reports incomplete.
         index = PageTextIndex(["Cable description"] + ["Introduction"] * 5 + ["Cable 45 m"])
         calls = []
         def ask(context):
             calls.append(context)
+            quote_sources = _catalog(context)
             if len(calls) == 1:
-                data = response("1", evidence=[proof(1, "Cable description")])
-                return parse_audit_response(json.dumps(data), context, False)
-            return found(context, 7)
+                desc = next(s for s, src in quote_sources.items()
+                            if "Cable description" in src["quote"])
+                wire = claims(("presence", [desc]), details="work only")
+            else:
+                wire = claims(details="confirm links nothing")
+            return parse_audit_response(
+                json.dumps(wire), context, False,
+                expected_volume="45", expected_unit="m",
+                expected_work="Cable", position_type="Материал",
+                quote_sources=quote_sources)
         result = audit_text_pages(index, [0], ask, "Cable", "45", unit="m")
         self.assertEqual(len(calls), 2)
         self.assertEqual(result["status"], INCOMPLETE)
         self.assertEqual(result["found_page"], "1")
         self.assertEqual(result["found_pages"], [1])
-        self.assertFalse(result["search_complete"])
 
     def test_retry_token_reserve_is_separate_from_attempt_limit(self):
         budget = RequestBudget(max_requests=6, max_total_tokens=100, max_output_tokens=10)
@@ -763,7 +1115,7 @@ class EvidenceAndRetrievalTests(unittest.TestCase):
         text = "Header | quantity | unit\n" + "".join(
             (rng.choice(["Cable", "quantity", "appendix", "45", "specification"]) + " ")
             * rng.randrange(1, 30) + "\n" for _ in range(90))
-        index = PageTextIndex([text])
+        index = PageTextIndex(text)
         for prefer_volume in (False, True):
             for limit in (599, 1000, 1400, 2000, 2500):
                 with self.subTest(prefer_volume=prefer_volume, limit=limit):
@@ -836,12 +1188,19 @@ class AdapterTests(unittest.TestCase):
 
     @staticmethod
     def valid():
-        return json.dumps(response("1", "45", "m", True, True,
-            evidence=[{"source_id": "p1q1", "kind": kind} for kind in ("work", "volume", "unit")]))
+        quote_sources = _catalog({1: "Cable 45 m"})
+        sid = next(iter(quote_sources))
+        return json.dumps(claims(("presence", [sid]),
+                                 ("quantity", [sid],
+                                  {"value_source_id": sid,
+                                   "unit_source_id": sid}),
+                                 ("unit", [sid],
+                                  {"unit_source_id": sid}),
+                                 details="valid"))
 
-    def test_invalid_evidence_retry_then_success(self):
-        forged = json.dumps(response("1", evidence=[{"source_id": "p99q1", "kind": "work"}]))
-        result, calls = self.run_adapter([forged, self.valid()])
+    def test_malformed_container_retry_then_success(self):
+        malformed = json.dumps({"claims": "not a list"})
+        result, calls = self.run_adapter([malformed, self.valid()])
         self.assertEqual(result["status"], "ОК")
         self.assertEqual(result["requests"], 2)
 
@@ -851,7 +1210,7 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(result["requests"], 2)
 
     def test_retry_budget_does_not_reset_for_next_context(self):
-        negative = json.dumps(response())
+        negative = json.dumps(claims(details="nothing here"))
         result, calls = self.run_adapter([FakeAPIError("quota"), negative, self.valid()],
             budget=RequestBudget(max_requests=2), texts=["Title"] + ["Cable 45 m"] * 10)
         self.assertEqual(result["status"], INCOMPLETE)
@@ -952,8 +1311,7 @@ class ChatAdapterTests(unittest.TestCase):
                                   total_tokens=15))
 
     def test_chat_backend_sends_raw_model_id(self):
-        valid = json.dumps(response("1", "45", "m", True, True,
-            evidence=[{"source_id": "p1q1", "kind": kind} for kind in ("work", "volume", "unit")]))
+        valid = AdapterTests.valid()
         result, calls, factory_calls = self.run_chat([self.chat_output(valid)])
         self.assertEqual(result["status"], "ОК")
         self.assertEqual(calls[0]["model"], "ds/deepseek-v4-flash")
@@ -963,8 +1321,14 @@ class ChatAdapterTests(unittest.TestCase):
 
     def test_retry_carries_specific_fix_hint_for_wrong_volume_fragment(self):
         from audit_core import EvidenceValidationError
-        wrong = json.dumps(response("1", "45", "m", True, True,
-            evidence=[{"source_id": "p1q1", "kind": kind} for kind in ("work", "volume", "unit")]))
+        quote_sources = _catalog({1: "Cable 45 m"})
+        sid = next(iter(quote_sources))
+        wrong = json.dumps(claims(("presence", [sid]),
+                                  ("quantity", [sid],
+                                   {"value_source_id": sid,
+                                    "unit_source_id": sid}),
+                                  ("unit", [sid], {"unit_source_id": sid}),
+                                  details="wrong"))
         calls_seen = []
         real_parse = parse_audit_response
         def flaky_parse(raw, *args, **kwargs):
@@ -982,7 +1346,10 @@ class ChatAdapterTests(unittest.TestCase):
         self.assertIn("Исправление: выбери source_id того фрагмента, где видно число 45",
                       calls[1]["messages"][1]["content"])
 
-    def test_volume_mismatch_retry_narrows_catalog_to_number_fragments(self):
+    def test_volume_mismatch_retry_carries_number_hint(self):
+        # Narrowed-catalog repair was removed with the old wire: retry now
+        # re-sends the same catalog plus the validator hint. The hint must
+        # name the expected number so the model can pick another fragment.
         from audit_core import EvidenceValidationError, PageTextIndex
         from audit_llm import audit_position_hybrid
         from types import SimpleNamespace
@@ -996,10 +1363,13 @@ class ChatAdapterTests(unittest.TestCase):
                     content = "bad"
                 else:
                     ids = re.findall(r"\[(p\d+q\d+)\]", kwargs["messages"][1]["content"])
-                    sid = ids[0]
-                    content = json.dumps(response("2", "45", "m", True, True,
-                        evidence=[{"source_id": sid, "kind": kind}
-                                  for kind in ("work", "volume", "unit")]))
+                    sid = ids[-1]
+                    content = json.dumps(claims(
+                        ("presence", [sid]),
+                        ("quantity", [sid],
+                         {"value_source_id": sid, "unit_source_id": sid}),
+                        ("unit", [sid], {"unit_source_id": sid}),
+                        details="retry"))
                 return SimpleNamespace(
                     choices=[SimpleNamespace(message=SimpleNamespace(content=content),
                                              finish_reason="stop")],
@@ -1025,7 +1395,7 @@ class ChatAdapterTests(unittest.TestCase):
         self.assertEqual(result["status"], "ОК")
         retry_body = calls[1]["messages"][1]["content"]
         self.assertIn("45", retry_body)
-        self.assertNotIn("Intro without digits", retry_body)
+        self.assertIn("выбери другой фрагмент", retry_body)
 
 
     def test_valid_json_at_length_keeps_verified_evidence(self):

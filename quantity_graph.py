@@ -19,13 +19,12 @@ from audit_core import (
     _compact_terms,
     _known_scopes,
     _mention_res,
-    _numbers,
     _plain_page,
     _schedule_item_rows,
     _scope_key,
     _OPERATION_STOP_TERMS,
-    format_ru,
 )
+from audit_measurements import _numbers, format_ru, iter_measurements
 
 
 def _material_skeleton(text: str) -> str:
@@ -102,7 +101,7 @@ def link_consumption_schedule(
     for page, raw in schedule_texts:
         known = _known_scopes(_plain_page(raw))
         mention_res = _mention_res(known)
-        for header, joined, row in _schedule_item_rows(raw, known, mention_res):
+        for header, joined, row, unit_at in _schedule_item_rows(raw, known, mention_res):
             if _scope_key(header) != _scope_key(scope):
                 continue
             shared = want & _material_terms(joined)
@@ -116,25 +115,33 @@ def link_consumption_schedule(
             )
             if len(shared) < 2 and not (shared and skeleton_hit) and not material_hit:
                 continue
-            unit_at = next(
-                (k for k, cell in enumerate(row)
-                 if re.fullmatch(r"\s*(м3|м³|м2|м²|мм|см|м|шт\.?|кг|т|л|компл|пог\.?\s*м)\s*",
-                                 cell, re.IGNORECASE)),
-                None,
-            )
-            after = row[unit_at + 1:] if unit_at is not None else row[2:]
-            volumes = sorted(
-                {n for cell in after if cell for n in _numbers(cell)},
-                reverse=True,
-            )
-            if not volumes:
+            # Quantity and unit cells only: one atomic amount right after
+            # the lone unit cell. Never the row maximum across unrelated
+            # columns (codes, marks, or later quantities).
+            unit_text = str(row[unit_at] or "").strip()
+            after = [cell for cell in row[unit_at + 1:] if cell]
+            measurements = []
+            for cell in after:
+                measurements.extend(iter_measurements(f"{cell} {unit_text}"))
+                measurements.extend(iter_measurements(cell))
+            if not measurements:
+                continue
+            amounts = []
+            for measurement in measurements:
+                value_text = format(measurement.value, "f")
+                if any(value_text == format(item, "f")
+                       for cell in after for item in _numbers(cell)):
+                    amounts.append(measurement.value)
+            if not amounts:
+                continue
+            if len({format(item, "f") for item in amounts}) != 1:
                 continue
             item = next(
                 (cell for cell in row[:3] if cell and len(cell) > 8), joined[:80]
             )
             candidates.append(
                 {"page": page, "item": item,
-                 "volume": volumes[0], "scope": header}
+                 "volume": amounts[0], "scope": header}
             )
     if len(candidates) != 1:
         return None
@@ -195,6 +202,8 @@ def reconcile_position_schedule(task, track_item):
     if index is None:
         return {"rate": format_ru(rate), "unit": unit,
                 "uncertainties": ["schedule-text-unavailable"]}
+    source = task.get("position_source")
+    expected_scope = source.get("scope_key", "") if isinstance(source, dict) else None
     scope = ""
     volume_pages = sorted({e["page"] for e in track_item.get("evidence") or []
                            if e.get("kind") == "volume"})
@@ -207,7 +216,8 @@ def reconcile_position_schedule(task, track_item):
     if not scope:
         scope, _ = index.related_context(
             task.get("target_indices") or [], task.get("w_name", ""),
-            task.get("w_vol", ""), task.get("w_formula", ""), task.get("w_comment", ""))
+            task.get("w_vol", ""), task.get("w_formula", ""), task.get("w_comment", ""),
+            expected_scope=expected_scope)
     schedule_texts = [(i + 1, text) for i, text in enumerate(index.texts)
                       if "поставщик" in _plain_page(text).lower()
                       and "наименован" in _plain_page(text).lower()]
@@ -225,7 +235,9 @@ def reconcile_position_schedule(task, track_item):
             formula=task.get("w_formula", ""),
             unit=task.get("w_unit", ""),
             volume=task.get("w_vol", ""),
-            index=task.get("idx", -1))
+            index=task.get("idx", -1),
+            number=task.get("number", ""),
+            position_source=task.get("position_source"))
         chain = verify_stock_chain(probe, chain_positions)
     if chain is not None and chain.get("matches"):
         claimed = _numbers(str(chain.get("material_volume", "")))
@@ -296,14 +308,22 @@ def _calc_signature(calculation):
     return cells, literals
 
 
+def _position_scope(position) -> str:
+    """Independent VOR section scope; "" means unknown, never inferred."""
+    source = getattr(position, "position_source", None)
+    if isinstance(source, dict):
+        return str(source.get("scope_key") or "")
+    return str(getattr(source, "scope_key", "") or "")
+
+
 def link_stock_chain(position, positions):
     """Link a consumption work to its stocked material, structure-first.
 
     A work ``=BASE × rate`` pairs with a material ``=BASE × rate × factor``
     that shares every base cell and literal and adds exactly one extra
-    literal (the stock factor). Scope comes from the workbook order:
-    the material must be the nearest following position with the same
-    unit. Returns {material_index, factor} or None. No keywords, no PDF.
+    literal (the stock factor). Both rows must share the same source
+    section/scope; several structural matches fail closed as ambiguous.
+    Returns {material_index, factor} or None. No keywords, no PDF.
     """
     calc = getattr(position, "calculation", None) or {}
     if calc.get("status") != "calculated":
@@ -321,12 +341,18 @@ def link_stock_chain(position, positions):
         return None
     own_unit = str(getattr(position, "unit", "") or "").strip().casefold()
     own_index = getattr(position, "index", -1)
+    own_scope = _position_scope(position)
+    matches = []
     for other in positions or []:
         if getattr(other, "index", -1) <= own_index:
             continue
         if str(getattr(other, "position_type", "")).casefold() != "материал":
             continue
         if str(getattr(other, "unit", "") or "").strip().casefold() != own_unit:
+            continue
+        # Same source section/scope only: a stocked material in another
+        # group never confirms this work, even with equal numbers.
+        if own_scope and _position_scope(other) != own_scope:
             continue
         other_calc = getattr(other, "calculation", None) or {}
         if other_calc.get("status") != "calculated":
@@ -345,11 +371,15 @@ def link_stock_chain(position, positions):
             continue
         if factor <= 0:
             continue
-        return {"material_index": getattr(other, "index", -1),
-                "material_number": getattr(other, "number", ""),
-                "factor": format(factor.normalize(), "f"),
-                "material_volume": getattr(other, "volume", "")}
-    return None
+        matches.append({"material_index": getattr(other, "index", -1),
+                        "material_number": getattr(other, "number", ""),
+                        "factor": format(factor.normalize(), "f"),
+                        "material_volume": getattr(other, "volume", "")})
+    if len(matches) != 1:
+        # Zero, or several structurally identical materials: ambiguity
+        # fails closed instead of taking the first match across sections.
+        return None
+    return matches[0]
 
 
 def verify_stock_chain(position, positions):

@@ -5,7 +5,8 @@ from decimal import Decimal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from audit_core import detect_consumption, format_ru
+from audit_core import detect_consumption
+from audit_measurements import format_ru
 from quantity_graph import (
     classify_quantity,
     link_consumption_schedule,
@@ -63,6 +64,17 @@ class LinkScheduleTests(unittest.TestCase):
         self.assertIsNone(link_consumption_schedule(
             "Засыпка зазоров щебнем", "Расход щебня", "Альфа", doubled))
 
+    def test_mark_code_equal_to_amount_does_not_bind(self):
+        schedule = [(1,
+            "<table><tr><th>Наименование</th><th>Ед.</th><th>Кол-во</th></tr>"
+            "<tr><td>Площадка Альфа</td><td></td><td></td></tr>"
+            "<tr><td>Марка 86,79</td><td>шт.</td><td>12</td></tr>"
+            "<tr><td>Щебень М400</td><td>м3</td><td>86,79</td></tr></table>")]
+        hit = link_consumption_schedule(
+            "Засыпка зазоров щебнем", "Расход щебня 0,15 м3/м2",
+            "Альфа", schedule)
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["volume"], Decimal("86.79"))
 
 class ReconcileTests(unittest.TestCase):
     def test_delta_percent_and_derived_rate(self):
@@ -164,6 +176,30 @@ class StockChainTests(unittest.TestCase):
             "cell": "D30", "value": "1879", "origin": "vor_cell"}
         self.assertIsNone(link_stock_chain(work, [work, mat]))
 
+    def test_cross_section_material_never_links(self):
+        work, mat = self._chain()
+        work.position_source = {"scope_key": "КНС"}
+        mat.position_source = {"scope_key": "ЛОС"}
+        self.assertIsNone(link_stock_chain(work, [work, mat]))
+
+    def test_ambiguous_structural_matches_fail_closed(self):
+        import copy
+        from types import SimpleNamespace
+        work, mat = self._chain()
+        work.position_source = {"scope_key": "КНС"}
+        mat.position_source = {"scope_key": "КНС"}
+        twin = SimpleNamespace(**{**mat.__dict__})
+        twin.calculation = copy.deepcopy(mat.calculation)
+        twin.index = 11
+        twin.number = "12"
+        self.assertIsNone(link_stock_chain(work, [work, mat, twin]))
+
+    def test_same_section_material_still_links(self):
+        work, mat = self._chain()
+        work.position_source = {"scope_key": "КНС"}
+        mat.position_source = {"scope_key": "КНС"}
+        link = link_stock_chain(work, [work, mat])
+        self.assertEqual(link["material_number"], "11")
 
 if __name__ == "__main__":
     unittest.main()

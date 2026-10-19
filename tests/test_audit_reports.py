@@ -45,13 +45,22 @@ class ReportTests(unittest.TestCase):
     def test_priorities_stable_order_and_missing_proof_not_a_discrepancy(self):
         report = self.make_report([
             ("ОК", {}),
-            ("Неполная проверка", {"found_volume": "-", "volume_confirmed": False}),
-            ("Ошибка", {"found_volume": "95", "volume_confirmed": False}),
+            ("Неполная проверка", {"found_volume": "-", "volume_confirmed": False,
+                "checks": [{"claim_id": "quantity", "kind": "quantity",
+                            "state": "not_found", "reasons": ["no_proposal"],
+                            "required": True}]}),
+            ("Ошибка", {"found_volume": "95", "volume_confirmed": False,
+                "checks": [{"claim_id": "quantity", "kind": "quantity",
+                            "state": "contradiction", "reasons": ["value_mismatch"],
+                            "required": True}]}),
             ("Технический сбой", {"work_found": False, "found_pages": [], "found_page": None}),
-            ("Ошибка", {"work_found": False, "found_pages": [], "found_page": None}),
+            ("Ошибка", {"work_found": False, "found_pages": [], "found_page": None,
+                        "workbook_notes": [
+                            {"kind": "display-operand-mismatch", "display_cell": "E32",
+                             "message": "в тексте расчёта E32 показано число 992"}]}),
             ("ОК", {})])
-        self.assertEqual(report["№"].tolist(), [3, 2, 5, 4, 1, 6])
-        self.assertEqual(report["Статус аудита"].tolist(), [DISCREPANCY, MANUAL, MANUAL, NOT_CHECKED, "ОК", "ОК"])
+        self.assertEqual(report["№"].tolist(), [3, 5, 2, 4, 1, 6])
+        self.assertEqual(report["Статус аудита"].tolist(), [DISCREPANCY, DISCREPANCY, MANUAL, NOT_CHECKED, "ОК", "ОК"])
         mismatch = report.iloc[0]
         self.assertIn("120 м³", mismatch["Что не так"])
         self.assertIn("95 м³", mismatch["Что не так"])
@@ -62,14 +71,26 @@ class ReportTests(unittest.TestCase):
             self.assertNotIn("found_volume", text)
             self.assertNotIn("OCR", text)
         self.assertNotIn("Идентификатор", report.columns)
-        self.assertIn("ещё не значит", report.loc[report["№"] == 5, "Что не так"].iloc[0])
+        contradiction = report.loc[report["№"] == 5].iloc[0]
+        self.assertIn("E32", contradiction["Что не так"])
+        self.assertIn("992", contradiction["Что не так"])
 
     def test_reference_and_unit_discrepancies_not_hidden_by_incomplete_audit(self):
         report = self.make_report([
-            ("Ошибка", {"found_page": 20}),
-            ("Неполная проверка", {"unit_confirmed": False, "found_unit": "м²"}),
+            ("Ошибка", {"found_page": 20,
+                "checks": [{"claim_id": "quantity", "kind": "quantity",
+                            "state": "contradiction", "reasons": ["value_mismatch"],
+                            "required": True}]}),
+            ("Неполная проверка", {"unit_confirmed": False, "found_unit": "м²",
+                "checks": [{"claim_id": "unit", "kind": "unit",
+                            "state": "review_required",
+                            "reasons": ["unit_not_bound"], "required": True}]}),
             ("Неполная проверка", {"comment_confirmed": False}),
-            ("Ошибка", {"volume_confirmed": False, "found_volume": "120 м³"})])
+            ("Ошибка", {"volume_confirmed": False, "found_volume": "120 м³",
+                "checks": [{"claim_id": "quantity", "kind": "quantity",
+                            "state": "review_required",
+                            "reasons": ["ambiguous_measurements"],
+                            "required": True}]})])
         self.assertEqual(report["Статус аудита"].tolist(), [DISCREPANCY, MANUAL, MANUAL, MANUAL])
         by_num = {num: text for num, text in zip(report["№"], report["Что не так"])}
         self.assertIn("не на тех страницах", by_num[1])
@@ -80,7 +101,11 @@ class ReportTests(unittest.TestCase):
         report = self.make_report([
             ("ОК", {"comment_confirmed": False, "found_page": 19}),
             ("Ошибка", {"comment_confirmed": False, "found_volume": "95",
-                        "volume_confirmed": False})])
+                        "volume_confirmed": False,
+                        "checks": [{"claim_id": "quantity", "kind": "quantity",
+                                    "state": "contradiction",
+                                    "reasons": ["value_mismatch"],
+                                    "required": True}]})])
         mismatch, advisory = report.iloc[0], report.iloc[1]
         self.assertEqual(mismatch["Статус аудита"], DISCREPANCY)
         self.assertEqual(advisory["Статус аудита"], "ОК")
@@ -91,6 +116,9 @@ class ReportTests(unittest.TestCase):
     def test_derived_volume_is_not_presented_as_printed_quantity(self):
         report = self.make_report([("Ошибка", {
             "volume_confirmed": False, "found_volume": "95",
+            "checks": [{"claim_id": "quantity", "kind": "quantity",
+                        "state": "contradiction", "reasons": ["value_mismatch"],
+                        "required": True}],
             "volume_calculation": {"area": {"value": "950", "unit": "м2"},
                                    "thickness": {"value": "0,1", "unit": "м"}}})])
         description = report.iloc[0]["Что не так"]
@@ -100,8 +128,14 @@ class ReportTests(unittest.TestCase):
     def test_excel_colors_literal_names_and_word_navigation(self):
         report = self.make_report([
             ("ОК", {}),
-            ("Ошибка", {"found_volume": "95", "volume_confirmed": False}),
-            ("Неполная проверка", {"volume_confirmed": False, "found_volume": "-"}),
+            ("Ошибка", {"found_volume": "95", "volume_confirmed": False,
+                "checks": [{"claim_id": "quantity", "kind": "quantity",
+                            "state": "contradiction", "reasons": ["value_mismatch"],
+                            "required": True}]}),
+            ("Неполная проверка", {"volume_confirmed": False, "found_volume": "-",
+                "checks": [{"claim_id": "quantity", "kind": "quantity",
+                            "state": "not_found", "reasons": ["no_proposal"],
+                            "required": True}]}),
             ("Технический сбой", {"work_found": False, "found_pages": [], "found_page": None})])
         report.loc[0, "Наименование работ"] = "=1+1"
         excel = openpyxl.load_workbook(io.BytesIO(generate_excel_report(report)))
@@ -151,7 +185,10 @@ class RemarkTests(unittest.TestCase):
         return report.iloc[0]
 
     def test_quantity_mismatch_names_numbers_and_place(self):
-        row = self._remark("Ошибка", {"found_volume": "95", "volume_confirmed": False})
+        row = self._remark("Ошибка", {"found_volume": "95", "volume_confirmed": False,
+            "checks": [{"claim_id": "quantity", "kind": "quantity",
+                        "state": "contradiction", "reasons": ["value_mismatch"],
+                        "required": True}]})
         self.assertEqual(row["Статус аудита"], DISCREPANCY)
         self.assertIn("120", row["Что не так"])
         self.assertIn("95", row["Что не так"])
@@ -159,7 +196,10 @@ class RemarkTests(unittest.TestCase):
 
     def test_equal_unconfirmed_pair_is_not_reported_as_missing(self):
         row = self._remark("Неполная проверка", {"volume_confirmed": False,
-            "found_volume": "1879", "found_unit": "м²"},
+            "found_volume": "1879", "found_unit": "м²",
+            "checks": [{"claim_id": "quantity", "kind": "quantity",
+                        "state": "review_required",
+                        "reasons": ["ambiguous_measurements"], "required": True}]},
             {"w_vol": "1879.0", "w_unit": "м2"})
         self.assertEqual(row["Статус аудита"], MANUAL)
         self.assertNotIn("не нашёлся", row["Что не так"])

@@ -60,8 +60,8 @@ class BaselineClient:
         work = work.group(1).strip() if work else ""
         fragments = {}
         for page in re.finditer(
-                r"\[СТРАНИЦА (\d+) В PDF[^\]]*\]:\n((?:\[p\d+q\d+\].*\n?)+)", input):
-            sources = dict(re.findall(r"\[(p\d+q\d+)\]\s*(.*)", page.group(2)))
+                r"\[СТРАНИЦА (\d+) В PDF[^\]]*\]:\n((?:\[[a-z0-9]+\].*\n?)+)", input):
+            sources = dict(re.findall(r"\[([a-z0-9]+)\]\s*(.*)", page.group(2)))
             fragments[int(page.group(1))] = sources
         if work == "Failing device":
             raise RuntimeError("Simulated provider failure")
@@ -78,21 +78,19 @@ class BaselineClient:
         return cls.negative()
     @classmethod
     def positive(cls, source_id, page, volume, unit, details):
-        data = {"work_found": True, "volume_confirmed": volume != "2",
-                "unit_confirmed": True, "comment_confirmed": True,
-                "found_volume": volume, "found_unit": unit, "found_page": str(page),
-                "evidence": [{"source_id": source_id, "kind": kind}
-                             for kind in ("work", "volume", "unit")],
+        data = {"claims": [
+                    {"claim_id": "presence", "source_ids": [source_id]},
+                    {"claim_id": "quantity", "source_ids": [source_id],
+                     "value_source_id": source_id, "unit_source_id": source_id},
+                    {"claim_id": "unit", "source_ids": [source_id]}],
                 "discrepancy_details": details}
         return SimpleNamespace(output_text=json.dumps(data),
                                usage=SimpleNamespace(total_tokens=100))
 
     @classmethod
     def negative(cls):
-        data = {"work_found": False, "volume_confirmed": False,
-                "unit_confirmed": False, "comment_confirmed": False,
-                "found_volume": "-", "found_unit": "-", "found_page": "-",
-                "evidence": [], "discrepancy_details": "Work not found in these fragments"}
+        data = {"claims": [],
+                "discrepancy_details": "Work not found in these fragments"}
         return SimpleNamespace(output_text=json.dumps(data),
                                usage=SimpleNamespace(total_tokens=100))
 

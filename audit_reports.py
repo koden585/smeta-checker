@@ -15,7 +15,8 @@ import pandas as pd
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from audit_core import INCOMPLETE, TECHNICAL_ERROR, format_ru
+from audit_core import INCOMPLETE, TECHNICAL_ERROR
+from audit_measurements import format_ru
 from audit_models import AuditResult, VorPosition
 from pdf_binding import split_pdf_refs
 
@@ -92,43 +93,70 @@ def build_user_report(df, tracking, tasks):
         remarks, notes = [], []
         raw_status = row.get("Статус аудита")
         status = MANUAL
+        checks = {check.get("claim_id"): check
+                  for check in (source.get("checks") or [])
+                  if isinstance(check, dict) and check.get("claim_id")}
         expected_volume, expected_unit = _text(task.get("w_vol")), _text(task.get("w_unit"))
         actual_volume, actual_unit = _text(source.get("found_volume")), _text(source.get("found_unit"))
+        # Independent workbook/consumption findings render before any
+        # work-detection branch: a proven workbook contradiction or
+        # schedule mismatch survives work_found=false and execution gaps.
+        workbook = source.get("workbook_calculation") or {}
+        if workbook.get("status") in {"error", "unsupported"}:
+            remarks.append("Формула в Excel не сошлась: " + str(workbook.get("error", workbook["status"])) + ".")
+        for note in source.get("workbook_notes") or []:
+            kind = (note or {}).get("kind", "")
+            message = str((note or {}).get("message", "")).strip()
+            if not message:
+                continue
+            if kind in {"scheme-divisor-mismatch", "length-operand-conflicts"}:
+                notes.append("Вопрос к исходным данным: " + message + ".")
+            else:
+                status = DISCREPANCY
+                remarks.append("В самой ведомости противоречие: " + message + ".")
+        if consumption.get("matches") is False:
+            status = DISCREPANCY
+            chain = consumption.get("stock_chain") or {}
+            if chain:
+                remarks.append(
+                    f"Потребность в материале с запасом не сошлась: в ВОР {chain['material_volume']} {expected_unit} "
+                    f"(работа {chain['work_volume']} × {chain['factor']}, позиция №{chain['material_number']}), "
+                    f"а в спецификации — {_quantity(consumption.get('schedule_volume'), expected_unit)} "
+                    f"(стр. {consumption.get('schedule_page')}, {consumption.get('schedule_item')}). "
+                    f"Разница — {_quantity(consumption.get('delta'), expected_unit)} "
+                    f"({consumption.get('delta_percent')}%).")
+            else:
+                remarks.append(
+                    f"В ВОР {_quantity(expected_volume, expected_unit)}, "
+                    f"а в спецификации — {_quantity(consumption.get('schedule_volume'), expected_unit)} "
+                    f"(стр. {consumption.get('schedule_page')}, {consumption.get('schedule_item')}). "
+                    f"Разница — {_quantity(consumption.get('delta'), expected_unit)} "
+                    f"({consumption.get('delta_percent')}%). "
+                    f"Норма в ВОР — {consumption.get('rate')} {consumption.get('unit')}, "
+                    f"а из спецификации получается {consumption.get('derived_rate')} {consumption.get('unit')}.")
         if task.get("bind_error"):
-            status = NOT_CHECKED
+            if status != DISCREPANCY:
+                status = NOT_CHECKED
             remarks.append("Непонятно, к какому файлу относится позиция: имя в ВОР не совпало ни с одним PDF.")
         elif not source.get("work_found"):
             if raw_status == TECHNICAL_ERROR:
-                status = NOT_CHECKED
+                if status != DISCREPANCY:
+                    status = NOT_CHECKED
                 remarks.append("Проверка сорвалась: документ не дочитан или модель не ответила.")
             else:
                 remarks.append("Работа в проекте не нашлась — но это ещё не значит, что её там нет.")
+                for claim_id in ("quantity", "unit"):
+                    check = checks.get(claim_id, {})
+                    if check.get("state") == "contradiction":
+                        status = DISCREPANCY
+                        remarks.append(
+                            f"В ВОР {_quantity(expected_volume, expected_unit)}, "
+                            f"в проекте — {_quantity(actual_volume, actual_unit)}.")
+                        break
         else:
-            before = _number(expected_volume, expected_unit)
-            after = _number(actual_volume, actual_unit)
-            same_unit = expected_unit.casefold().replace("³", "3").replace("²", "2") == actual_unit.casefold().replace("³", "3").replace("²", "2")
-            calculation = source.get("volume_calculation")
-            if consumption.get("matches") is False:
-                status = DISCREPANCY
-                chain = consumption.get("stock_chain") or {}
-                if chain:
-                    remarks.append(
-                        f"Потребность в материале с запасом не сошлась: в ВОР {chain['material_volume']} {expected_unit} "
-                        f"(работа {chain['work_volume']} × {chain['factor']}, позиция №{chain['material_number']}), "
-                        f"а в спецификации — {_quantity(consumption.get('schedule_volume'), expected_unit)} "
-                        f"(стр. {consumption.get('schedule_page')}, {consumption.get('schedule_item')}). "
-                        f"Разница — {_quantity(consumption.get('delta'), expected_unit)} "
-                        f"({consumption.get('delta_percent')}%).")
-                else:
-                    remarks.append(
-                        f"В ВОР {_quantity(expected_volume, expected_unit)}, "
-                        f"а в спецификации — {_quantity(consumption.get('schedule_volume'), expected_unit)} "
-                        f"(стр. {consumption.get('schedule_page')}, {consumption.get('schedule_item')}). "
-                        f"Разница — {_quantity(consumption.get('delta'), expected_unit)} "
-                        f"({consumption.get('delta_percent')}%). "
-                        f"Норма в ВОР — {consumption.get('rate')} {consumption.get('unit')}, "
-                        f"а из спецификации получается {consumption.get('derived_rate')} {consumption.get('unit')}.")
-            elif consumption.get("matches") is True:
+            quantity = checks.get("quantity", {})
+            unit = checks.get("unit", {})
+            if consumption.get("matches") is True:
                 chain = consumption.get("stock_chain") or {}
                 if chain:
                     notes.append(
@@ -140,30 +168,50 @@ def build_user_report(df, tracking, tasks):
                     notes.append(
                         f"Норма {consumption.get('rate')} {consumption.get('unit')} сошлась "
                         f"со спецификацией (стр. {consumption.get('schedule_page')}).")
-            elif not source.get("volume_confirmed"):
-                if before is not None and after is not None and before != after and same_unit:
-                    status = DISCREPANCY
-                    delta = format_ru(abs(before - after))
-                    origin = "по расчёту" if calculation else "в проекте"
+            elif quantity.get("state") == "contradiction":
+                status = DISCREPANCY
+                reasons = set(quantity.get("reasons", []))
+                before = _number(expected_volume, expected_unit)
+                after = _number(actual_volume, actual_unit)
+                delta = ""
+                if before is not None and after is not None and before != after:
+                    delta = f" Разница — {format_ru(abs(before - after))} {expected_unit}."
+                origin = "по расчёту" if source.get("volume_calculation") else "в проекте"
+                if "unit_mismatch" in reasons:
+                    remarks.append(
+                        f"В ВОР {_quantity(expected_volume, expected_unit)}, "
+                        f"{origin} — {_quantity(actual_volume, actual_unit)}: "
+                        f"единицы несовместимы.{delta}")
+                else:
                     remarks.append(
                         f"В ВОР {_quantity(expected_volume, expected_unit)}, {origin} — "
-                        f"{_quantity(actual_volume, actual_unit)}. Разница — {delta} {expected_unit}.")
+                        f"{_quantity(actual_volume, actual_unit)}.{delta}")
+            elif quantity.get("state") in {"not_found", "review_required"}:
+                reasons = set(quantity.get("reasons", []))
+                if "worded_quantity_without_digits" in reasons:
+                    notes.append(
+                        f"Количество {_quantity(expected_volume, expected_unit)} "
+                        "в цитате указано словами без цифр — нужна ручная сверка.")
+                elif "ambiguous_measurements" in reasons:
+                    notes.append(
+                        f"Число {_quantity(expected_volume, expected_unit)} в проекте есть, "
+                        "но в указанных фрагментах несколько разных чисел с единицами — "
+                        "нужна ручная сверка.")
                 elif source.get("quantity_basis") == "consumption":
                     remarks.append(
                         f"Объём {_quantity(expected_volume, expected_unit)} посчитан по норме расхода — "
                         "в проекте готового числа нет, сверяйтесь со спецификацией.")
-                elif (before is not None and after is not None and before == after and same_unit):
-                    notes.append(
-                        f"Число {_quantity(expected_volume, expected_unit)} в проекте есть, "
-                        "но как объём позиции не подтверждено — нужна сверка.")
                 else:
                     remarks.append(f"Объём {_quantity(expected_volume, expected_unit)} в проекте не нашёлся" + (f" — есть {_quantity(actual_volume, actual_unit)}." if actual_volume else "."))
-            if not source.get("unit_confirmed"):
-                if actual_unit and expected_unit and not same_unit and "/" not in actual_unit and "/" not in expected_unit:
-                    status = DISCREPANCY
-                    remarks.append(f"В ВОР единица «{expected_unit}», а в проекте — «{actual_unit}».")
-                else:
-                    notes.append(f"Единица «{expected_unit}» в проекте прямо не подтверждена.")
+            elif not source.get("volume_confirmed"):
+                remarks.append(f"Объём {_quantity(expected_volume, expected_unit)} в проекте не нашёлся" + (f" — есть {_quantity(actual_volume, actual_unit)}." if actual_volume else "."))
+            if unit.get("state") == "contradiction":
+                status = DISCREPANCY
+                remarks.append(f"В ВОР единица «{expected_unit}», а в проекте — «{actual_unit}».")
+            elif unit.get("state") in {"not_found", "review_required"}:
+                notes.append(f"Единица «{expected_unit}» в проекте прямо не подтверждена.")
+            elif not source.get("unit_confirmed"):
+                notes.append(f"Единица «{expected_unit}» в проекте прямо не подтверждена.")
             technology = source.get("technology") or {}
             tech_applies = str(source.get("position_type", "Работа") or "Работа").casefold() == "работа"
             if technology.get("status") == "different" and tech_applies:
@@ -184,19 +232,6 @@ def build_user_report(df, tracking, tasks):
                                  f"Формулировка ВОР также встречается на стр. {pages} — сверьте там.")
                 else:
                     notes.append("Способ выполнения в проекте не нашёлся — сама работа есть.")
-            workbook = source.get("workbook_calculation") or {}
-            if workbook.get("status") in {"error", "unsupported"}:
-                remarks.append("Формула в Excel не сошлась: " + str(workbook.get("error", workbook["status"])) + ".")
-            for note in source.get("workbook_notes") or []:
-                kind = (note or {}).get("kind", "")
-                message = str((note or {}).get("message", "")).strip()
-                if not message:
-                    continue
-                if kind in {"scheme-divisor-mismatch", "length-operand-conflicts"}:
-                    notes.append("Вопрос к исходным данным: " + message + ".")
-                else:
-                    status = DISCREPANCY
-                    remarks.append("В самой ведомости противоречие: " + message + ".")
             for code in consumption.get("uncertainties") or []:
                 notes.append({"schedule-row-unlinked": "Строку спецификации под эту норму выбрать однозначно не вышло.",
                              "scope-unresolved": "Непонятно, к какому участку относится норма.",
@@ -230,6 +265,19 @@ def build_user_report(df, tracking, tasks):
                 notes.append("Нужно глянуть глазами: соответствие не очевидно.")
             elif not remarks and raw_status == "ОК":
                 status = "ОК"
+        if source.get("evaluation_version") == "evidence-claims-v1":
+            from audit_models import claim_status
+            verdict = claim_status(list(checks.values()),
+                                   source.get("execution_errors", []),
+                                   pdf_evaluated=bool(source.get("evidence")
+                                                      or source.get("contexts")))
+            status = {"Ошибка": DISCREPANCY, INCOMPLETE: MANUAL,
+                      TECHNICAL_ERROR: NOT_CHECKED, "ОК": "ОК"}[verdict]
+            for check in checks.values():
+                if check.get("state") in {"confirmed", "not_applicable"}:
+                    continue
+                reasons = ", ".join(check.get("reasons") or [])
+                notes.append(f"{check['claim_id']}: {check.get('state')} ({reasons}).")
         records.append(dict(zip(REPORT_COLUMNS, [row.iloc[0], task["w_name"], status,
             " ".join(remarks + notes) if remarks or notes else "Расхождений не обнаружено.",
             "\n".join(files) or "Не указан", location])))

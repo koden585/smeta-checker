@@ -7,7 +7,19 @@ from collections import Counter
 from decimal import Decimal
 import unicodedata
 
-from audit_models import AuditResult, LlmAuditResponse
+from audit_measurements import (
+    _close_numbers,
+    _numbers,
+    canonical_unit,
+    iter_measurements,
+    parse_measurement,
+    compare_measurements,
+)
+from audit_models import (
+    AuditResult, ClaimCheck, ClaimKind, ClaimSpec, ClaimState,
+    EvidenceFact, LlmAuditResponse, LlmClaimProposal, claim_status,
+)
+from audit_predicates import technical_specs, predicate_check, geometry_product
 from audit_tracing import span
 
 TECHNICAL_ERROR = "Технический сбой"
@@ -159,63 +171,6 @@ def _has_digit(token):
     return any(c.isdigit() for c in token)
 
 
-_THOUSANDS_RE = re.compile(r"(?<!\w)(\d{1,3}(?:[ \u00a0\u2009]\d{3})+)(?!\w)")
-
-
-def _squeeze_thousands(text):
-    return _THOUSANDS_RE.sub(
-        lambda m: m.group(1).replace(" ", "").replace(" ", "").replace(" ", ""),
-        text)
-
-
-def _numbers(text):
-    """Comparable decimal tokens without losing significant fractional digits."""
-    text = _squeeze_thousands(unicodedata.normalize("NFKC", str(text)))
-    return {Decimal(token.replace(",", "."))
-            for token in re.findall(r"(?<!\w)[+-]?\d+(?:[.,]\d+)?", text)}
-
-
-def _close_numbers(first, second):
-    """Tolerant number-set intersection for workbook float tails.
-
-    Cached Excel doubles (631.1999999999999) never equal exact schedule
-    decimals (631,2); relative 1e-9 tolerance (project norm) bridges
-    the binary artifact without merging genuine decimals.
-    Returns the matching subset of ``first``.
-    """
-    tol = Decimal("1e-9")
-    hits = set()
-    for value in first:
-        base = max(abs(value), Decimal(1))
-        if any(abs(value - other) <= base * tol for other in second):
-            hits.add(value)
-    return hits
-
-
-def format_ru(value):
-    """Format a Decimal for Russian remarks: kill float tails, keep precision.
-
-    Quantizes binary-float artifacts (78.89999999999999 → 78,90) at 1e-6
-    while preserving genuine decimals (310,035; 0,165; 165). Fractional
-    values keep at least two decimals (78,90 not 78,9); integers stay
-    bare. Comma is the decimal separator. Non-numeric input passes
-    through as text.
-    """
-    if not isinstance(value, Decimal):
-        try:
-            value = Decimal(str(value).strip().replace(",", "."))
-        except Exception:
-            return str(value)
-    if value == value.to_integral_value():
-        return format(value.quantize(Decimal(1)), "f")
-    quantized = value.quantize(Decimal("0.000001"))
-    text = format(quantized, "f").rstrip("0")
-    head, _, tail = text.partition(".")
-    while len(tail) < 2:
-        tail += "0"
-    return f"{head},{tail}"
-
-
 _TABLE_MARKERS = re.compile(r"объем|объём|количеств|ед\.\s*изм|таблиц|спецификац|м2|м²|мм|толщин", re.IGNORECASE)
 _SCOPE_STEMS = ("площадк", "участ", "территори", "объект", "сооружени",
                 "корпус", "блок", "систем", "зон")
@@ -317,6 +272,8 @@ _MEASURE_RE = re.compile(r"(?<![\w.,])(\d+(?:[.,]\d+)?)\s*(м2|мм|см|м)(?!\
 _BARE_NUMBER_RE = re.compile(r"(?<![\w.,-])(\d+(?:[.,]\d+)?)(?![\w.,-])")
 _MERGED_NUMBER_RE = re.compile(r"(?<![\w.,-])(\d+(?:[.,]\d+)?)[ ](\d+)(?![\w.,-])")
 _PAREN_RE = re.compile(r"\(([^()]{1,40})\)")
+_UNIT_CELL_RE = re.compile(
+    r"\s*(м3|м³|м2|м²|мм|см|м|шт\.?|кг|т|л|компл|пог\.?\s*м)\s*", re.IGNORECASE)
 
 
 def _known_scopes(*texts):
@@ -487,13 +444,28 @@ def _labelled_scope(segment, scope_key):
     return False
 
 
+def _unit_cell_index(row):
+    """Quantity-unit column: a lone unit token cell is the header role carrier.
+
+    A bare number elsewhere (mark codes, row numbers) never qualifies; the
+    quantity amount must sit in the cell right after this unit cell.
+    """
+    for pos, cell in enumerate(row):
+        if _UNIT_CELL_RE.fullmatch(cell or ""):
+            return pos
+    return None
+
+
 def _schedule_item_rows(raw, known, mention_res):
-    """Yield (header scope, row text, row cells) for item rows under a group.
+    """Yield (header scope, row text, row cells, unit position) for item rows.
 
     Structural rule, no document keywords: a group header is a row with a
     filled description cell and empty quantity cells; rows carrying a
     quantity inherit the current group. A header names its scope when it
-    mentions exactly one known scope. Headers are never yielded.
+    mentions exactly one known scope. Headers are never yielded. The unit
+    position is the index of the lone unit-token cell (the quantity
+    column header role); item rows without one are skipped so amount
+    binding cannot fall back to a max number in another column.
     """
     rows = []
     for row in re.findall(r"<tr[^>]*>(.*?)</tr>", raw, flags=re.DOTALL):
@@ -514,23 +486,19 @@ def _schedule_item_rows(raw, known, mention_res):
             continue
         if not current or len([cell for cell in row if cell]) < 3 or not any(len(cell) > 8 for cell in row[:4]):
             continue
-        if not tail_numbers:
+        unit_at = _unit_cell_index(row)
+        if unit_at is None:
             continue
-        if not any(re.fullmatch(r"\s*(м3|м³|м2|м²|мм|см|м|шт\.?|кг|т|л|компл|пог\.?\s*м)\s*",
-                                cell, re.IGNORECASE) for cell in row[1:]):
+        after = [cell for cell in row[unit_at + 1:] if cell]
+        if not after or not any(_numbers(cell) for cell in after):
             continue
-        yield current, joined, tuple(row)
+        yield current, joined, tuple(row), unit_at
 
 
 def _scoped_resource_scopes(texts, skip, task_terms, numbers, known, mention_res):
     """Count qualifying schedule rows per scope for operation anchoring.
 
-    A row qualifies on the exact expected spec count (`numbers` includes
-    the target amount) plus at least two shared work/material terms with
-    one distinctive term; plate-only generic overlap never qualifies.
-    Exact match keeps merged codes like `165 831` from counting. Unique
-    scope wins; ambiguity or nothing yields empty.
-    """
+    A row qualifies on the exact expected spec count plus shared terms."""
     found = Counter()
     if not numbers or not task_terms:
         return found
@@ -540,10 +508,12 @@ def _scoped_resource_scopes(texts, skip, task_terms, numbers, known, mention_res
         text = _plain_page(raw)
         if "поставщик" not in text.lower() or "наименован" not in text.lower():
             continue
-        for header, joined, row in _schedule_item_rows(raw, known, mention_res):
+        for header, joined, row, unit_at in _schedule_item_rows(raw, known, mention_res):
             shared = task_terms & _terms(joined)
-            cells = [cell for cell in row[4:] if cell] or [cell for cell in row[1:] if cell][-1:]
-            cell_numbers = set().union(*[_numbers(cell) for cell in cells]) if cells else set()
+            after = [cell for cell in row[unit_at + 1:] if cell]
+            # Quantity-column cells only: a mark code in another column
+            # must not count, even when it equals the expected amount.
+            cell_numbers = set().union(*[_numbers(cell) for cell in after]) if after else set()
             numbers_hit = _close_numbers(cell_numbers, numbers)
             if re.search(r"пбзгу", joined, re.IGNORECASE):
                 numbers_hit -= {n for n in numbers_hit if n == 1}
@@ -555,14 +525,71 @@ def _scoped_resource_scopes(texts, skip, task_terms, numbers, known, mention_res
     return found
 
 class PageTextIndex:
-    def __init__(self, texts, errors=None, pending_ocr=(), table_rows=None):
+    def __init__(self, texts, errors=None, pending_ocr=(), table_rows=None, locators=None,
+                 *, quality=None, metadata=None):
         self.texts = tuple(texts)
         self.errors = dict(errors or {})
         self.pending_ocr = tuple(sorted(set(pending_ocr)))
         self.table_rows = tuple(tuple(row) for row in table_rows) if table_rows is not None else None
+        # Plain-data source locators per page (SourceLocator-compatible dicts);
+        # None means unknown provenance (historical snapshots), never fabricated.
+        self.locators = (tuple(tuple(dict(item) for item in page) for page in locators)
+                         if locators is not None else None)
+        self.quality = dict(quality or {})
+        self.metadata = dict(metadata or {})
         self.terms = tuple(_terms(text) for text in self.texts)
         frequency = Counter(term for terms in self.terms for term in terms)
         self.weights = {term: math.log(1 + len(self.texts) / count) for term, count in frequency.items()}
+
+    def to_snapshot(self):
+        """Plain-data, content-addressed extraction boundary; never PDF handles."""
+        import hashlib
+        payload = {
+            "schema": 1, "texts": list(self.texts), "errors": self.errors,
+            "pending_ocr": list(self.pending_ocr),
+            "table_rows": self.table_rows, "locators": self.locators,
+            "quality": self.quality, "metadata": self.metadata,
+        }
+        # Canonical JSON also detaches nested dictionaries from the index.
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                             separators=(",", ":"), allow_nan=False).encode("utf-8")
+        payload = json.loads(encoded)
+        payload["corpus_id"] = hashlib.sha256(encoded).hexdigest()
+        return payload
+
+    @classmethod
+    def from_snapshot(cls, snapshot):
+        """Reject stale/corrupt corpora instead of silently extracting another."""
+        import hashlib
+        if not isinstance(snapshot, dict) or snapshot.get("schema") != 1:
+            raise ValueError("Unsupported extraction snapshot schema")
+        payload = {key: value for key, value in snapshot.items() if key != "corpus_id"}
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                             separators=(",", ":"), allow_nan=False).encode("utf-8")
+        if hashlib.sha256(encoded).hexdigest() != snapshot.get("corpus_id"):
+            raise ValueError("Extraction snapshot corpus hash mismatch")
+        payload = json.loads(encoded)
+        texts = payload.get("texts")
+        if not isinstance(texts, list) or any(not isinstance(text, str) for text in texts):
+            raise ValueError("Invalid snapshot page texts")
+        count = len(texts)
+        for field in ("table_rows", "locators"):
+            if payload.get(field) is not None and len(payload[field]) != count:
+                raise ValueError(f"Invalid snapshot {field} page count")
+        def integer_keys(field):
+            data = payload.get(field) or {}
+            if not isinstance(data, dict):
+                raise ValueError(f"Invalid snapshot {field}")
+            restored = {int(key): value for key, value in data.items()}
+            if any(index < 0 or index >= count for index in restored):
+                raise ValueError(f"Invalid snapshot {field} page")
+            return restored
+        pending = payload.get("pending_ocr") or []
+        if any(type(index) is not int or not 0 <= index < count for index in pending):
+            raise ValueError("Invalid snapshot pending OCR page")
+        return cls(texts, integer_keys("errors"), pending, payload.get("table_rows"),
+                   payload.get("locators"), quality=integer_keys("quality"),
+                   metadata=payload.get("metadata"))
 
     def _score(self, text, work_name, comment, reference, volume, prefer_volume=False,
                *, quantity_search=False, formula_numbers=()):
@@ -638,24 +665,28 @@ class PageTextIndex:
         return [idx for _, idx in ranked]
 
     def related_context(self, target_indices, work_name, volume, formula="",
-                        comment=""):
+                        comment="", expected_scope=None):
         """Link an anchored scope to named sections and scoped quantity rows.
 
         Returns (scope, related_indices): the anchored project scope display
         name ("" when nothing anchors one) plus bounded, ordered extra page
         indices extending the caller's primary pages. Scope comes from an
-        explicit work/comment scope, a dimensioned formula operand bound to
-        a scope parenthetical on the anchor page, a uniquely scoped
+        independent ``expected_scope`` provenance (VOR section identity),
+        an explicit work/comment scope, a dimensioned formula operand bound
+        to a scope parenthetical on the anchor page, a uniquely scoped
         schedule resource row on a primary page first (header + expected
         quantity + shared work/material terms), or the same match on
-        non-primary pages.
-        Sections link when their row carries the anchored scope; a labelled
-        mention, a different object qualifier never links, and the section
-        nearest the anchor page comes first. Schedule tables link when the
-        header scope's group contains the formula operand and shares task
-        terms (or shares terms while the operand sits under the same
-        header). Bare numbers, work-word overlap, and page proximity alone
-        never qualify. Source texts are untouched; no pages or scopes are
+        non-primary pages. An explicit empty ``expected_scope`` (``""``)
+        declares unknown provenance and never derives a group from an
+        expected quantity; legacy ``None`` (omitted) keeps historical
+        quantity-derived behaviour. Sections link when their row carries
+        the anchored scope; a labelled mention, a different object
+        qualifier never links, and the section nearest the anchor page
+        comes first. Schedule tables link when the header scope's group
+        contains the formula operand and shares task terms (or shares
+        terms while the operand sits under the same header). Bare
+        numbers, work-word overlap, and page proximity alone never
+        qualify. Source texts are untouched; no pages or scopes are
         hardcoded.
         """
         targets = [i for i in dict.fromkeys(target_indices or [])
@@ -686,26 +717,40 @@ class PageTextIndex:
                         bound |= measurement_scopes(segment, number, unit)
                     for display in bound:
                         evidence[_scope_key(display)] += 1
-        anchored = set(explicit) | set(evidence)
-        target_numbers = set(measured_operands)
-        scope_key = ""
-        primary_resource = _scoped_resource_scopes(
-            [self.texts[i] for i in targets], set(),
-            _terms(work_name) | _terms(comment),
-            set(measured_operands) | _numbers(volume), known, mention_res)
-        if len(primary_resource) == 1:
-            scope_key = next(iter(primary_resource))
-            anchored = {scope_key}
+        hint_key = _scope_key(expected_scope) if expected_scope else ""
+        if hint_key:
+            # Independent VOR provenance pins the subject: quantity matches
+            # may only rank inside it, never reassign it. Unknown hint
+            # fails closed instead of borrowing a convenient group.
+            if hint_key not in known:
+                return "", []
+            anchored = {hint_key}
             target_numbers = set(measured_operands) | _numbers(volume)
-        if not anchored and measured_operands | _numbers(volume):
-            resource_numbers = set(measured_operands) | _numbers(volume)
-            resource = _scoped_resource_scopes(
-                self.texts, set(targets), _terms(work_name) | _terms(comment),
-                resource_numbers, known, mention_res)
-            if len(resource) == 1:
-                scope_key = next(iter(resource))
-                anchored = {scope_key}
-                target_numbers = set(resource_numbers)
+            scope_key = hint_key
+        else:
+            anchored = set(explicit) | set(evidence)
+            target_numbers = set(measured_operands)
+            scope_key = ""
+            if expected_scope is None:
+                # Legacy path (provenance omitted): a uniquely scoped
+                # schedule resource row may anchor the scope by quantity.
+                primary_resource = _scoped_resource_scopes(
+                    [self.texts[i] for i in targets], set(),
+                    _terms(work_name) | _terms(comment),
+                    set(measured_operands) | _numbers(volume), known, mention_res)
+                if len(primary_resource) == 1:
+                    scope_key = next(iter(primary_resource))
+                    anchored = {scope_key}
+                    target_numbers = set(measured_operands) | _numbers(volume)
+                if not anchored and measured_operands | _numbers(volume):
+                    resource_numbers = set(measured_operands) | _numbers(volume)
+                    resource = _scoped_resource_scopes(
+                        self.texts, set(targets), _terms(work_name) | _terms(comment),
+                        resource_numbers, known, mention_res)
+                    if len(resource) == 1:
+                        scope_key = next(iter(resource))
+                        anchored = {scope_key}
+                        target_numbers = set(resource_numbers)
         if not anchored:
             return "", []
         if not scope_key:
@@ -771,7 +816,7 @@ class PageTextIndex:
             raw = self.texts[idx]
             table = ("поставщик" in text.lower() and "наименован" in text.lower())
             if table and scope_key in page_scopes:
-                items = [(header, joined) for header, joined, _ in _schedule_item_rows(raw, known, mention_res)]
+                items = [(header, joined) for header, joined, _, _ in _schedule_item_rows(raw, known, mention_res)]
                 scoped = [joined for header, joined in items
                           if _scope_key(header) == scope_key]
                 if not scoped:
@@ -906,58 +951,6 @@ def _shares_work_object(first, second):
     return len(shared) >= 2 or bool(distinctive)
 
 
-def _area_thickness_volume(calculation, evidence, expected_volume, expected_unit, formula,
-                           expected_work=""):
-    """Compute S × t only from dimensioned, verbatim PDF evidence, never VOR operands."""
-    if (_quote_text(str(expected_unit)).replace(" ", "") != "м3"
-            or not re.fullmatch(r"\s*\d+(?:[.,]\d+)?\s*\*\s*\d+(?:[.,]\d+)?\s*", str(formula))):
-        raise ValueError("Расчет площадь × толщина требует формулу произведения и единицу м3 в ВОР")
-    if not isinstance(calculation, dict) or set(calculation) != {"area", "thickness"}:
-        raise ValueError("Для расчета нужны площадь и толщина с доказательствами")
-    values = {}
-    factors = {"м2": Decimal(1), "м": Decimal(1), "см": Decimal("0.01"), "мм": Decimal("0.001")}
-    for name, allowed in (("area", {"м2"}), ("thickness", {"м", "см", "мм"})):
-        operand = calculation[name]
-        if not isinstance(operand, dict):
-            raise ValueError("Некорректный операнд расчета")
-        value = str(operand.get("value", "")).strip()
-        unit = _quote_text(str(operand.get("unit", ""))).replace(" ", "")
-        if len(value) > 32 or not re.fullmatch(r"\d+(?:[.,]\d+)?", value) or unit not in allowed:
-            raise ValueError("Некорректное значение или размерность операнда")
-        number = Decimal(value.replace(",", "."))
-        if number <= 0:
-            raise ValueError("Площадь и толщина должны быть положительными")
-        quote = operand["quote"].strip()
-        if not any(e["kind"] == "volume" and e["page"] == operand.get("page")
-                   and e["quote"] == quote for e in evidence):
-            raise ValueError("Операнд расчета не подкреплен проверенной цитатой объема")
-        # Bind number and unit in the same source phrase, not elsewhere in the quote.
-        measurement_text = _quote_text(re.sub(r"<[^>]+>", " ", quote))
-        measurement_text = re.sub(r"м\s+([23])\b", r"м\1", _squeeze_thousands(measurement_text))
-        measurements = re.findall(r"(?<![\w.,])(\d+(?:[.,]\d+)?)\s*(м2|мм|см|м)(?!\w)", measurement_text)
-        if not any(Decimal(n.replace(",", ".")) == number and u == unit for n, u in measurements):
-            raise ValueError("Число с единицей операнда отсутствует в цитате")
-        if name == "thickness" and str(expected_work).strip():
-            plain = _plain_page(quote)
-            hits = [m for m in _MEASURE_RE.finditer(plain)
-                    if Decimal(m.group(1).replace(",", ".")) == number
-                    and m.group(2).lower() == unit]
-            # The measured object stands left of the number
-            # ("плитами ... толщиной 0,15"); text after it belongs to
-            # neighbouring callouts and must not qualify the object.
-            windows = [plain[max(0, m.start() - 120):m.start()] for m in hits] or [plain]
-            if not any(_shares_work_object(window, str(expected_work)) for window in windows):
-                raise ValueError("Толщина относится к другому объекту, а не к найденной работе")
-        values[name] = number * factors[unit]
-    actual = values["area"] * values["thickness"]
-    expected = str(expected_volume).strip().replace(",", ".")
-    if not re.fullmatch(r"\d+(?:\.\d+)?", expected):
-        raise ValueError("Некорректный заявленный объем для сравнения с расчетом")
-    expected = Decimal(expected)
-    # Excel cached doubles can contain a binary tail; this is not a rounding allowance.
-    matches = abs(actual - expected) <= max(abs(actual), abs(expected)) * Decimal("1e-12")
-    text = format(actual, "f")
-    return (text.rstrip("0").rstrip(".") if "." in text else text), matches
 
 
 _RATE_UNIT_RE = re.compile(
@@ -990,10 +983,43 @@ def detect_consumption(comment, formula=""):
     return None, ""
 
 
-def parse_audit_response(raw, context, comment_required=True, *, expected_volume=None,
-                         expected_unit="", formula="", quote_sources=None,
-                         position_type="", expected_work="", expected_scope=""):
-    """Accept only evidence from the exact page fragments supplied to the model."""
+def build_claim_specs(position):
+    """Derive checkable VOR requirements from cells, never from PDF text."""
+    name = str(getattr(position, "work_name", "") or "")
+    comment = str(getattr(position, "comment", "") or "")
+    volume = str(getattr(position, "volume", "") or "")
+    unit = str(getattr(position, "unit", "") or "")
+    position_type = str(getattr(position, "position_type", "") or "")
+    source = getattr(position, "position_source", None)
+    cells = (source.get("cells", {}) if isinstance(source, dict)
+             else getattr(source, "cells", {}) or {})
+    def source_cells(*columns):
+        return sorted(address for address in cells
+                      if re.sub(r"\d+$", "", address) in columns)
+    specs = [
+        ClaimSpec(claim_id="presence", kind=ClaimKind.PRESENCE,
+                  label=name or position_type or "позиция",
+                  cells=source_cells("B"), expected_text=name, required=True),
+        ClaimSpec(claim_id="quantity", kind=ClaimKind.QUANTITY,
+                  label=f"{volume} {unit}".strip(), cells=source_cells("D", "E"),
+                  expected_text=f"{volume} {unit}".strip(),
+                  expected_value=volume, expected_unit=unit, required=True),
+        ClaimSpec(claim_id="unit", kind=ClaimKind.UNIT, label=unit,
+                  cells=source_cells("C"), expected_text=unit,
+                  expected_unit=unit, required=True),
+    ]
+    if name and position_type.casefold() == "работа":
+        specs.append(ClaimSpec(claim_id="method", kind=ClaimKind.METHOD,
+                               label=name, cells=source_cells("B", "I"),
+                               expected_text=name, required=True))
+    specs.extend(technical_specs(name, comment, position_type,
+                                source_cells("B", "I"),
+                                str(getattr(position, "formula", "") or "")))
+    return specs
+
+
+def _wire_claims(raw):
+    """Decode the claim-proposal container; malformed JSON fails the answer."""
     if not isinstance(raw, str) or not raw.strip():
         raise ValueError("Модель вернула пустой ответ")
     cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
@@ -1008,260 +1034,528 @@ def parse_audit_response(raw, context, comment_required=True, *, expected_volume
         wire = LlmAuditResponse.model_validate(data)
     except ValueError as exc:
         raise ValueError(f"В ответе модели некорректные поля: {exc}") from exc
-    data = wire.model_dump()
-    data["technology"] = {**data.get("technology", {}), "cross_pages": []}
-    if position_type.casefold() != "работа":
-        data["technology"] = {"status": "not_applicable", "expected": "", "actual": "", "cross_pages": []}
-        data["evidence"] = [e for e in data["evidence"]
-                            if e.get("kind") != "technology"]
-    for field in ("found_volume", "found_unit", "discrepancy_details"):
-        data[field] = data[field] if data[field] is not None else ""
-    data["found_volume"] = data["found_volume"] or "-"
-    data["found_unit"] = data["found_unit"] or "-"
-    if quote_sources is not None:
-        def resolve_source(item):
-            source_id = item.get("source_id") if isinstance(item, dict) else None
-            if not isinstance(source_id, str) or source_id not in quote_sources:
-                raise ValueError(f"Неизвестный идентификатор цитаты: {source_id}")
-            return quote_sources[source_id]
-        data["evidence"] = [
-            {**resolve_source(item), "kind": item.get("kind")} for item in data["evidence"]]
-        calculation = data.get("volume_calculation")
-        if isinstance(calculation, dict):
-            for operand in calculation.values():
-                source = resolve_source(operand)
-                operand.update(source)
+    return wire.model_dump()
+
+
+def _resolve_proposal_source(proposal_id, quote_sources):
+    if not isinstance(proposal_id, str) or proposal_id not in (quote_sources or {}):
+        raise EvidenceValidationError(
+            f"Неизвестный идентификатор цитаты: {proposal_id}",
+            kind="volume", expected=str(proposal_id),
+            hint="выбирай source_id только из переданного каталога фрагментов")
+    return quote_sources[proposal_id]
+
+
+def _validate_proposal_quote(page, quote, context):
+    if isinstance(page, str) and re.fullmatch(r"\d+", page.strip()):
+        page = int(page.strip())
+    if isinstance(page, bool) or not isinstance(page, int) or page not in context:
+        raise ValueError(f"Цитата ссылается на страницу {page}, которой не было в запросе")
+    if not isinstance(quote, str) or not quote.strip() or len(quote) > 1200:
+        raise ValueError("Некорректная цитата")
+    normalized_quote = _quote_text(quote)
+    if not normalized_quote or not any(normalized_quote in _quote_text(piece)
+                                       for piece in context[page].split("\n[...]\n")):
+        raise QuoteValidationError(page, quote)
+    return page, quote.strip()
+
+
+def _proposal_evidence(proposal, quote_sources, context, kind):
+    """Resolve one proposal to verbatim evidence; unknown IDs fail locally."""
+    ids = list(dict.fromkeys([
+        *(proposal.get("source_ids") or []),
+        *([proposal.get("value_source_id")] if proposal.get("value_source_id") else []),
+        *([proposal.get("unit_source_id")] if proposal.get("unit_source_id") else []),
+        *(proposal.get("subject_source_ids") or []),
+        *(proposal.get("relation_source_ids") or []),
+    ]))
     evidence = []
-    calculation = data.get("volume_calculation")
-    source_evidence = list(data["evidence"])
-    if calculation is not None:
-        if not isinstance(calculation, dict) or set(calculation) != {"area", "thickness"}:
-            raise ValueError("Некорректный расчет объема")
-        for operand in calculation.values():
-            if not isinstance(operand, dict):
-                raise ValueError("Некорректный операнд расчета")
-            operand["page"] = int(operand["page"]) if isinstance(operand.get("page"), str) and operand["page"].isdigit() else operand.get("page")
-            source_evidence.append({"page": operand.get("page"), "quote": operand.get("quote"), "kind": "volume"})
-    for item in source_evidence:
-        if not isinstance(item, dict):
-            raise ValueError("Некорректное доказательство")
-        page, quote, kind = item.get("page"), item.get("quote"), item.get("kind")
-        if isinstance(page, str) and re.fullmatch(r"\d+", page.strip()):
-            page = int(page.strip())
-        if isinstance(page, bool) or not isinstance(page, int) or page not in context:
-            raise ValueError(f"Цитата ссылается на страницу {page}, которой не было в запросе")
-        if str(kind).strip().casefold() == "technology":
-            kind = "technology"
-        if kind not in {"work", "volume", "unit", "comment", "technology"}:
-            raise ValueError("Неизвестный вид доказательства")
-        if not isinstance(quote, str) or not quote.strip() or len(quote) > 1200:
-            raise ValueError("Некорректная цитата")
-        normalized_quote = _quote_text(quote)
-        if not normalized_quote or not any(normalized_quote in _quote_text(piece)
-                                           for piece in context[page].split("\n[...]\n")):
-            raise QuoteValidationError(page, quote)
-        entry = {"page": page, "quote": quote.strip(), "kind": kind}
+    for source_id in ids:
+        source = _resolve_proposal_source(source_id, quote_sources)
+        page, quote = _validate_proposal_quote(
+            source.get("page"), source.get("quote"), context)
+        entry = {"page": page, "quote": quote, "kind": kind,
+                 "source_id": source_id, "locator": source.get("locator", source),
+                 "binding_role": ("value" if source_id == proposal.get("value_source_id")
+                                  else "unit" if source_id == proposal.get("unit_source_id")
+                                  else "subject" if source_id in proposal.get("subject_source_ids", [])
+                                  else "relation" if source_id in proposal.get("relation_source_ids", [])
+                                  else "fact")}
         if entry not in evidence:
             evidence.append(entry)
-    data["evidence"] = evidence
-    consumption_rate, consumption_unit = detect_consumption(expected_work, formula)
-    data["consumption"] = ({"rate": format(consumption_rate, "f"), "unit": consumption_unit}
-                           if consumption_rate is not None else None)
-    if calculation is not None:
-        if not data["work_found"]:
-            raise ValueError("Расчет объема невозможен без найденной работы")
-        if consumption_rate is not None:
-            raise EvidenceValidationError(
-                "Объем по норме расхода нельзя выводить через S×t: толщина плиты и расход щебня "
-                "имеют разный физический смысл при совпадающих числах",
-                kind="volume", expected="",
-                hint="убери volume_calculation из ответа: для нормы расхода (м3/м2) расчёт S×t запрещён, "
-                     "объём подтверждается только прямой цитатой со значением")
-        if expected_scope:
-            for operand in calculation.values():
-                scopes = measurement_scopes(operand["quote"], operand["value"], operand["unit"])
-                if not scopes:
-                    source = context[operand["page"]]
-                    scopes = measurement_scopes(source, operand["value"], operand["unit"])
-                if not scopes:
-                    scopes = set().union(*section_scopes(context[operand["page"]]).values())
-                keys = {_scope_key(scope) for scope in scopes}
-                if keys and (len(keys) != 1 or _scope_key(expected_scope) not in keys):
-                    raise ValueError("Операнд расчёта относится к другому или неоднозначному участку ПД")
-        actual, matches = _area_thickness_volume(
-            calculation, evidence, expected_volume, expected_unit, formula,
-            expected_work=expected_work)
-        data.update(found_volume=actual, found_unit="м3",
-                    volume_confirmed=matches, unit_confirmed=True)
-        area, thickness = calculation["area"], calculation["thickness"]
-        detail = (f"Расчет по ПД: {format_ru(area['value'])} {area['unit']} × "
-                  f"{format_ru(thickness['value'])} {thickness['unit']} = {format_ru(actual)} м3.")
-        if not matches:
-            detail += (f" Заявлено в ВОР: {format_ru(expected_volume)} {expected_unit}; "
-                       "объем не совпадает.")
-        data["discrepancy_details"] = detail + " " + data["discrepancy_details"]
-    page = data["found_page"]
-    if not data["work_found"]:
-        if page not in (None, "", "-") or evidence or any(data[f] for f in ("volume_confirmed", "unit_confirmed")):
-            raise ValueError("Ненайденная работа не может иметь подтвержденную страницу или объем")
-        data["found_page"] = "-"
-        data["found_volume"] = "-"
-        data["found_unit"] = "-"
-    else:
-        if isinstance(page, bool) or not re.fullmatch(r"\d+", str(page).strip()):
-            raise ValueError("found_page должен содержать номер страницы найденной работы")
-        page = int(str(page).strip())
-        cited_pages = sorted({item["page"] for item in evidence if item["kind"] == "work"})
-        if len(cited_pages) == 1 and cited_pages[0] in context:
-            # The work citation is already validated verbatim against the
-            # context: a single work page fixes a mismatched found_page
-            # instead of discarding the whole answer.
-            page = cited_pages[0]
-        work_quotes = [item["quote"] for item in evidence
-                       if item["page"] == page and item["kind"] == "work"]
-        if not work_quotes:
-            raise ValueError("Найденная работа не подкреплена цитатой с указанной страницы")
-        if str(expected_work).strip():
-            work_text = " ".join(work_quotes)
-            page_ok = _shares_work_object(context[page], str(expected_work))
-            if not _shares_work_object(work_text, str(expected_work)) and not page_ok:
-                raise ValueError("Цитата work относится к другому объекту, а не к проверяемой работе")
-        if position_type.casefold() == "работа" and is_material_specification(context[page]):
-            raise ValueError("Описанная работа есть в другом фрагменте этого пакета: выбери kind=work "
-                             "со страницы описания (например, 84), а спецификацию оставь для kind=volume/unit.")
-        data["found_page"] = str(page)
-        for flag, kind, field in (("volume_confirmed", "volume", "found_volume"),
-                                  ("unit_confirmed", "unit", "found_unit")):
-            if calculation is not None:
-                continue  # Derived volume/unit are proved by both dimensioned operands above.
-            quotes = [e["quote"] for e in evidence if e["kind"] == kind]
-            if kind == "unit" and not quotes and data[field] != "-":
-                # A volume quote can also prove its unit; no second copy is needed.
-                unit = _quote_text(data[field]).rstrip(".")
-                for e in evidence:
-                    if e["kind"] != "volume":
+    return evidence
+
+
+def _row_texts(quote):
+    """Split an HTML quote into row texts; plain quotes stay whole."""
+    if "<tr" not in quote.lower():
+        return [quote]
+    rows = re.findall(r"<tr.*?>(.*?)</tr>", quote, re.DOTALL | re.IGNORECASE)
+    return [" | ".join(
+        _plain_page(cell).strip() for cell in re.findall(
+            r"<t[dh][^>]*>(.*?)</t[dh]>", row,
+            re.DOTALL | re.IGNORECASE)) for row in rows] or [quote]
+
+
+def _bind_quantity_fact(quotes, expected_work=""):
+    """Bind the single atomic number+unit fact addressed by the proposal.
+
+    Binding uses only proposal geometry: one measurement in the addressed
+    text, adjacent table cells, or one work-aligned schedule row. The
+    expected VOR value never selects which number wins; comparison
+    happens separately.
+    """
+    candidates = []
+    for quote in quotes:
+        for text in _row_texts(quote):
+            measurements = iter_measurements(text)
+            cells = [chunk.strip() for chunk in text.split("|")]
+            if len(cells) > 1:
+                # Table row: a bare number in its own cell pairs with a
+                # neighbouring unit cell. Numbers embedded in a text cell
+                # (density 500 inside the name) never borrow a neighbour
+                # unit; they need their own inline measurement.
+                cell_numbers = []
+                for pos, chunk in enumerate(cells):
+                    bare = re.sub(r"\s+", "", chunk)
+                    if not re.fullmatch(r"[+-]?\d+(?:[.,]\d+)?", bare):
                         continue
-                    words = re.findall(r"\w+", _quote_text(e["quote"]))
-                    if unit in words or (len(unit) >= 3 and _terms(unit) & _terms(e["quote"])):
-                        quotes.append(e["quote"])
-            if (data[flag] or data[field] != "-") and (data[field] == "-" or not quotes):
-                raise EvidenceValidationError(
-                    f"Поле {field} не подкреплено доказательством",
-                    kind=kind, expected=str(data[field]),
-                    hint=(f"добавь evidence с kind={kind}, выбрав source_id фрагмента, "
-                          f"где видно значение {data[field]}"))
-            if kind == "volume" and data[field] != "-":
-                quoted_numbers = _numbers(" ".join(quotes))
-                if quoted_numbers and not _numbers(data[field]) <= quoted_numbers:
-                    raise EvidenceValidationError(
-                        "Фактический объем отсутствует в цитате",
-                        kind=kind, expected=str(data[field]),
-                        hint=("выбери source_id того фрагмента, где видно число "
-                              f"{data[field]} вместе с единицей; фрагмент шапки таблицы без числа не подходит"))
-                tables = [q for q in quotes if "<tr" in q.lower()]
-                schedules = [q for q in tables
-                             if "поставщик" in q.lower() and "наименован" in q.lower()]
-                if str(expected_work).strip() and schedules:
-                    claim = _numbers(data[field])
-                    work_terms = (_compact_terms(str(expected_work))
-                                  - _OPERATION_STOP_TERMS
-                                  - {t for t in _compact_terms(str(expected_work)) if any(c.isdigit() for c in t)})
-                    aligned = False
-                    for quote in schedules:
-                        rows = re.findall(r"<tr.*?>(.*?)</tr>", quote, re.DOTALL | re.IGNORECASE)
-                        for row in rows or [quote]:
-                            if claim and claim <= _numbers(row) and (work_terms & _compact_terms(row)):
-                                aligned = True
-                                break
-                        if aligned:
-                            break
-                    if not aligned:
-                        raise EvidenceValidationError(
-                            "Число объёма и работа находятся в разных строках таблицы",
-                            kind=kind, expected=str(data[field]),
-                            hint=("выбери source_id фрагмента, где число "
-                                  f"{data[field]} стоит в одной строке таблицы с проверяемой работой"))
-        if comment_required and data["comment_confirmed"] and not any(e["kind"] == "comment" for e in evidence):
-            data["comment_confirmed"] = False
-        technology = data["technology"]
-        state = technology["status"]
-        if position_type.casefold() == "работа" and state in {"not_checked", "not_applicable"}:
-            raise ValueError("Для найденной операции требуется независимая оценка technology")
-        expected, actual = technology["expected"].strip(), technology["actual"].strip()
-        if state in {"confirmed", "unconfirmed", "different"}:
-            if not expected or _quote_text(expected) not in _quote_text(expected_work):
-                raise EvidenceValidationError(
-                    "Проверяемая технология должна быть дословным условием ВОР",
-                    kind="technology", expected=str(expected_work),
-                    hint="скопируй expected дословно из наименования или примечания ВОР из запроса")
-        if state in {"confirmed", "unconfirmed", "different"}:
-            quotes = [_quote_text(re.sub(r"<[^>]+>", " ", e["quote"])) for e in evidence
-                      if e["kind"] == "technology"]
-            actual_terms = _compact_terms(actual)
-            if not actual or not any(actual_terms <= _compact_terms(quote) for quote in quotes):
-                raise EvidenceValidationError(
-                    "Технология ПД не подкреплена цитатой kind=technology",
-                    kind="technology", expected=str(actual),
-                    hint=("выбери source_id фрагмента, где дословно видно «"
-                          f"{actual[:120]}»; actual обязан присутствовать именно в выбранном фрагменте"))
-        if state == "confirmed":
-            words = re.findall(r"[а-яёa-z]+", expected.lower())
-            quote_terms = set()
-            for quote in quotes:
-                quote_terms |= _compact_terms(quote)
-            missing = sorted(
-                term for term in _compact_terms(expected)
-                if len(term) >= 5 and term not in quote_terms
-                and any(term in word for word in words))
-            if len(missing) >= 2:
-                technology["status"] = "unconfirmed"
-                technology["actual"] = actual
-                data["discrepancy_details"] = (
-                    data["discrepancy_details"].strip()
-                    + f" В цитате ПД отсутствуют условия ВОР ({', '.join(missing)}); требуется сверка."
-                ).strip()
+                    for token in _numbers(chunk):
+                        neighbours = " ".join(cells[max(0, pos - 1):pos + 2])
+                        unit_hit = canonical_unit(neighbours)
+                        if unit_hit is None:
+                            for cell in cells[max(0, pos - 1):pos + 2]:
+                                unit_hit = canonical_unit(cell)
+                                if unit_hit is not None:
+                                    break
+                        if unit_hit is not None:
+                            cell_numbers.append((token, unit_hit[0]))
+                distinct_cells = {(format(token, "f"), unit)
+                                  for token, unit in cell_numbers}
+                if len(distinct_cells) == 1:
+                    token, unit = next(iter(distinct_cells))
+                    hit = next(iter(iter_measurements(f"{token} {unit}")), None)
+                    if hit is not None:
+                        candidates.append((text, hit))
+                        continue
+                if cell_numbers:
+                    return None, "ambiguous_measurements"
+            distinct_text = {(format(item.value, "f"), item.unit)
+                             for item in measurements if item.value is not None}
+            if len(distinct_text) == 1:
+                candidates.append((text, measurements[0]))
+                continue
+            if not measurements:
+                cells = [chunk.strip() for chunk in text.split("|")]
+                numbers = []
+                for pos, chunk in enumerate(cells):
+                    for token in _numbers(chunk):
+                        neighbours = " ".join(cells[max(0, pos - 1):pos + 2])
+                        unit_hit = canonical_unit(neighbours)
+                        if unit_hit is None:
+                            for cell in cells[max(0, pos - 1):pos + 2]:
+                                unit_hit = canonical_unit(cell)
+                                if unit_hit is not None:
+                                    break
+                        if unit_hit is not None:
+                            numbers.append((token, unit_hit[0]))
+                distinct = {(format(token, "f"), unit) for token, unit in numbers}
+                if len(distinct) == 1:
+                    token, unit = next(iter(distinct))
+                    hit = next(iter(iter_measurements(f"{token} {unit}")), None)
+                    if hit is not None:
+                        candidates.append((text, hit))
+                    continue
+                if numbers:
+                    return None, "ambiguous_measurements"
+                continue
+            if not (str(expected_work).strip() and "<tr" in quote.lower()
+                    and "поставщик" in quote.lower()
+                    and "наименован" in quote.lower()):
+                return None, "ambiguous_measurements"
+            work_terms = (_compact_terms(str(expected_work))
+                          - _OPERATION_STOP_TERMS
+                          - {term for term in _compact_terms(str(expected_work))
+                             if any(char.isdigit() for char in term)})
+            cells = [chunk.strip() for chunk in text.split("|")]
+            row_measurements = [
+                measurement for measurement in measurements
+                if any(format(measurement.value, "f") in chunk
+                       for chunk in cells if measurement.value is not None)]
+            if (work_terms & _compact_terms(text)) and len(row_measurements) == 1:
+                candidates.append((text, row_measurements[0]))
+                continue
+            return None, "ambiguous_measurements"
+    distinct = {(format(item.value, "f"), item.unit)
+                for _, item in candidates if item.value is not None}
+    if not candidates:
+        quoted_numbers = _numbers(" ".join(quotes))
+        if not quoted_numbers:
+            return None, "worded_quantity_without_digits"
+        return None, "quantity_not_bound_to_unit"
+    if len(distinct) != 1:
+        # Several bound facts from distinct addressed fragments are a
+        # source conflict (both kept), not an unresolvable ambiguity.
+        pages = set()
+        for quote in quotes:
+            for text, _ in candidates:
+                if text in _row_texts(quote):
+                    pages.add(quote)
+        if len(pages) > 1:
+            return candidates[0][1], "conflicting_facts"
+        return None, "ambiguous_measurements"
+    return candidates[0][1], "bound"
+
+
+def _compare_bound_fact(fact, expected_volume, expected_unit):
+    if expected_volume is None:
+        return "equal"
+    expected = parse_measurement(str(expected_volume), unit=str(expected_unit))
+    actual = parse_measurement(str(fact.value), unit=fact.unit)
+    comparison = compare_measurements(expected, actual)
+    if comparison["state"] == "confirmed":
+        return "equal"
+    if comparison["state"] == "review_required":
+        return "measurement_unresolved"
+    return ("unit_mismatch" if comparison["reason"] == "incompatible_unit"
+            else comparison["reason"])
+
+
+def _facts_for(claim_id, proposal_evidence):
+    facts = []
+    for item in proposal_evidence:
+        facts.append(EvidenceFact(
+            claim_id=claim_id, value=item.get("quote", "")[:500], unit="",
+            source_ids=[item.get("source_id", "")] if item.get("source_id") else [],
+            value_source_id=item.get("source_id", "") if item.get("kind") == "volume" else "",
+            unit_source_id=item.get("source_id", "") if item.get("kind") == "unit" else "",
+            subject_source_ids=[item.get("source_id", "")] if item.get("kind") == "work" and item.get("source_id") else [],
+            locators=[item.get("locator", {})],
+        ))
+    return facts
+
+
+def _evaluate_presence(proposal_evidence, expected_work, position_type, context):
+    if not proposal_evidence:
+        return ClaimCheck(claim_id="presence", kind=ClaimKind.PRESENCE,
+                          state=ClaimState.NOT_FOUND,
+                          reasons=["no_proposal"], required=True), []
+    work_text = " ".join(item["quote"] for item in proposal_evidence)
+    if str(expected_work).strip():
+        page_ok = any(_shares_work_object(context[item["page"]], str(expected_work))
+                      for item in proposal_evidence
+                      if "<tr" not in context[item["page"]].lower())
+        if not _shares_work_object(work_text, str(expected_work)) and not page_ok:
+            return ClaimCheck(claim_id="presence", kind=ClaimKind.PRESENCE,
+                              state=ClaimState.NOT_FOUND,
+                              reasons=["work_object_mismatch"], required=True), []
+    if position_type.casefold() == "работа":
+        pages = {item["page"] for item in proposal_evidence}
+        if pages and all(is_material_specification(context[page]) for page in pages):
+            return ClaimCheck(claim_id="presence", kind=ClaimKind.PRESENCE,
+                              state=ClaimState.REVIEW_REQUIRED,
+                              reasons=["operation_needs_description_page"],
+                              required=True), []
+    return ClaimCheck(claim_id="presence", kind=ClaimKind.PRESENCE,
+                      state=ClaimState.CONFIRMED, reasons=["work_cited"],
+                      facts=_facts_for("presence", proposal_evidence),
+                      required=True), proposal_evidence
+
+
+def _evaluate_quantity(proposal_evidence, expected_volume, expected_unit,
+                       expected_work):
+    if not proposal_evidence:
+        return ClaimCheck(claim_id="quantity", kind=ClaimKind.QUANTITY,
+                          state=ClaimState.NOT_FOUND, reasons=["no_proposal"],
+                          required=True), []
+    value_items = [item for item in proposal_evidence
+                   if item.get("binding_role") not in {"subject", "relation", "unit"}]
+    if not value_items:
+        value_items = proposal_evidence
+    quotes = [item["quote"] for item in value_items]
+    if any(item.get("locator", {}).get("quality", "usable") != "usable"
+           for item in value_items):
+        return ClaimCheck(claim_id="quantity", kind=ClaimKind.QUANTITY,
+                          state=ClaimState.REVIEW_REQUIRED, reasons=["unusable_ocr"],
+                          facts=_facts_for("quantity", proposal_evidence),
+                          required=True), proposal_evidence
+    fact, bound = _bind_quantity_fact(quotes, expected_work)
+    if fact is None:
+        if bound == "worded_quantity_without_digits":
+            return ClaimCheck(claim_id="quantity", kind=ClaimKind.QUANTITY,
+                              state=ClaimState.REVIEW_REQUIRED,
+                              reasons=["worded_quantity_without_digits"],
+                              required=True), proposal_evidence
+        if bound == "ambiguous_measurements":
+            return ClaimCheck(claim_id="quantity", kind=ClaimKind.QUANTITY,
+                              state=ClaimState.REVIEW_REQUIRED,
+                              reasons=["ambiguous_measurements"],
+                              required=True), proposal_evidence
+        return ClaimCheck(claim_id="quantity", kind=ClaimKind.QUANTITY,
+                          state=ClaimState.NOT_FOUND,
+                          reasons=["quantity_not_bound_to_unit"],
+                          required=True), []
+    if bound == "conflicting_facts":
+        return ClaimCheck(claim_id="quantity", kind=ClaimKind.QUANTITY,
+                          state=ClaimState.SOURCE_CONFLICT,
+                          reasons=["conflicting_applicable_facts"],
+                          facts=_facts_for("quantity", proposal_evidence),
+                          required=True), proposal_evidence
+    outcome = _compare_bound_fact(fact, expected_volume, expected_unit)
+    if outcome == "measurement_unresolved":
+        return ClaimCheck(claim_id="quantity", kind=ClaimKind.QUANTITY,
+                          state=ClaimState.REVIEW_REQUIRED, reasons=[outcome],
+                          facts=_facts_for("quantity", proposal_evidence),
+                          required=True), proposal_evidence
+    if outcome == "equal":
+        return ClaimCheck(claim_id="quantity", kind=ClaimKind.QUANTITY,
+                          state=ClaimState.CONFIRMED, reasons=["equal"],
+                          facts=_facts_for("quantity", proposal_evidence),
+                          required=True), proposal_evidence
+    return ClaimCheck(claim_id="quantity", kind=ClaimKind.QUANTITY,
+                      state=ClaimState.CONTRADICTION, reasons=[outcome],
+                      facts=_facts_for("quantity", proposal_evidence),
+                      required=True), proposal_evidence
+
+
+def _evaluate_unit(proposal_evidence, expected_unit):
+    if not proposal_evidence:
+        return ClaimCheck(claim_id="unit", kind=ClaimKind.UNIT,
+                          state=ClaimState.NOT_FOUND, reasons=["no_proposal"],
+                          required=True), []
+    evidenced_units = set()
+    for item in proposal_evidence:
+        quote = item["quote"]
+        texts = [quote]
+        if "<tr" in quote.lower():
+            rows = re.findall(r"<tr.*?>(.*?)</tr>", quote,
+                              re.DOTALL | re.IGNORECASE)
+            texts = [" | ".join(
+                _plain_page(cell).strip() for cell in re.findall(
+                    r"<t[dh][^>]*>(.*?)</t[dh]>", row,
+                    re.DOTALL | re.IGNORECASE)) for row in rows] or texts
+        for text in texts:
+            evidenced_units.update(m.unit for m in iter_measurements(text))
+            for chunk in text.split("|"):
+                hit = canonical_unit(chunk.strip())
+                if hit is not None:
+                    evidenced_units.add(hit[0])
+    expected_hit = canonical_unit(str(expected_unit or ""))
+    if expected_hit is not None and evidenced_units:
+        if expected_hit[0] not in evidenced_units:
+            return ClaimCheck(claim_id="unit", kind=ClaimKind.UNIT,
+                              state=ClaimState.CONTRADICTION,
+                              reasons=["unit_mismatch"],
+                              facts=_facts_for("unit", proposal_evidence),
+                              required=True), proposal_evidence
+        return ClaimCheck(claim_id="unit", kind=ClaimKind.UNIT,
+                          state=ClaimState.CONFIRMED, reasons=["unit_cited"],
+                          facts=_facts_for("unit", proposal_evidence),
+                          required=True), proposal_evidence
+    if evidenced_units:
+        return ClaimCheck(claim_id="unit", kind=ClaimKind.UNIT,
+                          state=ClaimState.CONFIRMED, reasons=["unit_cited"],
+                          facts=_facts_for("unit", proposal_evidence),
+                          required=True), proposal_evidence
+    return ClaimCheck(claim_id="unit", kind=ClaimKind.UNIT,
+                      state=ClaimState.NOT_FOUND, reasons=["unit_not_bound"],
+                      required=True), []
+
+
+def _evaluate_method(proposal_evidence, expected_work, required):
+    if not proposal_evidence:
+        return ClaimCheck(claim_id="method", kind=ClaimKind.METHOD,
+                          state=ClaimState.NOT_FOUND, reasons=["no_proposal"],
+                          required=required), []
+    actual_terms = _compact_terms(" ".join(
+        item["quote"] for item in proposal_evidence))
+    expected_terms = _compact_terms(str(expected_work or ""))
+    if not expected_terms or not (expected_terms & actual_terms):
+        return ClaimCheck(claim_id="method", kind=ClaimKind.METHOD,
+                          state=ClaimState.REVIEW_REQUIRED,
+                          reasons=["method_equivalence_unproven"],
+                          required=required), proposal_evidence
+    missing = sorted(term for term in expected_terms
+                     if len(term) >= 5 and term not in actual_terms)
+    if len(missing) >= 2:
+        return ClaimCheck(claim_id="method", kind=ClaimKind.METHOD,
+                          state=ClaimState.REVIEW_REQUIRED,
+                          reasons=["method_terms_missing"], required=required), proposal_evidence
+    return ClaimCheck(claim_id="method", kind=ClaimKind.METHOD,
+                      state=ClaimState.CONFIRMED, reasons=["method_cited"],
+                      facts=_facts_for("method", proposal_evidence),
+                      required=required), proposal_evidence
+
+
+def parse_audit_response(raw, context, comment_required=True, *, expected_volume=None,
+                         expected_unit="", formula="", quote_sources=None,
+                         position_type="", expected_work="", expected_scope="",
+                         claim_specs=None):
+    """Validate claim proposals and evaluate every requirement in code."""
+    wire = _wire_claims(raw)
+    specs = {spec.claim_id: spec for spec in (claim_specs or [])}
+    known_ids = set(specs) or {"presence", "quantity", "unit", "method",
+                               "attribute", "workbook", "comment"}
+    grouped: dict[str, list[dict]] = {}
+    rejected: list[str] = []
+    for proposal in wire.get("claims", []):
+        try:
+            proposal = LlmClaimProposal.model_validate(proposal).model_dump()
+        except ValueError as exc:
+            rejected.append(f"Некорректное предложение: {exc}")
+            continue
+        claim_id = proposal.get("claim_id")
+        if claim_id not in known_ids:
+            rejected.append(f"Неизвестное требование: {claim_id}")
+            continue
+        kind = {"presence": "work", "quantity": "volume", "unit": "unit",
+                "method": "technology", "attribute": "comment",
+                "workbook": "comment", "comment": "comment"}.get(
+                    claim_id, "comment")
+        try:
+            items = _proposal_evidence(proposal, quote_sources, context, kind)
+            if expected_scope:
+                wanted_scope = _scope_key(expected_scope)
+                for item in items:
+                    locator_scope = item.get("locator", {}).get("scope_key", "")
+                    scopes = {_scope_key(locator_scope)} if locator_scope else set(
+                        _known_scopes(_plain_page(item["quote"])))
+                    if scopes and wanted_scope not in scopes:
+                        raise ValueError("Источник относится к другому участку")
+        except (EvidenceValidationError, QuoteValidationError, ValueError) as exc:
+            rejected.append(f"{claim_id}: {exc}")
+            continue
+        grouped.setdefault(claim_id, []).extend(items)
+    consumption_rate, consumption_unit = detect_consumption(expected_work, formula)
+    checks: list[ClaimCheck] = []
+    evidence: list[dict] = []
+    presence_check, presence_evidence = _evaluate_presence(
+        grouped.get("presence", []), expected_work, position_type, context)
+    checks.append(presence_check)
+    evidence.extend(presence_evidence)
+    quantity_check, quantity_evidence = _evaluate_quantity(
+        grouped.get("quantity", []), expected_volume, expected_unit,
+        expected_work)
+    checks.append(quantity_check)
+    evidence.extend(quantity_evidence)
+    unit_proposals = grouped.get("unit", [])
+    if not unit_proposals and quantity_check.state in {"confirmed", "contradiction"}:
+        unit_proposals = grouped.get("quantity", [])
+    unit_check, unit_evidence = _evaluate_unit(unit_proposals, expected_unit)
+    checks.append(unit_check)
+    for item in unit_evidence:
+        if item not in evidence:
+            evidence.append(item)
+    method_required = position_type.casefold() == "работа" and bool(
+        str(expected_work).strip())
+    method_check, method_evidence = _evaluate_method(
+        grouped.get("method", []), expected_work, method_required)
+    if method_required or grouped.get("method"):
+        checks.append(method_check)
+        evidence.extend(method_evidence)
+    for spec in specs.values():
+        if spec.claim_id in {"presence", "quantity", "unit", "method"}:
+            continue
+        items = grouped.get(spec.claim_id, [])
+        checks.append(predicate_check(spec, items))
+        evidence.extend(item for item in items if item not in evidence)
+    geometry = geometry_product(specs, checks, grouped, expected_scope)
+    if geometry is not None:
+        checks.append(geometry)
+    comment_items = grouped.get("attribute", []) + grouped.get("comment", [])
+    if comment_required:
+        if comment_items:
+            checks.append(ClaimCheck(claim_id="comment", kind=ClaimKind.ATTRIBUTE,
+                                     state=ClaimState.CONFIRMED,
+                                     reasons=["comment_cited"], required=False))
+            evidence.extend(comment_items)
+        else:
+            checks.append(ClaimCheck(claim_id="comment", kind=ClaimKind.ATTRIBUTE,
+                                     state=ClaimState.NOT_FOUND,
+                                     reasons=["comment_not_cited"], required=False))
+    details = str(wire.get("discrepancy_details") or "")
+    for message in rejected:
+        details = f"{details} Отклонено предложение: {message}.".strip()
+    if not evidence and "не доказывает" not in details:
+        details = (details + " В переданных фрагментах подходящих сведений не найдено; это не доказывает их отсутствие в PDF.").strip()
+    by_id = {check.claim_id: check for check in checks}
+    work_found = by_id["presence"].state == ClaimState.CONFIRMED
+    volume_confirmed = by_id["quantity"].state == ClaimState.CONFIRMED
+    unit_confirmed = by_id["unit"].state == ClaimState.CONFIRMED
+    comment_confirmed = (by_id.get("comment") is not None
+                         and by_id["comment"].state == ClaimState.CONFIRMED)
     if not comment_required:
-        data["comment_confirmed"] = True
-    data["found_pages"] = sorted({e["page"] for e in evidence})
-    data["status"] = "ОК" if all(data[f] for f in (
-        "work_found", "volume_confirmed", "unit_confirmed")) else "Ошибка"
-    if data["status"] == "Ошибка" and not data["discrepancy_details"]:
-        missing = [label for flag, label in (
-            ("work_found", "работа"), ("volume_confirmed", "объём"),
-            ("unit_confirmed", "единица измерения"))
-            if not data[flag]]
-        data["discrepancy_details"] = "Не подтверждены: " + ", ".join(missing) + "."
-    if comment_required and not data["comment_confirmed"]:
-        data["discrepancy_details"] = (
-            data["discrepancy_details"].strip()
-            + " Примечание ВОР не подтверждено цитатой ПД."
-        ).strip()
-    if data["work_found"] and position_type.casefold() == "работа":
-        technology = data["technology"]
-        if technology["status"] == "different":
-            quantities_ok = bool(data["volume_confirmed"] and data["unit_confirmed"])
-            data["status"] = INCOMPLETE if quantities_ok else "Ошибка"
-            data["discrepancy_details"] += (
-                f" Различается описание технологии: ВОР — «{technology['expected']}», "
-                f"ПД — «{technology['actual']}»; требуется инженерная сверка.")
-        elif technology["status"] == "unconfirmed":
-            data["status"] = INCOMPLETE
-            data["discrepancy_details"] += " Способ выполнения не подтверждён; наличие операции сохранено."
-    data["quantity_basis"] = ("consumption" if consumption_rate is not None
-                              else "derived" if calculation is not None else "direct"
-                              if data["found_volume"] != "-" else "unknown")
-    data["search_complete"] = data["work_found"]
+        comment_confirmed = True
+    found_pages = sorted({item["page"] for item in evidence})
+    presence_pages = sorted({item["page"] for item in presence_evidence})
+    quantity_pages = sorted({item["page"] for item in quantity_evidence})
+    if len(presence_pages) == 1:
+        found_page = str(presence_pages[0])
+    elif len(quantity_pages) == 1:
+        found_page = str(quantity_pages[0])
+    elif presence_pages:
+        found_page = str(presence_pages[0])
+    else:
+        found_page = "-"
+    quantity_texts = [item["quote"] for item in quantity_evidence]
+    fact, binding = _bind_quantity_fact(
+        quantity_texts, expected_work) if quantity_texts else (None, "")
+    if binding != "bound":
+        fact = None
+    found_volume = format(fact.value, "f") if fact is not None and fact.value is not None else "-"
+    found_unit = fact.unit if fact is not None else "-"
+    status = claim_status(checks)
+    if status == "Ошибка" and not details:
+        missing = [check.claim_id for check in checks
+                   if check.required and check.state != ClaimState.CONFIRMED]
+        details = "Не подтверждены: " + ", ".join(missing) + "."
+    method_state = by_id.get("method").state if by_id.get("method") else None
+    technology = {"status": "not_applicable", "expected": "", "actual": "",
+                  "cross_pages": []}
+    if position_type.casefold() == "работа" and str(expected_work).strip():
+        if method_state == ClaimState.CONFIRMED:
+            technology = {"status": "confirmed", "expected": str(expected_work),
+                          "actual": " ".join(
+                              item["quote"] for item in method_evidence)[:500],
+                          "cross_pages": []}
+        elif method_state in {ClaimState.NOT_FOUND, ClaimState.REVIEW_REQUIRED}:
+            technology = {"status": "unconfirmed", "expected": str(expected_work),
+                          "actual": "", "cross_pages": []}
+    data = {
+        "status": status,
+        "work_found": work_found,
+        "volume_confirmed": volume_confirmed,
+        "unit_confirmed": unit_confirmed,
+        "comment_confirmed": comment_confirmed,
+        "found_volume": found_volume,
+        "found_unit": found_unit,
+        "found_page": found_page,
+        "found_pages": found_pages,
+        "evidence": [{"page": item["page"], "quote": item["quote"],
+                      "kind": item["kind"]} for item in evidence],
+        "discrepancy_details": details,
+        "search_complete": work_found,
+        "technology": technology,
+        "quantity_basis": ("consumption" if consumption_rate is not None
+                           else "direct" if found_volume != "-" else "unknown"),
+        "consumption": ({"rate": format(consumption_rate, "f"),
+                         "unit": consumption_unit}
+                        if consumption_rate is not None else None),
+        "checks": [check.model_dump(mode="json") for check in checks],
+        "evaluation_version": "evidence-claims-v1",
+    }
     return AuditResult.from_legacy(data).to_legacy()
 
 
 def audit_text_pages(index, target_indices, ask, work_name, volume, reference="", comment="",
                      max_contexts=6, max_context_chars=10000, max_total_chars=60000, max_pages=4, unit="",
-                     formula="", search_available=None):
+                     formula="", search_available=None, expected_scope=None, confirm=None):
     """Check references first; the first located work stops the search."""
     if min(max_contexts, max_context_chars, max_total_chars, max_pages) <= 0:
         raise ValueError("Лимиты поиска должны быть положительными")
     primary = list(dict.fromkeys(i for i in target_indices if 0 <= i < len(index.texts)))
-    scope, related = index.related_context(primary, work_name, volume, formula, comment)
+    scope, related = index.related_context(primary, work_name, volume, formula, comment,
+                                            expected_scope=expected_scope)
     with span("rank-candidate-pages", as_type="retriever", input={
             "work": work_name, "volume": volume, "comment": comment, "reference": reference}) as observation:
         candidates = index.candidates(work_name, comment, reference, volume, primary)
@@ -1278,72 +1572,103 @@ def audit_text_pages(index, target_indices, ask, work_name, volume, reference=""
     failures = {i: error for i, error in index.errors.items() if i in primary}
     last_failure, confirmation_used = None, False
 
+    def _checks(result):
+        return {check["claim_id"]: check for check in result.get("checks", [])
+                if isinstance(check, dict) and check.get("claim_id")}
+
+    def _merge_claims(base, extra):
+        """Merge validated checks by claim_id; confirmed facts never regress."""
+        merged = _checks(base)
+        for claim_id, check in _checks(extra).items():
+            current = merged.get(claim_id)
+            if current is None:
+                merged[claim_id] = check
+                continue
+            facts = list(current.get("facts", []))
+            facts.extend(fact for fact in check.get("facts", []) if fact not in facts)
+            states = {check.get("state"), current.get("state")}
+            if (states == {"confirmed", "contradiction"}
+                    or "source_conflict" in states):
+                merged[claim_id] = {**current, "state": "source_conflict",
+                                    "facts": facts,
+                                    "reasons": ["conflicting_applicable_facts"]}
+                continue
+            order = {"confirmed": 3, "contradiction": 3,
+                     "review_required": 1, "not_found": 0, "not_applicable": 3}
+            chosen = (check if order.get(check.get("state"), 0) >=
+                      order.get(current.get("state"), 0) else current)
+            merged[claim_id] = {**chosen, "facts": facts}
+        return [merged[key] for key in sorted(merged)]
+
+    def _summarize(checks, evidence, details):
+        by_id = {check["claim_id"]: check for check in checks}
+        work_found = by_id.get("presence", {}).get("state") == "confirmed"
+        volume_confirmed = by_id.get("quantity", {}).get("state") == "confirmed"
+        unit_confirmed = by_id.get("unit", {}).get("state") == "confirmed"
+        comment = by_id.get("comment", {})
+        comment_confirmed = comment.get("state") == "confirmed" if comment else True
+        status = claim_status(checks)
+        presence_pages = sorted({item["page"] for item in evidence
+                                 if item.get("kind") == "work"})
+        quantity_quotes = [item["quote"] for item in evidence
+                           if item.get("kind") == "volume"]
+        fact, binding = _bind_quantity_fact(
+            quantity_quotes, work_name) if quantity_quotes else (None, "")
+        if binding != "bound":
+            fact = None
+        return {
+            "status": status,
+            "work_found": work_found,
+            "volume_confirmed": volume_confirmed,
+            "unit_confirmed": unit_confirmed,
+            "comment_confirmed": comment_confirmed,
+            "found_volume": format(fact.value, "f") if fact is not None and fact.value is not None else "-",
+            "found_unit": fact.unit if fact is not None else "-",
+            "found_page": str(presence_pages[0]) if len(presence_pages) == 1 else "-",
+            "found_pages": sorted({item["page"] for item in evidence}),
+            "evidence": evidence,
+            "discrepancy_details": details,
+            "search_complete": work_found,
+            "checks": checks,
+            "evaluation_version": "evidence-claims-v1",
+        }
+
     def finish(result):
         result = dict(result)
         result["contexts"] = contexts
-        if result.get("work_found"):
+        if result.get("work_found") and result.get("found_page", "-") != "-":
             found_index = int(result["found_page"]) - 1
-            if found_index not in primary:
+            if primary and found_index not in primary:
                 adjacent = any(abs(found_index - page) == 1 for page in primary)
                 if adjacent:
                     refs = ", ".join(str(page + 1) for page in primary)
                     note = f"Работа найдена на стр. {result['found_page']}, рядом со ссылкой ВОР (стр. {refs}). "
                 else:
-                    if result["status"] not in {TECHNICAL_ERROR, INCOMPLETE}:
-                        result["status"] = "Ошибка"
                     note = f"Работа найдена на стр. {result['found_page']}, вне ссылки ВОР. "
                 result["discrepancy_details"] = note + result["discrepancy_details"]
             if any(i in failures or i in index.pending_ocr for i in primary):
-                result["status"] = INCOMPLETE
+                if result["status"] != "Ошибка":
+                    result["status"] = INCOMPLETE
                 result["search_complete"] = False
                 result["discrepancy_details"] += " Не все страницы ссылки ВОР прочитаны; найденные доказательства сохранены."
-            technology = result.get("technology") or {}
-            if technology.get("status") in {"different", "unconfirmed"}:
-                expected = str(technology.get("expected") or "")
-                quoted_terms = set()
-                for item in result.get("evidence", []):
-                    if item.get("kind") == "technology":
-                        quoted_terms |= _compact_terms(str(item.get("quote") or ""))
-                words = re.findall(r"[а-яёa-z]+", expected.lower())
-                need = {term for term in _compact_terms(expected)
-                        if len(term) >= 5 and term not in quoted_terms
-                        and any(term in word for word in words)}
-                if need:
-                    quoted_pages = {int(e["page"]) for e in result.get("evidence", [])
-                                    if isinstance(e.get("page"), int)}
-                    hits = []
-                    threshold = max(2, (len(need) + 1) // 2)
-                    for number, text in enumerate(index.texts, start=1):
-                        if number in quoted_pages:
-                            continue
-                        if len(need & _compact_terms(text)) >= threshold:
-                            hits.append(number)
-                            if len(hits) >= 3:
-                                break
-                    if hits:
-                        pages = ", ".join(map(str, hits))
-                        if technology["status"] == "different":
-                            technology = dict(technology, status="unconfirmed")
-                            result["technology"] = technology
-                            result["status"] = INCOMPLETE
-                        result["technology"] = {**result.get("technology", {}),
-                                                "cross_pages": hits}
-                        result["discrepancy_details"] += (
-                            f" Формулировка ВОР также встречается на стр. {pages}; "
-                            f"сверка формулировок — инженеру.")
         return result
 
-    def confirm_quantities(located):
+    def confirm_claims(located):
         nonlocal contexts, characters, confirmation_used
-        # Actual differing quantities/units are findings, not failed searches.
-        if confirmation_used or (located["found_volume"] != "-" and located["found_unit"] != "-"):
+        pending = [claim_id for claim_id, check in _checks(located).items()
+                   if check.get("required", True)
+                   and check.get("state") in {"not_found", "review_required"}]
+        if confirmation_used or not pending:
             return located
-        formula_numbers = _numbers(formula)
+        located_page = located.get("found_page", "-")
         work_pages = list(dict.fromkeys(
-            [int(located["found_page"]) - 1]
-            + [e["page"] - 1 for e in located["evidence"] if e["kind"] == "work"]))[:min(2, max_pages)]
+            ([int(located_page) - 1] if str(located_page).isdigit() else [])
+            + [item["page"] - 1 for item in located.get("evidence", [])
+               if item.get("kind") == "work"]))[:min(2, max_pages)]
+        formula_numbers = _numbers(formula)
         with span("rank-quantity-pages", as_type="retriever",
-                  input={"work": work_name, "volume": volume, "unit": unit, "formula": formula}) as observation:
+                  input={"work": work_name, "volume": volume, "unit": unit,
+                         "formula": formula, "pending_claims": pending}) as observation:
             quantity_pages = index.support_candidates(work_name, volume, unit,
                                                      formula_numbers=formula_numbers)
             observation.update(output={"ranked_pages": [i + 1 for i in quantity_pages]},
@@ -1355,7 +1680,7 @@ def audit_text_pages(index, target_indices, ask, work_name, volume, reference=""
         if contexts >= max_contexts or characters >= max_total_chars:
             result = dict(located)
             result.update(status=INCOMPLETE, search_complete=False)
-            result["discrepancy_details"] += " Работа найдена, но бюджет подтверждения объема и единицы исчерпан."
+            result["discrepancy_details"] += " Работа найдена, но бюджет добора утверждений исчерпан."
             return result
         per_page = min(max_context_chars, max_total_chars - characters) // len(pages)
         if per_page < 1:
@@ -1364,10 +1689,8 @@ def audit_text_pages(index, target_indices, ask, work_name, volume, reference=""
             return result
         context = {}
         for i in pages:
-            quotes = list(dict.fromkeys(e["quote"] for e in located["evidence"]
-                                        if e["kind"] == "work" and e["page"] == i + 1))
-            # Preserve a work-bearing excerpt even when the original work
-            # quote is long; at least half the page budget stays fresh.
+            quotes = list(dict.fromkeys(item["quote"] for item in located.get("evidence", [])
+                                        if item.get("kind") == "work" and item.get("page") == i + 1))
             separator = "\n[...]\n"
             prefix_limit = max(0, (per_page - len(separator)) // 2)
             prefix = ""
@@ -1383,53 +1706,29 @@ def audit_text_pages(index, target_indices, ask, work_name, volume, reference=""
         visited.update(pages)
         contexts += 1
         confirmation_used = True
-        with span("confirm-quantity-context", as_type="chain", input=context) as observation:
-            verified = ask(context)  # exactly one bounded confirmation, never a page/chunk loop
-            found = "да" if verified.get("work_found") else "нет"
+        with span("confirm-claims-context", as_type="chain", input=context) as observation:
+            verified = confirm(context, pending) if confirm is not None else ask(context)
             observation.update(output=verified,
-                               status_message=f"{verified['status']}; работа: {found}",
+                               status_message=f"{verified['status']}; добор: {', '.join(pending)}",
                                level=result_level(verified["status"]))
-        if verified["status"] == TECHNICAL_ERROR or not verified.get("work_found"):
+        if verified["status"] == TECHNICAL_ERROR:
             result = dict(located)
-            result.update(status=verified["status"] if verified["status"] == TECHNICAL_ERROR else INCOMPLETE,
+            result.update(status=("Ошибка" if located["status"] == "Ошибка" else INCOMPLETE),
                           search_complete=False)
-            result["discrepancy_details"] += " Подтверждение связанных данных не завершено: " + verified["discrepancy_details"]
+            result["discrepancy_details"] += " Добор утверждений не завершён: " + verified["discrepancy_details"]
             return result
-        verified_work = [e for e in verified["evidence"] if e["kind"] == "work"]
-        rebound = [e for e in verified_work if e["page"] != int(located["found_page"])]
-        allowed = any(e["page"] == int(located["found_page"]) for e in verified_work)
-        if not allowed and len(rebound) == 1 and scope:
-            located_quote = next(e["quote"] for e in located["evidence"] if e["kind"] == "work")
-            package = set(primary) | set(related)
-            old_page = int(located["found_page"]) - 1
-            new_page = rebound[0]["page"] - 1
-            # Both work citations must sit inside the same linked package
-            # the search itself assembled (primary + related pages). Scope
-            # names are not re-derived here: the anchor page legitimately
-            # names several scopes.
-            same_package = old_page in package and new_page in package
-            same_operation = bool(_compact_terms(located_quote) & _compact_terms(rebound[0]["quote"])
-                                  - {"плит", "бетонн", "работ", "устрой", "монтаж", "гибк", "гбп"})
-            allowed = same_package and same_operation
-        if not allowed:
-            result = dict(located)
-            result.update(status=INCOMPLETE, search_complete=False)
-            result["discrepancy_details"] += " Добор не подтвердил связь с первоначально найденной работой."
-            return result
-        if rebound and allowed and not any(e["page"] == int(located["found_page"]) for e in verified_work):
-            located = dict(located, found_page=str(rebound[0]["page"]))
-        result = dict(verified)
-        result["found_page"] = located["found_page"]
-        evidence = [e for e in located["evidence"] if e["kind"] in {"work", "technology"}]
-        evidence += [e for e in verified["evidence"] if e not in evidence]
-        result["evidence"] = evidence
-        result["found_pages"] = sorted({e["page"] for e in evidence})
-        if located.get("technology", {}).get("status") == "different":
-            result["technology"] = located["technology"]
-            quantities_ok = bool(result.get("volume_confirmed") and result.get("unit_confirmed"))
-            result["status"] = INCOMPLETE if quantities_ok else "Ошибка"
-            result["discrepancy_details"] += " " + located["discrepancy_details"]
-        return result
+        merged_checks = _merge_claims(located, verified)
+        evidence = list(located.get("evidence", []))
+        for item in verified.get("evidence", []):
+            if item not in evidence:
+                evidence.append(item)
+        details = (located.get("discrepancy_details", "")
+                   + " " + verified.get("discrepancy_details", "")).strip()
+        merged = _summarize(merged_checks, evidence, details)
+        merged["technology"] = verified.get("technology") or located.get("technology", {})
+        merged["quantity_basis"] = verified.get("quantity_basis") or located.get("quantity_basis", "unknown")
+        merged["consumption"] = verified.get("consumption") or located.get("consumption")
+        return merged
 
     groups = []
     if primary:
@@ -1490,17 +1789,13 @@ def audit_text_pages(index, target_indices, ask, work_name, volume, reference=""
             # First confirmed work stops the search: one bounded confirmation
             # at most; a mismatched quantity/unit is a finding, never a
             # reason to look for another work.
-            with span("confirm-quantities", as_type="chain", input=result) as observation:
-                confirmed = confirm_quantities(result)
+            with span("confirm-claims", as_type="chain", input=result) as observation:
+                confirmed = confirm_claims(result)
                 observation.update(output=confirmed, status_message=(
                     f"{confirmed['status']}; объём: {confirmed['found_volume']}; ед.: {confirmed['found_unit']}"),
                     level=result_level(confirmed["status"]))
             if confirmed["status"] == TECHNICAL_ERROR:
                 return finish(confirmed)
-            if confirmed["found_volume"] == "-" or confirmed["found_unit"] == "-":
-                confirmed = dict(confirmed)
-                confirmed.update(status=INCOMPLETE, search_complete=False)
-                confirmed["discrepancy_details"] += " Найденная работа сохранена; количество или единица не установлены."
             return finish(confirmed)
     if last_failure is not None:
         return finish(last_failure)

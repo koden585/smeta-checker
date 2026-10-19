@@ -121,5 +121,29 @@ class RelatedContextTests(unittest.TestCase):
         scope, _ = PageTextIndex(["Титул", spec]).related_context(
             [1], "Гибкие бетонные плиты ГБП", "165", "", "")
         self.assertEqual(scope, "КНС")
+
+    def test_explicit_scope_pins_subject_despite_foreign_quantity(self):
+        texts = fixture()
+        scope, related = PageTextIndex(texts).related_context(
+            [1], "Геотекстиль Дорнит", "2254,8", "1879*1,2", "",
+            expected_scope="КНС")
+        self.assertEqual(scope, "КНС")
+        self.assertNotIn(5, related)
+
+    def test_explicit_empty_scope_never_derives_group_from_quantity(self):
+        texts = fixture()
+        scope, related = PageTextIndex(texts).related_context(
+            [1], "Укладка плит зажимами для каната", "165", "165*3", "",
+            expected_scope="")
+        self.assertEqual((scope, related), ("", []))
+
+    def test_unknown_scope_hint_fails_closed(self):
+        texts = fixture()
+        scope, related = PageTextIndex(texts).related_context(
+            [1], "Укладка плит", "165", "165*3", "",
+            expected_scope="НЕИЗВЕСТНЫЙ")
+        self.assertEqual((scope, related), ("", []))
+
+
 if __name__ == "__main__":
     unittest.main()

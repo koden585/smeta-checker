@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import unittest
+from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -12,21 +13,25 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from audit_core import QuoteValidationError, parse_audit_response
+from audit_core import parse_audit_response
 from lxml import html
 from pdf_text import CACHE_SCHEMA_VERSION, PDFTextSource
 
 
 class FakeRect:
     def __init__(self, width, height):
+        self.x0, self.y0 = 0, 0
+        self.x1, self.y1 = width, height
         self.width = width
         self.height = height
 
 
 class FakePage:
+    rotation = 0
+
     def __init__(self, native, ocr_text="", fail=None, rect=(595, 842),
                  calls=None, idx=0, images=True, drawings=0,
-                 tables=(), table_calls=None):
+                 tables=(), table_calls=None, cell_texts=None):
         self._native = native
         self._ocr_text = ocr_text
         self._fail = fail
@@ -37,6 +42,11 @@ class FakePage:
         self._drawings = drawings
         self._tables = tables
         self._table_calls = table_calls if table_calls is not None else []
+        queue = []
+        for row in cell_texts or ():
+            queue.extend(row if isinstance(row, (list, tuple)) else [row])
+        self._cell_queue = list(queue)
+        self._cell_pos = 0
 
     def get_text(self, sort=True, textpage=None):
         if textpage is not None:
@@ -51,17 +61,33 @@ class FakePage:
     def get_drawings(self):
         return [{}] * self._drawings
 
-    def get_textpage_ocr(self, language="rus+eng", dpi=200, full=False):
-        self._calls.append({"idx": self._idx, "language": language,
-                            "dpi": dpi, "full": full})
+    def get_pixmap(self, dpi=200, alpha=False):
+        self._calls.append({"idx": self._idx, "dpi": dpi})
         if self._fail is not None:
             raise self._fail
-        return self._ocr_text
+        width = max(1, int(self.rect.width * dpi / 72))
+        height = max(1, int(self.rect.height * dpi / 72))
+        return SimpleNamespace(width=width, height=height, n=3,
+                              samples=bytes(width * height * 3))
+
+    def get_textbox(self, rect):
+        queue = getattr(self, "_cell_queue", [])
+        pos = getattr(self, "_cell_pos", 0)
+        if pos < len(queue):
+            self._cell_pos = pos + 1
+            return queue[pos]
+        return self._native
 
     def find_tables(self):
         from types import SimpleNamespace
         self._table_calls.append(self._idx)
-        tables = [SimpleNamespace(extract=lambda rows=rows: rows) for rows in self._tables]
+        tables = []
+        for rows in self._tables:
+            grid_rows = []
+            for cells in rows:
+                grid_rows.append(SimpleNamespace(
+                    cells=[(0, 0, 10, 10) for _ in cells]))
+            tables.append(SimpleNamespace(rows=grid_rows))
         return SimpleNamespace(tables=tables)
 
 
@@ -109,8 +135,14 @@ def make_doc(native_texts, ocr_texts=None, **kwargs):
     for idx, native in enumerate(native_texts):
         ocr = (ocr_texts[idx] if ocr_texts is not None else "распознанный текст %d" % idx)
         tables = table_pages.get(idx, ()) if table_pages else ()
+        # Fake grid rows are triple-nested (tables→rows→cells); the cell-text
+        # queue needs the single table's rows, not the tables wrapper.
+        cell_texts = None
+        if table_pages and table_pages.get(idx):
+            cell_texts = table_pages[idx][0]
         pages.append(FakePage(native, ocr_text=ocr, calls=calls, idx=idx,
-                              tables=tables, table_calls=table_calls, **kwargs))
+                              tables=tables, table_calls=table_calls,
+                              cell_texts=cell_texts, **kwargs))
     return FakeDoc(pages, payload=payload), calls
 
 
@@ -132,6 +164,66 @@ def _fake_open_pdf(*args, **kwargs):
         raise AssertionError("FakeSourceTests: unknown PDF stream for pymupdf.open")
 
 
+def fake_recognize_page(page, **kwargs):
+    """Deterministic TSV-engine stand-in behind the new bounded OCR seam.
+
+    Uses the same quality vocabulary as production: configured failures
+    raise (recorded as errors, never cached), empty text is a usable empty
+    read, and every word carries a bbox so fake OCR stays ``ocr``-origin.
+    """
+    fail = getattr(page, "_fail", None)
+    if fail is not None:
+        raise fail
+    text = getattr(page, "_ocr_text", "")
+    calls = getattr(page, "_calls", None)
+    if calls is not None:
+        import ocr_engine as _fake_engine
+        rect = getattr(page, "rect", None)
+        dpi = _fake_engine.bounded_render_dpi(
+            float(rect.width), float(rect.height),
+            int(kwargs.get("dpi") or 200), 12000000, 4096)
+        calls.append({"idx": getattr(page, "_idx", 0), "engine": "tsv",
+                      "dpi": dpi})
+    words = []
+    for number, token in enumerate(str(text or "").split(), start=1):
+        words.append({"text": token, "conf": 95,
+                      "bbox": [float(number * 10), 10.0,
+                               float(number * 10 + 8), 20.0],
+                      "kind": "label", "rotation": 0, "crop": "full",
+                      "row_id": "r1", "column_id": ""})
+    return {
+        "text": str(text or ""),
+        "words": words,
+        "passes_used": 1,
+        "dpi_overview": 200,
+        "dpi_crop": None,
+        "quality": {
+            "state": "usable",
+            "origin": "ocr",
+            "engine": "tesseract",
+            "tesseract": "fake",
+            "language": "rus+eng",
+            "algo": "ocr-tsv-v2",
+            "dpi_overview": 200,
+            "dpi_crop": None,
+            "psm_overview": 11,
+            "psm_crop": 6,
+            "rotation": 0,
+            "page_rotation": 0,
+            "passes": 1,
+            "passes_max": 8,
+            "words_kept": len(words),
+            "words_dropped_low_conf": 0,
+            "confidence_mean": 95 if words else None,
+            "reasons": [] if text else ["empty_no_text"],
+            "layout": {"rows": 1 if words else 0, "cols": 0,
+                       "resolved": True, "reason": ""},
+            "transform": "rot:0 scale:1.00000,1.00000",
+            "crops": [],
+        },
+    }
+
+
 class FakeSourceTests(unittest.TestCase):
     """Fake-document tests: clone opening and Markdown extraction are faked.
 
@@ -148,6 +240,10 @@ class FakeSourceTests(unittest.TestCase):
         reopen = patch("pdf_text.pymupdf.open", side_effect=_fake_open_pdf)
         reopen.start()
         self.addCleanup(reopen.stop)
+        engine = patch("pdf_text._ocr_engine.recognize_page",
+                       side_effect=fake_recognize_page)
+        engine.start()
+        self.addCleanup(engine.stop)
 
 
 def _insert_ruled_table(page, rows):
@@ -291,6 +387,59 @@ class TableTests(FakeSourceTests):
             source.for_position([0], "Кабель", "45")
         self.assertLessEqual(len(first_pass), 8)
         self.assertEqual(table_calls, first_pass)
+
+
+class NativeGridTests(unittest.TestCase):
+    def test_native_grid_preserves_headers_groups_and_quantity_role(self):
+        import pymupdf
+        with pymupdf.open() as doc:
+            page = doc.new_page()
+            xs = [40, 300, 380, 470]
+            top, height = 50, 30
+            rows = [["Наименование", "Ед.", "Кол-во"],
+                    ["Берегоукрепление площадки КНС", "", ""],
+                    ["Плиты", "шт.", "165"],
+                    ["Берегоукрепление площадки ЛОС", "", ""],
+                    ["Плиты", "шт.", "165"]]
+            for x in xs:
+                page.draw_line((x, top), (x, top + len(rows) * height))
+            for r in range(len(rows) + 1):
+                y = top + r * height
+                page.draw_line((xs[0], y), (xs[-1], y))
+            for r, cells in enumerate(rows):
+                for c, value in enumerate(cells):
+                    page.insert_text((xs[c] + 5, top + r * height + 20),
+                                     value, fontsize=10)
+            with TemporaryDirectory() as cache:
+                snapshot = PDFTextSource(doc, cache_dir=cache).for_position(
+                    [0], "Плиты", "165")
+        locators = [item for item in snapshot.locators[0] if item["role"] != "block"]
+        cells = [item for item in locators if item["role"] == "cell"]
+        headers = [item for item in locators if item["role"] == "header"]
+        kns = [item for item in cells if item["text"] == "165"
+               and item["group_id"] == "r2"]
+        los = [item for item in cells if item["text"] == "165"
+               and item["group_id"] == "r4"]
+        self.assertEqual(len(headers), 3)
+        self.assertEqual(len(kns), 1)
+        self.assertEqual(len(los), 1)
+        self.assertNotEqual(kns[0]["source_id"], los[0]["source_id"])
+        self.assertEqual(kns[0]["row_id"], "t1:r3")
+        self.assertEqual(los[0]["row_id"], "t1:r5")
+        self.assertEqual(kns[0]["column_id"], los[0]["column_id"])
+        self.assertEqual(len(kns[0]["bbox"]), 4)
+        self.assertLess(kns[0]["bbox"][1], los[0]["bbox"][1])
+        qty = next(item for item in headers if item["column_id"] == kns[0]["column_id"])
+        self.assertEqual(qty["row_id"], "t1:r1")
+        self.assertEqual(qty["table_id"], "t1")
+        block = [item for item in snapshot.locators[0] if item["role"] == "block"]
+        self.assertEqual(len(block), 1)
+        self.assertEqual(block[0]["page"], 1)
+
+    def test_historical_snapshot_without_locators_stays_unknown(self):
+        from audit_core import PageTextIndex
+        index = PageTextIndex(["Кабель 45 м"])
+        self.assertIsNone(index.locators)
 
 
 class CacheTests(FakeSourceTests):
@@ -526,7 +675,7 @@ class CacheTests(FakeSourceTests):
             snapshot = source.for_position([1], "Кабель", "45", max_ocr_pages=4)
             self.assertIn(1, snapshot.errors)
             self.assertIn("Tesseract", snapshot.errors[1])
-            self.assertEqual(list(Path(cache).rglob("page-00001.txt")), [])
+            self.assertEqual(list(Path(cache).rglob("ocr-*/page-00001.json")), [])
             # OCR text merged with native text where present.
             self.assertIn("ok-", snapshot.texts[0] + snapshot.texts[2])
 
@@ -648,33 +797,37 @@ class RealPDFTests(unittest.TestCase):
         row_line = next(row for row in re.findall(r"<tr\b[^>]*>.*?</tr>", context[2], re.DOTALL)
                         if "Copper cable" in row and ">45<" in row)
         data = {
-            "work_found": True,
-            "volume_confirmed": True,
-            "unit_confirmed": True,
-            "comment_confirmed": False,
-            "found_volume": "45",
-            "found_unit": "m",
-            "found_page": "2",
-            "evidence": [
-                {"page": 1, "quote": work_line, "kind": "work"},
-                {"page": 2, "quote": row_line, "kind": "work"},
-                {"page": 2, "quote": row_line, "kind": "volume"},
-                {"page": 2, "quote": row_line, "kind": "unit"},
+            "claims": [
+                {"claim_id": "presence", "source_ids": ["p1q1", "p2q1"]},
+                {"claim_id": "quantity", "source_ids": ["p2q1"],
+                 "value_source_id": "p2q1", "unit_source_id": "p2q1"},
+                {"claim_id": "unit", "source_ids": ["p2q1"]},
             ],
             "discrepancy_details": "Confirmed",
         }
+        quote_sources = {"p1q1": {"page": 1, "quote": work_line},
+                         "p2q1": {"page": 2, "quote": row_line}}
         result = parse_audit_response(json.dumps(data), context,
-                                      comment_required=False)
+                                      comment_required=False,
+                                      quote_sources=quote_sources,
+                                      expected_volume="45", expected_unit="m",
+                                      expected_work="Copper cable")
         self.assertEqual(result["status"], "ОК")
         self.assertEqual(result["found_page"], "2")
         self.assertEqual(result["found_pages"], [1, 2])
-        fabricated = json.loads(json.dumps(data))
-        fabricated["found_volume"] = "999"
-        fabricated["evidence"][2] = {"page": 2, "quote": "Copper cable 999 m",
-                                     "kind": "volume"}
-        with self.assertRaises(QuoteValidationError):
-            parse_audit_response(json.dumps(fabricated), context,
-                                 comment_required=False)
+        fabricated = {"claims": [
+            {"claim_id": "presence", "source_ids": ["p1q1"]},
+            {"claim_id": "quantity", "source_ids": ["p2q9"],
+             "value_source_id": "p2q9", "unit_source_id": "p2q9"},
+            {"claim_id": "unit", "source_ids": ["p2q9"]},
+        ], "discrepancy_details": "Confirmed"}
+        result = parse_audit_response(json.dumps(fabricated), context,
+                                      comment_required=False,
+                                      quote_sources=quote_sources,
+                                      expected_volume="999", expected_unit="m",
+                                      expected_work="Copper cable")
+        self.assertEqual(result["status"], "Неполная проверка")
+        self.assertIn("p2q9", result["discrepancy_details"])
 
     def test_rotated_source_document_is_never_mutated(self):
         import pymupdf
@@ -713,6 +866,10 @@ class RealPDFTests(unittest.TestCase):
                 index = first.for_position([0], "Copper cable", "45")
                 self.assertEqual(first.ocr_count, 1)
                 self.assertIn("copper cable", index.texts[0].lower())
+                self.assertIn(0, index.quality)
+                self.assertIn(index.quality[0].get("state"), ("usable", "uncertain"))
+                origins = {item.get("origin") for item in index.locators[0]}
+                self.assertIn("ocr", origins)
             with pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:
                 second = PDFTextSource(doc, cache_dir=cache)
                 cached = second.for_position([0], "Copper cable", "45", max_ocr_pages=0)
@@ -720,7 +877,6 @@ class RealPDFTests(unittest.TestCase):
                 self.assertEqual(second.cache_hits, 1)
                 self.assertEqual(cached.texts, index.texts)
                 self.assertEqual(cached.pending_ocr, ())
-
 
 class ClosedDocumentTests(FakeSourceTests):
     def test_closed_document_is_rejected_before_indexing(self):
