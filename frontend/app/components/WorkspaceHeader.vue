@@ -6,19 +6,21 @@ const onProjects = computed(() => props.active !== 'create')
 <template>
   <a class="skip-link" href="#main-content">К содержимому</a>
   <header class="app-header">
-    <NuxtLink to="/" class="brand" aria-label="КДФП · Проверка ВОР — все проекты">
+    <NuxtLink to="/" class="brand">
       <span class="brand-mark">КД<span>ФП</span></span>
       <span class="brand-divider" aria-hidden="true"></span>
       <span class="brand-product">Проверка ВОР</span>
+      <span class="visually-hidden"> — все проекты</span>
     </NuxtLink>
     <nav class="header-navigation" aria-label="Основная навигация">
       <UButton
         to="/"
+        aria-label="Проекты"
         color="neutral"
         :variant="onProjects ? 'soft' : 'ghost'"
         :aria-current="onProjects ? 'page' : undefined"
         icon="i-lucide-layout-dashboard"
-        >Проекты</UButton
+        ><span class="header-project-label">Проекты</span></UButton
       >
       <UColorModeButton
         class="theme-button"
@@ -65,6 +67,15 @@ const onProjects = computed(() => props.active !== 'create')
 .brand-product {
   font-size: 16px;
   font-weight: 650;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 .header-navigation {
   display: flex;

@@ -10,15 +10,24 @@ interface DashboardProject {
   archived: boolean
   runs: number
   documents: number
+  vorCount: number
+  pdfCount: number
   lastRun: RunDto | null
-  queues: Record<Queue, number>
+  queues: Record<Queue, number> | null
+  summaryBusy: boolean
 }
 
 const backend = useBackend()
 const router = useRouter()
+const route = useRoute()
 const query = ref('')
 const sort = ref<'recent' | 'name' | 'attention'>('recent')
-const showArchived = ref(false)
+const showArchived = computed({
+  get: () => route.query.archived === 'true',
+  set: (archived: boolean) => {
+    void router.push({ query: { ...route.query, archived: archived ? 'true' : undefined } })
+  },
+})
 const projects = ref<DashboardProject[]>([])
 const error = ref('')
 const busy = ref(true)
@@ -27,13 +36,15 @@ const renamingName = ref('')
 const renamingBusy = ref(false)
 const confirmArchiveId = ref<string | null>(null)
 const archiveBusy = ref(false)
+const actionError = ref('')
+const restoringId = ref<string | null>(null)
 
 let active = true
 let epoch = 0
 let timer: ReturnType<typeof setTimeout> | undefined
 
 const attention = (p: DashboardProject) =>
-  p.queues.fix * 10 + p.queues.review * 3 + p.queues.missing
+  (p.queues?.fix || 0) * 10 + (p.queues?.review || 0) * 3 + (p.queues?.missing || 0)
 
 const confirmArchiveProject = computed(
   () => projects.value.find((p) => p.id === confirmArchiveId.value) || null,
@@ -51,7 +62,9 @@ const filtered = computed(() => {
   else if (sort.value === 'attention') list.sort((a, b) => attention(b) - attention(a))
   else
     list.sort(
-      (a, b) => Date.parse(b.lastRun?.created_at || '') - Date.parse(a.lastRun?.created_at || ''),
+      (a, b) =>
+        (b.lastRun ? Date.parse(b.lastRun.created_at || '') || 0 : 0) -
+        (a.lastRun ? Date.parse(a.lastRun.created_at || '') || 0 : 0),
     )
   return list
 })
@@ -64,22 +77,52 @@ function formatDate(value: string | null) {
         hour: '2-digit',
         minute: '2-digit',
       })
-    : '—'
+    : '-'
 }
 
-function statusColor(status: RunDto['status']): 'success' | 'error' | 'warning' | 'neutral' {
-  return status === 'done' ? 'success' : status === 'failed' ? 'error' : 'warning'
+function countLabel(count: number, forms: [string, string, string]) {
+  const last = count % 10
+  const teen = count % 100 >= 11 && count % 100 <= 14
+  return `${count} ${forms[teen ? 2 : last === 1 ? 0 : last >= 2 && last <= 4 ? 1 : 2]}`
 }
 
-function queueBadge(queue: Queue, count: number) {
-  if (!count) return null
-  const meta = {
-    fix: { label: 'Исправить', color: 'error' },
-    review: { label: 'Вручную', color: 'warning' },
-    missing: { label: 'Не выполнено', color: 'neutral' },
-    ok: { label: 'ОК', color: 'success' },
-  } as const
-  return { ...meta[queue], count }
+function positionCount(count: number) {
+  return countLabel(count, ['позиция', 'позиции', 'позиций'])
+}
+
+function confirmedLabel(count: number) {
+  const singular = count % 10 === 1 && count % 100 !== 11
+  return `${singular ? 'Подтверждена' : 'Подтверждено'} ${positionCount(count)}`
+}
+
+const queueLabels = {
+  fix: 'Исправить',
+  review: 'Проверить вручную',
+  missing: 'Не выполнено',
+} as const
+
+const progressLabel = () => 'Прогресс проверки'
+
+async function readQueues(runId: string): Promise<Record<Queue, number>> {
+  const summary = await backend.summary(runId)
+  return {
+    fix: summary.queues.fix || 0,
+    review: summary.queues.review || 0,
+    missing: summary.queues.missing || 0,
+    ok: summary.queues.ok || 0,
+  }
+}
+
+async function retrySummary(p: DashboardProject) {
+  if (!p.lastRun || p.summaryBusy) return
+  p.summaryBusy = true
+  try {
+    p.queues = await readQueues(p.lastRun.run_id)
+  } catch {
+    p.queues = null
+  } finally {
+    p.summaryBusy = false
+  }
 }
 
 const archiveModalOpen = computed({
@@ -94,6 +137,7 @@ function openProject(p: DashboardProject) {
 }
 
 function startRename(p: DashboardProject) {
+  actionError.value = ''
   renamingId.value = p.id
   renamingName.value = p.name
 }
@@ -104,6 +148,7 @@ function cancelRename() {
 }
 
 async function saveRename(p: DashboardProject) {
+  actionError.value = ''
   const name = renamingName.value.trim()
   if (!name || renamingBusy.value) return
   renamingBusy.value = true
@@ -112,22 +157,28 @@ async function saveRename(p: DashboardProject) {
     p.name = renamed.name
     cancelRename()
   } catch (e) {
-    error.value = readableError(e)
+    actionError.value = readableError(e)
   } finally {
     renamingBusy.value = false
   }
 }
 
 function askArchive(p: DashboardProject) {
+  actionError.value = ''
   confirmArchiveId.value = p.id
 }
 
 async function restore(p: DashboardProject) {
+  if (restoringId.value) return
+  actionError.value = ''
+  restoringId.value = p.id
   try {
     await backend.updateProject(p.id, { archived: false })
     await load()
   } catch (e) {
-    error.value = readableError(e)
+    actionError.value = readableError(e)
+  } finally {
+    restoringId.value = null
   }
 }
 
@@ -139,7 +190,7 @@ async function confirmArchive() {
     confirmArchiveId.value = null
     await load()
   } catch (e) {
-    error.value = readableError(e)
+    actionError.value = readableError(e)
   } finally {
     archiveBusy.value = false
   }
@@ -148,13 +199,12 @@ async function confirmArchive() {
 async function loadProject(p: ProjectDto): Promise<DashboardProject> {
   const [runs, documents] = await Promise.all([backend.runs(p.id, 0), backend.catalog(p.id)])
   const lastRun = runs[0] || null
-  const queues: Record<Queue, number> = { fix: 0, review: 0, missing: 0, ok: 0 }
-  if (lastRun && lastRun.status === 'done') {
+  let queues: Record<Queue, number> | null = null
+  if (lastRun?.status === 'done') {
     try {
-      const summary = await backend.summary(lastRun.run_id)
-      for (const key of Object.keys(queues) as Queue[]) queues[key] = summary.queues[key] || 0
+      queues = await readQueues(lastRun.run_id)
     } catch {
-      // Очереди — дополнение; строка проекта показывается и без них.
+      // Unavailable results stay distinct from a successful summary with zero findings.
     }
   }
   return {
@@ -163,8 +213,11 @@ async function loadProject(p: ProjectDto): Promise<DashboardProject> {
     archived: Boolean(p.archived),
     runs: runs.length,
     documents: documents.length,
+    vorCount: documents.filter((document) => document.kind === 'vor').length,
+    pdfCount: documents.filter((document) => document.kind === 'pdf').length,
     lastRun,
     queues,
+    summaryBusy: false,
   }
 }
 
@@ -192,7 +245,13 @@ async function load(background = false) {
   }
 }
 
-watch(showArchived, () => load())
+watch(showArchived, () => {
+  projects.value = []
+  query.value = ''
+  cancelRename()
+  actionError.value = ''
+  load()
+})
 
 onMounted(() => load())
 onBeforeUnmount(() => {
@@ -203,229 +262,301 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div>
+  <div class="dashboard-page">
     <WorkspaceHeader active="projects" />
     <main id="main-content" tabindex="-1" class="shell dashboard">
-      <div class="page-heading">
-        <div>
-          <h1 class="page-title">Проекты</h1>
-          <p class="muted">Все комплекты компании и их последние проверки</p>
+      <div class="dashboard-heading">
+        <div class="dashboard-title">
+          <h1>Проекты</h1>
+          <span v-if="!busy && !error" class="dashboard-count" role="status">
+            {{ countLabel(filtered.length, ['проект', 'проекта', 'проектов']) }}
+          </span>
         </div>
         <UButton to="/upload" icon="i-lucide-plus" color="primary">Новый проект</UButton>
       </div>
 
-      <template v-if="busy && !projects.length && !error">
-        <div class="dashboard-toolbar" aria-hidden="true">
-          <USkeleton class="dashboard-skeleton-bar" />
-          <USkeleton class="dashboard-skeleton-sort" />
+      <div class="dashboard-toolbar">
+        <div class="dashboard-scope" role="group" aria-label="Раздел проектов">
+          <UButton
+            color="neutral"
+            variant="ghost"
+            :aria-pressed="!showArchived"
+            :class="{ selected: !showArchived }"
+            @click="showArchived = false"
+            >Активные</UButton
+          >
+          <UButton
+            color="neutral"
+            variant="ghost"
+            :aria-pressed="showArchived"
+            :class="{ selected: showArchived }"
+            @click="showArchived = true"
+            >Архив</UButton
+          >
         </div>
-        <div class="panel dashboard-skeleton-panel" aria-hidden="true">
-          <USkeleton v-for="n in 5" :key="n" class="dashboard-skeleton-row" />
-        </div>
-        <p class="empty" role="status">Загружаем проекты…</p>
-      </template>
-
-      <UAlert
-        v-else-if="error && !projects.length"
-        color="error"
-        variant="soft"
-        title="Не удалось загрузить проекты"
-        description="Проверьте соединение с сервером и попробуйте ещё раз."
-      >
-        <template #actions>
-          <UButton color="error" variant="soft" size="sm" @click="load()">Повторить</UButton>
-        </template>
-      </UAlert>
-
-      <div v-else-if="!projects.length" class="panel dashboard-empty">
-        <UIcon name="i-lucide-folder-open" class="dashboard-empty-icon" aria-hidden="true" />
-        <h2>Пока нет проектов</h2>
-        <p class="muted">Создайте проект и загрузите первую ведомость и проектные PDF.</p>
-      </div>
-
-      <template v-else>
-        <div class="dashboard-toolbar">
-          <UInput
-            v-model="query"
-            icon="i-lucide-search"
-            placeholder="Найти проект или ведомость…"
-            aria-label="Поиск проектов"
-            class="dashboard-search"
-          />
+        <UInput
+          v-model="query"
+          icon="i-lucide-search"
+          placeholder="Найти проект или ведомость"
+          aria-label="Поиск проектов"
+          class="dashboard-search"
+        />
+        <div class="dashboard-sort">
           <USelect
             v-model="sort"
             :items="[
-              { label: 'Сначала недавние', value: 'recent' },
-              { label: 'Требуют внимания', value: 'attention' },
+              { label: 'Недавние', value: 'recent' },
+              { label: 'По вниманию', value: 'attention' },
               { label: 'По алфавиту', value: 'name' },
             ]"
             aria-label="Сортировка проектов"
-            class="dashboard-sort"
           />
-          <UButton
-            color="neutral"
-            :variant="showArchived ? 'soft' : 'outline'"
-            icon="i-lucide-archive"
-            :aria-pressed="showArchived"
-            @click="showArchived = !showArchived"
-            >{{ showArchived ? 'Архив: показаны' : 'Архив' }}</UButton
-          >
         </div>
+      </div>
 
-        <p v-if="!filtered.length" class="empty" role="status">
-          По запросу «{{ query }}» ничего не найдено. Уточните название проекта или ведомости.
-        </p>
+      <div v-if="error && projects.length" class="dashboard-notice" role="alert">
+        <UIcon name="i-lucide-circle-alert" aria-hidden="true" />
+        <span>Не удалось обновить список. Показаны последние загруженные данные.</span>
+        <UButton color="neutral" variant="link" @click="load()">Повторить</UButton>
+      </div>
+      <p v-if="actionError && !archiveModalOpen" class="dashboard-action-error" role="alert">
+        {{ actionError }}
+      </p>
 
-        <div v-else class="panel dashboard-panel" :aria-busy="busy">
-          <table class="results dashboard-table">
-            <thead>
-              <tr>
-                <th scope="col">Проект</th>
-                <th scope="col">Последняя проверка</th>
-                <th scope="col">Очереди</th>
-                <th scope="col"><span class="visually-hidden">Действия</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="p in filtered"
-                :key="p.id"
-                class="dashboard-row"
-                tabindex="0"
-                role="link"
-                :aria-label="`Открыть проект ${p.name}`"
-                @click="openProject(p)"
-                @keydown.enter="openProject(p)"
-              >
-                <td>
-                  <template v-if="renamingId === p.id">
-                    <div class="dashboard-rename" @click.stop @keydown.enter.stop>
-                      <UInput
-                        v-model="renamingName"
-                        aria-label="Новое название проекта"
-                        :disabled="renamingBusy"
-                        autofocus
-                        @keydown.enter="saveRename(p)"
-                        @keydown.escape="cancelRename"
-                      />
-                      <UButton
-                        icon="i-lucide-check"
-                        aria-label="Сохранить название"
-                        color="primary"
-                        :loading="renamingBusy"
-                        @click="saveRename(p)"
-                      />
-                      <UButton
-                        icon="i-lucide-x"
-                        aria-label="Отменить переименование"
-                        color="neutral"
-                        variant="ghost"
-                        :disabled="renamingBusy"
-                        @click="cancelRename"
-                      />
-                    </div>
-                  </template>
-                  <template v-else>
-                    <div class="dashboard-name-row">
-                      <strong class="dashboard-name">{{ p.name }}</strong>
-                      <UBadge v-if="p.archived" color="neutral" variant="soft" size="sm"
-                        >В архиве</UBadge
-                      >
-                      <UButton
-                        icon="i-lucide-pencil"
-                        :aria-label="`Переименовать ${p.name}`"
-                        color="neutral"
-                        variant="ghost"
-                        size="xs"
-                        @click.stop="startRename(p)"
-                      />
-                    </div>
-                  </template>
-                  <p class="muted">
-                    {{
-                      p.runs
-                        ? `Проверок: ${p.runs} · Документов: ${p.documents}`
-                        : `Документов: ${p.documents} · проверок пока нет`
-                    }}
+      <section class="dashboard-panel" aria-label="Список проектов" :aria-busy="busy">
+        <table class="dashboard-table">
+          <caption class="visually-hidden">
+            {{
+              showArchived ? 'Архив проектов' : 'Активные проекты'
+            }}
+          </caption>
+          <colgroup>
+            <col class="project-column" />
+            <col class="last-check-column" />
+            <col />
+            <col class="actions-column" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th scope="col">Проект</th>
+              <th scope="col">Последняя проверка</th>
+              <th scope="col">Результат</th>
+              <th scope="col"><span class="visually-hidden">Действия</span></th>
+            </tr>
+          </thead>
+          <tbody v-if="busy && !projects.length && !error">
+            <tr v-for="n in 3" :key="n" class="dashboard-loading-row" aria-hidden="true">
+              <td>
+                <USkeleton class="dashboard-skeleton skeleton-name" />
+                <USkeleton class="dashboard-skeleton skeleton-meta" />
+              </td>
+              <td>
+                <USkeleton class="dashboard-skeleton skeleton-date" />
+                <USkeleton class="dashboard-skeleton skeleton-meta" />
+              </td>
+              <td><USkeleton class="dashboard-skeleton skeleton-result" /></td>
+              <td></td>
+            </tr>
+          </tbody>
+          <tbody v-else-if="error && !projects.length">
+            <tr>
+              <td colspan="4" class="dashboard-empty">
+                <h2>Не удалось загрузить проекты</h2>
+                <p>Проверьте соединение с сервером и попробуйте ещё раз.</p>
+                <UButton color="neutral" variant="outline" @click="load()">Повторить</UButton>
+              </td>
+            </tr>
+          </tbody>
+          <tbody v-else-if="!projects.length">
+            <tr>
+              <td colspan="4" class="dashboard-empty">
+                <h2>{{ showArchived ? 'Архив проектов пуст' : 'Пока нет проектов' }}</h2>
+                <p>
+                  {{
+                    showArchived
+                      ? 'Архивированные проекты появятся здесь. Вернуться можно вкладкой «Активные».'
+                      : 'Создайте проект кнопкой «Новый проект», затем добавьте ведомость и проектные PDF.'
+                  }}
+                </p>
+              </td>
+            </tr>
+          </tbody>
+          <tbody v-else-if="!filtered.length">
+            <tr>
+              <td colspan="4" class="dashboard-empty">
+                <h2>Ничего не найдено</h2>
+                <p>По запросу «{{ query }}» нет проектов или ведомостей.</p>
+                <UButton color="neutral" variant="outline" @click="query = ''"
+                  >Сбросить поиск</UButton
+                >
+              </td>
+            </tr>
+          </tbody>
+          <tbody v-else>
+            <tr v-for="p in filtered" :key="p.id" class="dashboard-row" @click="openProject(p)">
+              <td class="dashboard-identity">
+                <div
+                  v-if="renamingId === p.id"
+                  class="dashboard-rename"
+                  @click.stop
+                  @keydown.enter.stop
+                >
+                  <UInput
+                    v-model="renamingName"
+                    aria-label="Новое название проекта"
+                    :disabled="renamingBusy"
+                    autofocus
+                    class="rename-input"
+                    @keydown.enter="saveRename(p)"
+                    @keydown.escape="cancelRename"
+                  />
+                  <UButton
+                    icon="i-lucide-check"
+                    aria-label="Сохранить название"
+                    color="neutral"
+                    variant="outline"
+                    :disabled="!renamingName.trim()"
+                    :loading="renamingBusy"
+                    @click="saveRename(p)"
+                  />
+                  <UButton
+                    icon="i-lucide-x"
+                    aria-label="Отменить переименование"
+                    color="neutral"
+                    variant="ghost"
+                    :disabled="renamingBusy"
+                    @click="cancelRename"
+                  />
+                </div>
+                <NuxtLink
+                  v-else
+                  :to="`/projects/${p.id}`"
+                  class="dashboard-name"
+                  :aria-label="`Открыть проект ${p.name}`"
+                  @click.stop
+                  >{{ p.name }}</NuxtLink
+                >
+                <p
+                  class="dashboard-meta"
+                  role="group"
+                  :aria-label="`Документов: ${p.documents}, проверок: ${p.runs}`"
+                >
+                  <span>ВОР {{ p.vorCount }}</span>
+                  <span>ПД {{ p.pdfCount }}</span>
+                  <span>Проверок: {{ p.runs }}</span>
+                </p>
+              </td>
+              <td class="dashboard-last-check" :class="{ 'no-check': !p.lastRun }">
+                <template v-if="p.lastRun">
+                  <p class="dashboard-date">{{ formatDate(p.lastRun.created_at) }}</p>
+                  <p class="dashboard-file" :title="p.lastRun.vor_filename">
+                    {{ p.lastRun.vor_filename }}
                   </p>
-                </td>
-                <td>
-                  <template v-if="p.lastRun">
-                    <UBadge :color="statusColor(p.lastRun.status)" variant="subtle">
-                      {{ runLabel(p.lastRun.status) }}
-                    </UBadge>
-                    <p class="muted dashboard-file" :title="p.lastRun.vor_filename">
-                      {{ p.lastRun.vor_filename }} · {{ formatDate(p.lastRun.created_at) }}
+                </template>
+                <span v-else class="dashboard-muted" aria-label="Проверок ещё не было">-</span>
+              </td>
+              <td class="dashboard-result">
+                <template v-if="!p.lastRun">
+                  <p class="dashboard-muted">Проверок пока нет</p>
+                  <p class="dashboard-detail">Откройте проект для подготовки проверки</p>
+                </template>
+                <template v-else-if="p.lastRun.status === 'done'">
+                  <div v-if="p.queues" class="dashboard-queues">
+                    <template v-for="q in ['fix', 'review', 'missing'] as const" :key="q">
+                      <p v-if="p.queues[q]" :class="`result-${q}`">
+                        {{ queueLabels[q] }}: {{ positionCount(p.queues[q]) }}
+                      </p>
+                    </template>
+                    <p v-if="p.queues.ok" class="result-ok">{{ confirmedLabel(p.queues.ok) }}</p>
+                    <p v-if="!Object.values(p.queues).some(Boolean)" class="dashboard-muted">
+                      Проверка без позиций
+                    </p>
+                  </div>
+                  <div v-else class="dashboard-summary-error" @click.stop>
+                    <p>Результат недоступен</p>
+                    <UButton
+                      color="neutral"
+                      variant="link"
+                      :loading="p.summaryBusy"
+                      :aria-label="`Повторить загрузку результата ${p.name}`"
+                      @click="retrySummary(p)"
+                      >Повторить</UButton
+                    >
+                  </div>
+                </template>
+                <template v-else>
+                  <p :class="{ 'result-fix': p.lastRun.status === 'failed' }">
+                    {{ runLabel(p.lastRun.status) }}
+                  </p>
+                  <template v-if="p.lastRun.status === 'running'">
+                    <p class="dashboard-detail">
+                      {{
+                        p.lastRun.total
+                          ? `Обработано ${p.lastRun.done + p.lastRun.failed} из ${p.lastRun.total}`
+                          : 'Подготовка проверки'
+                      }}
                     </p>
                     <UProgress
-                      v-if="p.lastRun.status === 'running' && p.lastRun.total"
+                      v-if="p.lastRun.total"
                       :model-value="
                         Math.floor(((p.lastRun.done + p.lastRun.failed) / p.lastRun.total) * 100)
                       "
+                      color="neutral"
                       size="xs"
                       class="dashboard-progress"
-                      aria-label="Прогресс проверки"
+                      :get-value-label="progressLabel"
                     />
                   </template>
+                </template>
+              </td>
+              <td class="dashboard-actions" @click.stop>
+                <UDropdownMenu
+                  :items="[
+                    {
+                      label: 'Переименовать',
+                      icon: 'i-lucide-pencil',
+                      disabled: renamingBusy,
+                      onSelect: () => startRename(p),
+                    },
+                    {
+                      label: p.archived ? 'Восстановить' : 'Архивировать',
+                      icon: p.archived ? 'i-lucide-archive-restore' : 'i-lucide-archive',
+                      disabled: archiveBusy || restoringId !== null,
+                      onSelect: () => (p.archived ? restore(p) : askArchive(p)),
+                    },
+                  ]"
+                  :content="{ align: 'end' }"
+                >
                   <UButton
-                    v-else
-                    variant="link"
-                    color="primary"
-                    :to="`/projects/${p.id}?import=1`"
-                    @click.stop
-                  >
-                    Продолжить загрузку
-                  </UButton>
-                </td>
-                <td>
-                  <div v-if="p.lastRun" class="dashboard-queues">
-                    <template v-for="q in ['fix', 'review', 'missing', 'ok'] as const" :key="q">
-                      <UBadge
-                        v-if="queueBadge(q, p.queues[q])"
-                        :label="`${queueBadge(q, p.queues[q])!.count} ${queueBadge(q, p.queues[q])!.label}`"
-                        :color="queueBadge(q, p.queues[q])!.color"
-                        variant="soft"
-                        size="sm"
-                      />
-                    </template>
-                  </div>
-                  <span v-else class="muted">—</span>
-                </td>
-                <td class="row-action">
-                  <div class="dashboard-actions" @click.stop>
-                    <UButton variant="ghost" :to="`/projects/${p.id}`"> Открыть проект </UButton>
-                    <UButton
-                      v-if="p.archived"
-                      variant="ghost"
-                      color="neutral"
-                      icon="i-lucide-archive-restore"
-                      :aria-label="`Восстановить ${p.name}`"
-                      @click="restore(p)"
-                    />
-                    <UButton
-                      v-else
-                      variant="ghost"
-                      color="neutral"
-                      icon="i-lucide-archive"
-                      :aria-label="`Архивировать ${p.name}`"
-                      @click="askArchive(p)"
-                    />
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </template>
+                    color="neutral"
+                    variant="ghost"
+                    icon="i-lucide-ellipsis"
+                    :loading="restoringId === p.id"
+                    :aria-label="`Действия проекта ${p.name}`"
+                  />
+                </UDropdownMenu>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-if="busy && !projects.length && !error" class="visually-hidden" role="status">
+          Загружаем проекты…
+        </p>
+      </section>
 
       <UModal v-model:open="archiveModalOpen" title="Архивировать проект?">
         <template #body>
-          <p class="muted modal-text">
+          <p class="modal-text">
             Проект «{{ confirmArchiveProject?.name }}» исчезнет из активного списка. Восстановить
-            можно через фильтр «Архив».
+            можно во вкладке «Архив».
           </p>
+          <p v-if="actionError" class="dashboard-action-error" role="alert">{{ actionError }}</p>
           <div class="toolbar spread modal-footer">
-            <UButton color="neutral" variant="ghost" @click="confirmArchiveId = null"
+            <UButton
+              color="neutral"
+              variant="ghost"
+              :disabled="archiveBusy"
+              @click="confirmArchiveId = null"
               >Отмена</UButton
             >
             <UButton color="primary" :loading="archiveBusy" @click="confirmArchive"
@@ -439,105 +570,243 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.dashboard-toolbar {
+/* Kept brand, editorial column: 12 × 77px + 11 × 16px = 1100px of working content. */
+.dashboard {
+  max-width: 1164px;
+  padding-top: 32px;
+}
+.dashboard-page :deep(.app-header) {
+  max-width: 1100px;
+  min-height: 72px;
+  padding-block: 14px;
+  margin-bottom: 0;
+  border-color: var(--ui-border-muted);
+}
+.dashboard-heading,
+.dashboard-title {
   display: flex;
-  gap: 12px;
+  align-items: center;
+  gap: 16px;
+}
+.dashboard-heading {
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+.dashboard-title h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: -0.025em;
+  line-height: 1.3;
+}
+.dashboard-count {
+  color: var(--ui-text-muted);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.dashboard-toolbar {
+  display: grid;
+  grid-template-columns: 1fr minmax(220px, 300px) 184px;
+  align-items: center;
+  gap: 16px;
   margin-bottom: 16px;
 }
-.dashboard-search {
-  flex: 1;
-  min-width: min(100%, 240px);
-}
-.dashboard-sort {
-  width: 220px;
-}
-.dashboard-skeleton-bar {
-  flex: 1;
-  height: 44px;
-}
-.dashboard-skeleton-sort {
-  width: 220px;
-  height: 44px;
-}
-.dashboard-skeleton-panel {
-  padding: 8px;
+.dashboard-scope {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  align-items: center;
+  gap: 4px;
 }
-.dashboard-skeleton-row {
-  height: 64px;
+.dashboard-scope :deep(button) {
+  color: var(--ui-text-muted);
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+}
+.dashboard-scope :deep(button.selected) {
+  color: var(--ui-text-highlighted);
+  border-bottom-color: currentColor;
+}
+.dashboard-search,
+.dashboard-sort {
   width: 100%;
+  min-width: 0;
+}
+.dashboard-sort :deep(button) {
+  width: 100%;
+  min-width: 0;
 }
 .dashboard-panel {
-  overflow: auto;
-  padding: 8px;
+  background: var(--ui-bg);
+  border: 1px solid var(--ui-border-muted);
+  border-radius: 8px;
+  padding-inline: 20px;
+  min-width: 0;
+}
+.dashboard-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 15px;
+  line-height: 1.5;
+}
+.project-column {
+  width: 40%;
+}
+.last-check-column {
+  width: 25%;
+}
+.actions-column {
+  width: 44px;
+}
+.dashboard-table th {
+  height: 44px;
+  text-align: left;
+  color: var(--ui-text-muted);
+  font-size: 14px;
+  font-weight: 400;
+}
+.dashboard-table td {
+  padding-block: 20px;
+  vertical-align: middle;
+  border-top: 1px solid var(--ui-border-muted);
+}
+.dashboard-table th:not(:last-child),
+.dashboard-table td:not(:last-child) {
+  padding-right: 16px;
 }
 .dashboard-row {
   cursor: pointer;
+}
+.dashboard-row:hover {
+  outline: 1px solid var(--ui-border);
+  outline-offset: -1px;
+}
+.dashboard-name {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  color: var(--ui-text-highlighted);
+  font-size: 17px;
+  font-weight: 600;
+  overflow-wrap: break-word;
+}
+.dashboard-name:hover {
+  text-decoration: underline;
+}
+.dashboard-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 4px;
+  color: var(--ui-text-muted);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.dashboard-meta span {
+  white-space: nowrap;
+}
+.dashboard-file,
+.dashboard-detail {
+  color: var(--ui-text-muted);
+  font-size: 14px;
+  margin-top: 4px;
 }
 .dashboard-file {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 340px;
 }
-.dashboard-name {
-  display: block;
-  color: var(--ui-text-highlighted);
-  overflow-wrap: anywhere;
+.dashboard-date {
+  font-variant-numeric: tabular-nums;
 }
-.dashboard-progress {
-  margin-top: 6px;
-  max-width: 220px;
-}
-.dashboard-queues {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.dashboard-empty {
-  padding: 48px 24px;
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-}
-.dashboard-empty h2 {
-  margin: 0;
-  font-size: 20px;
-}
-.dashboard-empty p {
-  margin: 0;
-}
-.dashboard-empty-icon {
-  font-size: 40px;
+.dashboard-muted,
+.dashboard-summary-error {
   color: var(--ui-text-muted);
 }
-.dashboard-name-row {
-  display: flex;
-  align-items: center;
+.dashboard-queues {
+  display: grid;
   gap: 4px;
+}
+.result-ok {
+  color: var(--app-success-text);
+}
+.result-fix {
+  color: var(--app-error-text);
+}
+.result-review {
+  color: var(--app-warning-text);
+}
+.result-missing {
+  color: var(--ui-text-muted);
+}
+.dashboard-progress {
+  margin-top: 8px;
+  max-width: 200px;
+}
+.dashboard-actions {
+  text-align: right;
 }
 .dashboard-rename {
   display: flex;
   align-items: center;
-  gap: 8px;
-}
-.dashboard-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
   gap: 4px;
 }
-.row-action {
-  text-align: right;
-  white-space: nowrap;
+.rename-input {
+  min-width: 0;
+  flex: 1;
+}
+.dashboard-skeleton {
+  background: var(--ui-bg-accented);
+  animation: none;
+  height: 20px;
+  max-width: 100%;
+  border-radius: 4px;
+}
+.skeleton-name {
+  width: 180px;
+}
+.skeleton-meta {
+  width: 140px;
+  height: 14px;
+  margin-top: 8px;
+}
+.skeleton-date {
+  width: 120px;
+}
+.skeleton-result {
+  width: 180px;
+}
+.dashboard-table td.dashboard-empty {
+  padding-block: 32px;
+}
+.dashboard-empty h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+.dashboard-empty p {
+  color: var(--ui-text-muted);
+  font-size: 15px;
+  margin: 0 0 16px;
+  max-width: 65ch;
+}
+.dashboard-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  color: var(--ui-text-muted);
+  font-size: 15px;
+}
+.dashboard-notice > svg {
+  flex-shrink: 0;
+}
+.dashboard-action-error {
+  color: var(--app-error-text);
+  margin-bottom: 16px;
 }
 .modal-text {
   padding: 0 24px 8px;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .modal-footer {
   margin: 4px 24px 8px;
@@ -550,37 +819,148 @@ onBeforeUnmount(() => {
   clip-path: inset(50%);
   white-space: nowrap;
 }
-@media (max-width: 700px) {
+@media (max-width: 900px) {
   .dashboard-toolbar {
-    flex-direction: column;
+    grid-template-columns: 1fr 184px;
+    gap: 12px 16px;
+  }
+  .dashboard-scope {
+    grid-column: 1;
   }
   .dashboard-sort {
-    width: 100%;
+    grid-column: 2;
+    grid-row: 1;
   }
-  .dashboard-table thead {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
+  .dashboard-search {
+    grid-column: 1 / -1;
   }
-  .dashboard-table tbody,
-  .dashboard-table tr,
-  .dashboard-table td {
+  .project-column {
+    width: 39%;
+  }
+  .last-check-column {
+    width: 25%;
+  }
+}
+@media (max-width: 640px) {
+  .dashboard {
+    padding: 20px 16px 40px;
+  }
+  .dashboard-page :deep(.app-header) {
+    min-height: 64px;
+    padding-block: 10px;
+    width: calc(100% - 32px);
+    flex-wrap: nowrap;
+    gap: 8px;
+  }
+  .dashboard-page :deep(.brand) {
+    gap: 8px;
+  }
+  .dashboard-page :deep(.brand-mark) {
+    font-size: 20px;
+  }
+  .dashboard-page :deep(.brand-product) {
+    font-size: 13px;
+  }
+  .dashboard-page :deep(.brand-divider) {
+    height: 20px;
+  }
+  .dashboard-page :deep(.header-navigation) {
+    width: auto;
+    gap: 4px;
+  }
+  .dashboard-page :deep(.header-project-label) {
+    display: none;
+  }
+  .dashboard-heading {
+    margin-bottom: 16px;
+    gap: 12px;
+  }
+  .dashboard-title {
     display: block;
   }
-  .dashboard-table tr {
-    padding: 12px 0;
+  .dashboard-title h1 {
+    font-size: 24px;
   }
-  .dashboard-table tbody tr + tr {
-    border-top: 1px solid var(--ui-border);
+  .dashboard-count {
+    font-size: 13px;
   }
-  .row-action {
-    text-align: left;
+  .dashboard-toolbar {
+    grid-template-columns: 1fr 168px;
+    gap: 12px 8px;
+  }
+  .dashboard-panel {
+    padding-inline: 16px;
+  }
+  .dashboard-table colgroup,
+  .dashboard-table thead {
+    display: none;
+  }
+  .dashboard-table,
+  .dashboard-table tbody {
+    display: block;
+  }
+  .dashboard-table tr.dashboard-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px;
+    gap: 8px 12px;
+    padding-block: 16px;
+    border-top: 1px solid var(--ui-border-muted);
+  }
+  .dashboard-table tr:first-child {
+    border-top: 0;
+  }
+  .dashboard-table td,
+  .dashboard-table td:not(:last-child) {
+    display: block;
+    border: 0;
+    padding: 0;
+  }
+  .dashboard-identity {
+    grid-column: 1;
+    grid-row: 1;
   }
   .dashboard-actions {
-    justify-content: flex-start;
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .dashboard-result {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .dashboard-last-check {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    display: flex !important;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    color: var(--ui-text-muted);
+    font-size: 14px;
+  }
+  .dashboard-last-check.no-check {
+    display: none !important;
+  }
+  .dashboard-last-check .dashboard-file {
+    margin: 0;
+    max-width: 100%;
+  }
+  .dashboard-meta {
+    gap: 4px 10px;
+  }
+  .dashboard-loading-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    padding-block: 20px;
+    border-top: 1px solid var(--ui-border-muted);
+  }
+  .dashboard-loading-row td:first-child {
+    grid-column: 1 / -1;
+  }
+  .dashboard-loading-row td:last-child {
+    display: none;
+  }
+  .dashboard-notice {
+    flex-wrap: wrap;
   }
 }
 </style>
