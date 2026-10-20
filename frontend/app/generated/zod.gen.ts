@@ -54,24 +54,6 @@ export const zAuditStatusResponse = z.object({
 });
 
 /**
- * BindingDTO
- */
-export const zBindingDto = z.object({
-    candidates: z.array(z.string()),
-    confirmed: z.boolean(),
-    pdf_version_ids: z.array(z.string()),
-    vor_version_id: z.string()
-});
-
-/**
- * BindingPut
- */
-export const zBindingPut = z.object({
-    confirmed: z.boolean().optional().default(false),
-    pdf_version_ids: z.array(z.string()).optional()
-});
-
-/**
  * Body_upload_document_api_v1_documents_post
  */
 export const zBodyUploadDocumentApiV1DocumentsPost = z.object({
@@ -510,6 +492,7 @@ export const zVorPosition = z.object({
     bind_error_kind: zErrorKind.nullish(),
     calculation: z.record(z.string(), z.unknown()).optional(),
     comment: z.string().optional().default(''),
+    designation_refs: z.array(z.string()).optional(),
     document_id: z.string().optional().default(''),
     explicit_refs: z.array(z.string()).optional(),
     file_ref: z.string().optional().default(''),
@@ -708,26 +691,6 @@ export const zDeleteVersionApiV1DocumentsVersionIdVersionDeletePath = z.object({
  * Successful Response
  */
 export const zDeleteVersionApiV1DocumentsVersionIdVersionDeleteResponse = zVersionDeletedDto;
-
-export const zGetBindingsApiV1DocumentsVorVersionIdBindingsGetPath = z.object({
-    vor_version_id: z.string()
-});
-
-/**
- * Successful Response
- */
-export const zGetBindingsApiV1DocumentsVorVersionIdBindingsGetResponse = zBindingDto;
-
-export const zPutBindingsApiV1DocumentsVorVersionIdBindingsPutBody = zBindingPut;
-
-export const zPutBindingsApiV1DocumentsVorVersionIdBindingsPutPath = z.object({
-    vor_version_id: z.string()
-});
-
-/**
- * Successful Response
- */
-export const zPutBindingsApiV1DocumentsVorVersionIdBindingsPutResponse = zBindingDto;
 
 export const zProjectsApiV1ProjectsGetQuery = z.object({
     archived: z.boolean().optional().default(false)

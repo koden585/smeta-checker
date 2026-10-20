@@ -27,7 +27,6 @@ test('revisions retain document identity and historical evidence after PD change
   await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/documents/[^/?]+$`))
   const vorPath = new URL(page.url()).pathname
   const vorDocumentId = vorPath.split('/').at(-1)!
-  await page.getByRole('checkbox', { name: 'project.pdf, редакция 1', exact: true }).check()
   await page.getByRole('button', { name: 'Проверить', exact: true }).click()
   await expect(page).toHaveURL(/\/audits\/[^/?]+$/)
   await expect(page.getByRole('button', { name: 'Скачать Word', exact: true })).toBeVisible()
@@ -94,11 +93,7 @@ test('revisions retain document identity and historical evidence after PD change
   expect(await historicalPdf.body()).toEqual(pdf)
 
   await page.goto(vorPath)
-  const oldChoice = page.getByRole('checkbox', { name: 'project.pdf, редакция 1', exact: true })
-  if (await oldChoice.isChecked()) await oldChoice.uncheck()
-  await page
-    .getByRole('checkbox', { name: 'project-revision2.pdf, редакция 2', exact: true })
-    .check()
+  // Авто-пул берёт действующую редакцию ПД — выбирать нечего.
   await page.getByRole('button', { name: 'Проверить', exact: true }).click()
   await expect(page).toHaveURL(/\/audits\/[^/?]+$/)
   await expect(page.getByRole('button', { name: 'Скачать Word', exact: true })).toBeVisible()

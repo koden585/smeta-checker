@@ -100,42 +100,6 @@ export type AuditStatusResponse = {
 };
 
 /**
- * BindingDTO
- */
-export type BindingDto = {
-    /**
-     * Candidates
-     */
-    candidates: Array<string>;
-    /**
-     * Confirmed
-     */
-    confirmed: boolean;
-    /**
-     * Pdf Version Ids
-     */
-    pdf_version_ids: Array<string>;
-    /**
-     * Vor Version Id
-     */
-    vor_version_id: string;
-};
-
-/**
- * BindingPut
- */
-export type BindingPut = {
-    /**
-     * Confirmed
-     */
-    confirmed?: boolean;
-    /**
-     * Pdf Version Ids
-     */
-    pdf_version_ids?: Array<string>;
-};
-
-/**
  * Body_upload_document_api_v1_documents_post
  */
 export type BodyUploadDocumentApiV1DocumentsPost = {
@@ -1085,6 +1049,10 @@ export type VorPosition = {
      */
     comment?: string;
     /**
+     * Designation Refs
+     */
+    designation_refs?: Array<string>;
+    /**
      * Document Id
      */
     document_id?: string;
@@ -1730,66 +1698,6 @@ export type DeleteVersionApiV1DocumentsVersionIdVersionDeleteResponses = {
 };
 
 export type DeleteVersionApiV1DocumentsVersionIdVersionDeleteResponse = DeleteVersionApiV1DocumentsVersionIdVersionDeleteResponses[keyof DeleteVersionApiV1DocumentsVersionIdVersionDeleteResponses];
-
-export type GetBindingsApiV1DocumentsVorVersionIdBindingsGetData = {
-    body?: never;
-    path: {
-        /**
-         * Vor Version Id
-         */
-        vor_version_id: string;
-    };
-    query?: never;
-    url: '/api/v1/documents/{vor_version_id}/bindings';
-};
-
-export type GetBindingsApiV1DocumentsVorVersionIdBindingsGetErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type GetBindingsApiV1DocumentsVorVersionIdBindingsGetError = GetBindingsApiV1DocumentsVorVersionIdBindingsGetErrors[keyof GetBindingsApiV1DocumentsVorVersionIdBindingsGetErrors];
-
-export type GetBindingsApiV1DocumentsVorVersionIdBindingsGetResponses = {
-    /**
-     * Successful Response
-     */
-    200: BindingDto;
-};
-
-export type GetBindingsApiV1DocumentsVorVersionIdBindingsGetResponse = GetBindingsApiV1DocumentsVorVersionIdBindingsGetResponses[keyof GetBindingsApiV1DocumentsVorVersionIdBindingsGetResponses];
-
-export type PutBindingsApiV1DocumentsVorVersionIdBindingsPutData = {
-    body: BindingPut;
-    path: {
-        /**
-         * Vor Version Id
-         */
-        vor_version_id: string;
-    };
-    query?: never;
-    url: '/api/v1/documents/{vor_version_id}/bindings';
-};
-
-export type PutBindingsApiV1DocumentsVorVersionIdBindingsPutErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type PutBindingsApiV1DocumentsVorVersionIdBindingsPutError = PutBindingsApiV1DocumentsVorVersionIdBindingsPutErrors[keyof PutBindingsApiV1DocumentsVorVersionIdBindingsPutErrors];
-
-export type PutBindingsApiV1DocumentsVorVersionIdBindingsPutResponses = {
-    /**
-     * Successful Response
-     */
-    200: BindingDto;
-};
-
-export type PutBindingsApiV1DocumentsVorVersionIdBindingsPutResponse = PutBindingsApiV1DocumentsVorVersionIdBindingsPutResponses[keyof PutBindingsApiV1DocumentsVorVersionIdBindingsPutResponses];
 
 export type ProjectsApiV1ProjectsGetData = {
     body?: never;

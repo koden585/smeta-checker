@@ -9,20 +9,11 @@ definePageMeta({
 })
 let active = true
 let documentEpoch = 0
-let bindingEpoch = 0
 let historyEpoch = 0
 
 type Backend = typeof backend
 type DocumentDetail = Awaited<ReturnType<Backend['document']>>
 type RichVersion = DocumentDetail['versions'][number]
-type Binding = Awaited<ReturnType<Backend['bindings']>>
-
-interface PdfRow {
-  id: string
-  document_id: string
-  filename: string
-  number: number
-}
 
 const projectId = computed(() => String(route.params.projectId || ''))
 const documentId = computed(() => String(route.params.documentId || ''))
@@ -43,13 +34,6 @@ const titleBusy = ref(false)
 
 const revisionInput = ref<HTMLInputElement | null>(null)
 const uploadBusy = ref(false)
-
-const pdfCatalog = ref<PdfRow[]>([])
-const pdfCurrentMap = ref<Map<string, string>>(new Map())
-const binding = ref<Binding | null>(null)
-const selectedPdfs = ref<string[]>([])
-const linkBusy = ref(false)
-const bindingsLoaded = ref(false)
 
 const preflight = ref<PreflightResponse | null>(null)
 const preflightBusy = ref(false)
@@ -173,14 +157,6 @@ async function loadDocument() {
     projectArchived.value = project.archived
     document.value = detail
     titleDraft.value = detail.title
-    if (detail.kind === 'vor') {
-      await Promise.all([loadBinding(currentRevisionId()), refreshPdfCatalog()])
-      if (!active || currentEpoch !== documentEpoch) return
-    } else {
-      binding.value = null
-      selectedPdfs.value = []
-      bindingsLoaded.value = true
-    }
     resetPreflight()
     editingMetadata.value = false
     historyOffset.value = 0
@@ -189,53 +165,6 @@ async function loadDocument() {
     if (active && currentEpoch === documentEpoch) error.value = readableError(e)
   } finally {
     if (active && currentEpoch === documentEpoch) busy.value = false
-  }
-}
-
-async function loadBinding(versionId: string) {
-  const currentEpoch = ++bindingEpoch
-  bindingsLoaded.value = false
-  try {
-    if (!versionId) {
-      binding.value = null
-      selectedPdfs.value = []
-      return
-    }
-    const value = await backend.bindings(versionId)
-    if (!active || currentEpoch !== bindingEpoch || currentRevisionId() !== versionId) return
-    binding.value = value
-    // Используем ровно сохранённые PDF-версии; осознанный выбор старых
-    // ревизий разрешён, текущие маркеры не переключаем.
-    selectedPdfs.value = [...value.pdf_version_ids]
-  } catch (e) {
-    if (!active || currentEpoch !== bindingEpoch) return
-    binding.value = null
-    selectedPdfs.value = []
-    preflightError.value = readableError(e)
-  } finally {
-    if (active && currentEpoch === bindingEpoch) bindingsLoaded.value = true
-  }
-}
-
-async function refreshPdfCatalog() {
-  try {
-    const entries = await backend.catalog(projectId.value)
-    const pdfs = entries.filter((doc) => doc.kind === 'pdf' && !doc.archived)
-    pdfCatalog.value = pdfs.flatMap((doc) =>
-      doc.versions.map((v) => ({
-        id: v.id,
-        document_id: v.document_id,
-        filename: v.filename,
-        number: v.number,
-      })),
-    )
-    pdfCurrentMap.value = new Map(
-      pdfs
-        .filter((doc) => doc.current_version_id)
-        .map((doc) => [doc.id, doc.current_version_id as string]),
-    )
-  } catch (e) {
-    preflightError.value = readableError(e)
   }
 }
 
@@ -297,7 +226,7 @@ async function setCurrent(id: string) {
   try {
     document.value = await backend.updateDocument(document.value.id, { current_version_id: id })
     notice.value = isPdf.value
-      ? 'Действующая редакция ПД обновлена. Сохранённые привязки не переключены.'
+      ? 'Действующая редакция ПД обновлена. Следующая проверка использует её.'
       : 'Текущая редакция ВОР обновлена.'
   } catch (e) {
     error.value = readableError(e)
@@ -344,7 +273,6 @@ async function onRevisionPicked(event: Event) {
     await loadDocument()
     if (uploaded.version_id) {
       await router.replace({ query: { ...route.query, version: uploaded.version_id } })
-      if (isVor.value) await loadBinding(uploaded.version_id)
       await loadHistory()
     }
     resetPreflight()
@@ -374,8 +302,8 @@ async function confirmDelete() {
     await loadDocument()
   } catch (e) {
     const message = readableError(e)
-    error.value = /используется|409|run|binding|snapshot/i.test(message)
-      ? `Редакция используется в запусках или привязках и не может быть удалена: ${message}`
+    error.value = /используется|409|run|snapshot/i.test(message)
+      ? `Редакция используется в запусках и не может быть удалена: ${message}`
       : message
   } finally {
     deleteBusy.value = false
@@ -396,48 +324,9 @@ async function toggleArchive(next: boolean) {
   }
 }
 
-function togglePdf(id: string) {
-  if (linkBusy.value) return
-  resetPreflight()
-  selectedPdfs.value = selectedPdfs.value.includes(id)
-    ? selectedPdfs.value.filter((value) => value !== id)
-    : [...selectedPdfs.value, id]
-}
-
-async function saveBinding(confirmed: boolean) {
-  const revision = selectedVersion.value
-  if (!revision || !isVor.value || linkBusy.value || locksMutations.value) return null
-  if (!selectedPdfs.value.length) {
-    preflightError.value = 'Выберите хотя бы одну PDF-редакцию для привязки.'
-    return null
-  }
-  const generation = preflightEpoch
-  linkBusy.value = true
-  preflightError.value = ''
-  try {
-    const value = await backend.saveBindings(revision.id, selectedPdfs.value, confirmed)
-    if (!active || generation !== preflightEpoch || selectedVersion.value?.id !== revision.id)
-      return null
-    binding.value = value
-    notice.value = confirmed
-      ? 'Привязка сохранена и подтверждена.'
-      : 'Привязка сохранена без подтверждения.'
-    return binding.value
-  } catch (e) {
-    preflightError.value = readableError(e)
-    return null
-  } finally {
-    linkBusy.value = false
-  }
-}
-
 async function checkAndStart() {
   const revision = selectedVersion.value
   if (!revision || !isVor.value || preflightBusy.value || starting.value) return
-  if (!selectedPdfs.value.length) {
-    preflightError.value = 'Выберите хотя бы одну PDF-редакцию для проверки.'
-    return
-  }
   // Повторный клик после подтверждения критических ошибок запускает проверку.
   if (preflight.value && (!preflight.value.has_critical_error || acknowledged.value)) {
     await startAudit()
@@ -447,13 +336,10 @@ async function checkAndStart() {
   preflightBusy.value = true
   preflightError.value = ''
   try {
-    const saved = await saveBinding(true)
-    if (!saved) return
     if (current !== preflightEpoch) return
     const value = await backend.preflight({
       project_id: projectId.value,
       vor_version_id: revision.id,
-      pdf_version_ids: selectedPdfs.value,
     })
     if (current !== preflightEpoch) return
     preflight.value = value
@@ -489,7 +375,6 @@ async function startAudit() {
     const created = await backend.start({
       project_id: projectId.value,
       vor_version_id: revision.id,
-      pdf_version_ids: selectedPdfs.value,
     })
     if (!active) return
     startedRunId.value = created.run_id
@@ -501,16 +386,14 @@ async function startAudit() {
   }
 }
 
-function downloadRevision(version: RichVersion | PdfRow) {
+function downloadRevision(version: RichVersion) {
   const url = `${backend.contentUrl(version.id)}?download=true`
   backend.download(url, version.filename).catch((e: unknown) => (error.value = readableError(e)))
 }
 
-watch(selectedPdfs, () => resetPreflight(), { deep: true })
 watch(requestedVersion, () => {
   resetPreflight()
   editingMetadata.value = false
-  if (isVor.value) void loadBinding(currentRevisionId())
   historyOffset.value = 0
   void loadHistory()
 })
@@ -521,7 +404,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   active = false
   documentEpoch++
-  bindingEpoch++
   historyEpoch++
   preflightEpoch++
 })
@@ -788,128 +670,70 @@ onBeforeUnmount(() => {
           </template>
         </section>
 
-        <section v-if="isVor" class="panel" aria-label="Привязка проектных PDF">
-          <h2>Привязки ПД</h2>
+        <section v-if="isVor" class="panel" aria-label="Проверка и запуск">
+          <h2>Проверка и запуск</h2>
           <p class="muted">
-            Точные сохранённые PDF-редакции. Подтверждение явное; автосмены привязок нет.
+            Обозначения из ВОР сверяются с текстом проектных PDF. Отдельной привязки нет: проверка
+            идёт по действующим редакциям всего проекта.
           </p>
-          <p v-if="!bindingsLoaded" class="empty" role="status">Загружаем привязки…</p>
-          <template v-else>
-            <p v-if="binding" class="muted">
-              Сохранено: {{ binding.pdf_version_ids.length }} PDF ·
-              {{ binding.confirmed ? 'подтверждена' : 'не подтверждена' }}
-            </p>
-            <ul class="binding-list" aria-label="Доступные PDF-редакции">
-              <li v-for="pdf in pdfCatalog" :key="pdf.id" class="binding-row">
-                <label class="binding-label">
-                  <input
-                    type="checkbox"
-                    :checked="selectedPdfs.includes(pdf.id)"
-                    :disabled="linkBusy || !!locksMutations"
-                    :aria-label="`${pdf.filename}, редакция ${pdf.number}`"
-                    @change="togglePdf(pdf.id)"
-                  />
-                  <span class="binding-name" :title="`${pdf.filename}, редакция ${pdf.number}`">
-                    {{ pdf.filename }}, редакция {{ pdf.number }}
-                  </span>
-                  <span v-if="binding?.pdf_version_ids.includes(pdf.id)" class="muted">
-                    · сохранена
-                  </span>
-                  <UBadge
-                    v-if="pdf.id === pdfCurrentMap.get(pdf.document_id)"
-                    color="primary"
-                    variant="soft"
-                    label="Действующая"
-                  />
-                </label>
-              </li>
-            </ul>
-            <p v-if="!pdfCatalog.length" class="empty" role="status">
-              В проекте пока нет проектных PDF.
-            </p>
+          <div class="preflight-block">
             <div class="toolbar">
               <UButton
-                variant="outline"
-                :loading="linkBusy"
-                :disabled="linkBusy || !!locksMutations"
-                aria-label="Сохранить привязку без подтверждения"
-                @click="saveBinding(false)"
+                color="primary"
+                :loading="preflightBusy || starting"
+                :disabled="preflightBusy || starting || !!locksMutations"
+                aria-label="Проверить"
+                @click="checkAndStart()"
               >
-                Сохранить
-              </UButton>
-              <UButton
-                variant="outline"
-                :loading="linkBusy"
-                :disabled="linkBusy || !!locksMutations"
-                aria-label="Сохранить и подтвердить привязку"
-                @click="saveBinding(true)"
-              >
-                Сохранить и подтвердить
+                Проверить
               </UButton>
             </div>
-
-            <div class="preflight-block">
-              <h3>Проверка и запуск</h3>
-              <div class="toolbar">
-                <UButton
-                  color="primary"
-                  :loading="preflightBusy || starting"
-                  :disabled="preflightBusy || starting || !!locksMutations"
-                  aria-label="Проверить"
-                  @click="checkAndStart()"
-                >
-                  Проверить
-                </UButton>
+            <p v-if="preflightError" class="error-box" role="alert">{{ preflightError }}</p>
+            <div v-if="preflight" class="preflight-result">
+              <UBadge
+                :color="preflight.has_critical_error ? 'error' : 'success'"
+                variant="soft"
+                :label="
+                  preflight.has_critical_error
+                    ? 'Есть критические ошибки'
+                    : 'Критических ошибок нет'
+                "
+              />
+              <div class="table-wrap">
+                <table class="results">
+                  <thead>
+                    <tr>
+                      <th scope="col">ВОР</th>
+                      <th scope="col">PDF</th>
+                      <th scope="col">Ссылки</th>
+                      <th scope="col">Статус</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in preflight.rows" :key="`${row.vor}-${row.pdf}-${row.refs}`">
+                      <td class="cell-wrap">{{ row.vor }}</td>
+                      <td class="cell-wrap">{{ row.pdf }}</td>
+                      <td class="cell-wrap">{{ row.refs }}</td>
+                      <td>{{ row.status }}</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
-              <p v-if="preflightError" class="error-box" role="alert">{{ preflightError }}</p>
-              <div v-if="preflight" class="preflight-result">
-                <UBadge
-                  :color="preflight.has_critical_error ? 'error' : 'success'"
-                  variant="soft"
-                  :label="
-                    preflight.has_critical_error
-                      ? 'Есть критические ошибки'
-                      : 'Критических ошибок нет'
-                  "
+              <label v-if="preflight.has_critical_error" class="ack-row">
+                <input
+                  v-model="acknowledged"
+                  type="checkbox"
+                  aria-label="Подтверждаю запуск несмотря на критические ошибки"
                 />
-                <div class="table-wrap">
-                  <table class="results">
-                    <thead>
-                      <tr>
-                        <th scope="col">ВОР</th>
-                        <th scope="col">PDF</th>
-                        <th scope="col">Ссылки</th>
-                        <th scope="col">Статус</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr v-for="row in preflight.rows" :key="`${row.vor}-${row.pdf}-${row.refs}`">
-                        <td class="cell-wrap">{{ row.vor }}</td>
-                        <td class="cell-wrap">{{ row.pdf }}</td>
-                        <td class="cell-wrap">{{ row.refs }}</td>
-                        <td>{{ row.status }}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-                <label v-if="preflight.has_critical_error" class="ack-row">
-                  <input
-                    v-model="acknowledged"
-                    type="checkbox"
-                    aria-label="Подтверждаю запуск несмотря на критические ошибки привязки"
-                  />
-                  <span>Запустить несмотря на критические ошибки, затем нажмите «Проверить»</span>
-                </label>
-              </div>
+                <span>Запустить несмотря на критические ошибки, затем нажмите «Проверить»</span>
+              </label>
             </div>
-          </template>
+          </div>
         </section>
 
         <section v-else class="panel" aria-label="Редакции ПД">
           <h2>Редакции ПД</h2>
-          <p class="muted">
-            Действующая редакция выделяется явно. Смена действующей не меняет сохранённые привязки.
-          </p>
+          <p class="muted">Действующая редакция выделяется явно и участвует в проверке.</p>
           <ul class="revision-list" aria-label="Все редакции ПД">
             <li
               v-for="version in sortedVersions"
@@ -1135,7 +959,7 @@ onBeforeUnmount(() => {
         <p v-if="pendingDelete" class="delete-name" :title="pendingDelete.filename">
           {{ pendingDelete.filename }}, редакция {{ pendingDelete.number }}
         </p>
-        <p class="muted">Редакции, использованные в запусках или привязках, удалить нельзя.</p>
+        <p class="muted">Редакции, использованные в запусках, удалить нельзя.</p>
       </template>
       <template #footer>
         <div class="toolbar">
@@ -1299,7 +1123,6 @@ onBeforeUnmount(() => {
 .metadata-input {
   width: 100%;
 }
-.binding-list,
 .revision-list {
   list-style: none;
   margin: 12px 0;
@@ -1308,7 +1131,6 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 8px;
 }
-.binding-row,
 .revision-row {
   border: 1px solid var(--ui-border);
   border-radius: 8px;
@@ -1317,14 +1139,6 @@ onBeforeUnmount(() => {
 .revision-row-current {
   border-color: var(--ui-primary);
 }
-.binding-label {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: baseline;
-  min-width: 0;
-}
-.binding-name,
 .revision-name,
 .delete-name {
   min-width: 0;

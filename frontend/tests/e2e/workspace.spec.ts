@@ -215,9 +215,8 @@ test('upload, preflight, audit, persisted results and Word export use real API',
   await page.getByRole('button', { name: 'Сохранить документы', exact: true }).click()
   await expect(importDialog).toBeHidden()
   await page.locator('a[href*="/documents/"]').filter({ hasText: 'vor.csv' }).first().click()
-  await page.getByRole('checkbox', { name: 'project.pdf, редакция 1', exact: true }).check()
   await page.getByRole('button', { name: 'Проверить', exact: true }).click()
-  await page.getByLabel('Подтверждаю запуск несмотря на критические ошибки привязки').check()
+  await page.getByLabel('Подтверждаю запуск несмотря на критические ошибки').check()
   await page.getByRole('button', { name: 'Проверить', exact: true }).click()
   await expect(page.getByRole('heading', { name })).toBeVisible({
     timeout: 45000,

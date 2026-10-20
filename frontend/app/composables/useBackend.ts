@@ -2,7 +2,6 @@ import { z } from 'zod'
 import {
   zProjectDto,
   zDocumentDto,
-  zBindingDto,
   zVersionDto,
   zRunDto,
   zSummaryDto,
@@ -124,13 +123,6 @@ export function useBackend() {
           method: 'DELETE',
         },
       ),
-    bindings: (id: string) =>
-      json(`${root}/documents/${encodeURIComponent(id)}/bindings`, zBindingDto),
-    saveBindings: (id: string, pdfVersionIds: string[], confirmed = true) =>
-      json(`${root}/documents/${encodeURIComponent(id)}/bindings`, zBindingDto, {
-        method: 'PUT',
-        body: JSON.stringify({ pdf_version_ids: pdfVersionIds, confirmed }),
-      }),
     documents: (id: string) =>
       json(`${root}/projects/${encodeURIComponent(id)}/documents`, z.array(zVersionDto)),
     upload: (form: FormData) =>
