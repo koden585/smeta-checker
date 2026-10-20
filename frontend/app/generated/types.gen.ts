@@ -100,9 +100,49 @@ export type AuditStatusResponse = {
 };
 
 /**
+ * BindingDTO
+ */
+export type BindingDto = {
+    /**
+     * Candidates
+     */
+    candidates: Array<string>;
+    /**
+     * Confirmed
+     */
+    confirmed: boolean;
+    /**
+     * Pdf Version Ids
+     */
+    pdf_version_ids: Array<string>;
+    /**
+     * Vor Version Id
+     */
+    vor_version_id: string;
+};
+
+/**
+ * BindingPut
+ */
+export type BindingPut = {
+    /**
+     * Confirmed
+     */
+    confirmed?: boolean;
+    /**
+     * Pdf Version Ids
+     */
+    pdf_version_ids?: Array<string>;
+};
+
+/**
  * Body_upload_document_api_v1_documents_post
  */
 export type BodyUploadDocumentApiV1DocumentsPost = {
+    /**
+     * Document Id
+     */
+    document_id?: string | null;
     /**
      * File
      */
@@ -112,13 +152,102 @@ export type BodyUploadDocumentApiV1DocumentsPost = {
      */
     kind: string;
     /**
-     * Project
+     * New Document
      */
-    project: string;
+    new_document?: boolean;
     /**
      * Project Id
      */
-    project_id?: string | null;
+    project_id: string;
+};
+
+/**
+ * DocumentDTO
+ */
+export type DocumentDto = {
+    /**
+     * Archived
+     */
+    archived?: boolean;
+    /**
+     * Current Version Id
+     */
+    current_version_id?: string | null;
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Kind
+     */
+    kind: 'vor' | 'pdf';
+    last_run?: RunDto | null;
+    /**
+     * Pd Updated
+     */
+    pd_updated?: boolean;
+    /**
+     * Project Id
+     */
+    project_id: string;
+    /**
+     * Title
+     */
+    title: string;
+    /**
+     * Versions
+     */
+    versions: Array<VersionDto>;
+};
+
+/**
+ * DocumentMetadataDTO
+ */
+export type DocumentMetadataDto = {
+    /**
+     * Construction Title
+     */
+    construction_title?: string;
+    /**
+     * Document Code
+     */
+    document_code?: string;
+    /**
+     * Extractor Version
+     */
+    extractor_version?: string;
+    /**
+     * Pd Reference
+     */
+    pd_reference?: string;
+    /**
+     * Raw Title
+     */
+    raw_title?: string;
+    /**
+     * Sources
+     */
+    sources?: {
+        [key: string]: MetadataSourceDto;
+    };
+};
+
+/**
+ * DocumentPatch
+ */
+export type DocumentPatch = {
+    /**
+     * Archived
+     */
+    archived?: boolean | null;
+    /**
+     * Current Version Id
+     */
+    current_version_id?: string | null;
+    /**
+     * Title
+     */
+    title?: string | null;
 };
 
 /**
@@ -320,6 +449,24 @@ export type HighlightDto = {
 };
 
 /**
+ * MetadataSourceDTO
+ */
+export type MetadataSourceDto = {
+    /**
+     * Cell
+     */
+    cell?: string;
+    /**
+     * Raw
+     */
+    raw?: string;
+    /**
+     * Sheet
+     */
+    sheet?: string;
+};
+
+/**
  * PdfRegionDTO
  */
 export type PdfRegionDto = {
@@ -446,6 +593,14 @@ export type ProjectCreate = {
  */
 export type ProjectDto = {
     /**
+     * Archived
+     */
+    archived?: boolean;
+    /**
+     * Created At
+     */
+    created_at?: string | null;
+    /**
      * Id
      */
     id: string;
@@ -453,6 +608,20 @@ export type ProjectDto = {
      * Name
      */
     name: string;
+};
+
+/**
+ * ProjectUpdate
+ */
+export type ProjectUpdate = {
+    /**
+     * Archived
+     */
+    archived?: boolean | null;
+    /**
+     * Name
+     */
+    name?: string | null;
 };
 
 /**
@@ -844,6 +1013,13 @@ export type VersionDto = {
      * Kind
      */
     kind: 'vor' | 'pdf';
+    metadata: DocumentMetadataDto;
+    /**
+     * Metadata Overrides
+     */
+    metadata_overrides: {
+        [key: string]: string;
+    };
     /**
      * Number
      */
@@ -860,6 +1036,28 @@ export type VersionDto = {
      * Size
      */
     size: number;
+};
+
+/**
+ * VersionDeletedDTO
+ */
+export type VersionDeletedDto = {
+    /**
+     * Deleted
+     */
+    deleted: boolean;
+};
+
+/**
+ * VersionMetadataPatch
+ */
+export type VersionMetadataPatch = {
+    /**
+     * Fields
+     */
+    fields?: {
+        [key: string]: string;
+    };
 };
 
 /**
@@ -1285,6 +1483,96 @@ export type PreflightDocumentsApiV1DocumentsPreflightPostResponses = {
 
 export type PreflightDocumentsApiV1DocumentsPreflightPostResponse = PreflightDocumentsApiV1DocumentsPreflightPostResponses[keyof PreflightDocumentsApiV1DocumentsPreflightPostResponses];
 
+export type UpdateDocumentApiV1DocumentsDocumentIdPatchData = {
+    body: DocumentPatch;
+    path: {
+        /**
+         * Document Id
+         */
+        document_id: string;
+    };
+    query?: never;
+    url: '/api/v1/documents/{document_id}';
+};
+
+export type UpdateDocumentApiV1DocumentsDocumentIdPatchErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type UpdateDocumentApiV1DocumentsDocumentIdPatchError = UpdateDocumentApiV1DocumentsDocumentIdPatchErrors[keyof UpdateDocumentApiV1DocumentsDocumentIdPatchErrors];
+
+export type UpdateDocumentApiV1DocumentsDocumentIdPatchResponses = {
+    /**
+     * Successful Response
+     */
+    200: DocumentDto;
+};
+
+export type UpdateDocumentApiV1DocumentsDocumentIdPatchResponse = UpdateDocumentApiV1DocumentsDocumentIdPatchResponses[keyof UpdateDocumentApiV1DocumentsDocumentIdPatchResponses];
+
+export type DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteData = {
+    body?: never;
+    path: {
+        /**
+         * Document Id
+         */
+        document_id: string;
+    };
+    query?: never;
+    url: '/api/v1/documents/{document_id}/detail';
+};
+
+export type DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteError = DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteErrors[keyof DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteErrors];
+
+export type DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteResponses = {
+    /**
+     * Successful Response
+     */
+    200: DocumentDto;
+};
+
+export type DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteResponse = DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteResponses[keyof DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteResponses];
+
+export type DocumentDetailApiV1DocumentsDocumentIdDetailGetData = {
+    body?: never;
+    path: {
+        /**
+         * Document Id
+         */
+        document_id: string;
+    };
+    query?: never;
+    url: '/api/v1/documents/{document_id}/detail';
+};
+
+export type DocumentDetailApiV1DocumentsDocumentIdDetailGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DocumentDetailApiV1DocumentsDocumentIdDetailGetError = DocumentDetailApiV1DocumentsDocumentIdDetailGetErrors[keyof DocumentDetailApiV1DocumentsDocumentIdDetailGetErrors];
+
+export type DocumentDetailApiV1DocumentsDocumentIdDetailGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: DocumentDto;
+};
+
+export type DocumentDetailApiV1DocumentsDocumentIdDetailGetResponse = DocumentDetailApiV1DocumentsDocumentIdDetailGetResponses[keyof DocumentDetailApiV1DocumentsDocumentIdDetailGetResponses];
+
 export type ContentApiV1DocumentsVersionIdContentGetData = {
     body?: never;
     path: {
@@ -1353,6 +1641,36 @@ export type FormattingApiV1DocumentsVersionIdFormatChecksPostResponses = {
 
 export type FormattingApiV1DocumentsVersionIdFormatChecksPostResponse = FormattingApiV1DocumentsVersionIdFormatChecksPostResponses[keyof FormattingApiV1DocumentsVersionIdFormatChecksPostResponses];
 
+export type UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchData = {
+    body: VersionMetadataPatch;
+    path: {
+        /**
+         * Version Id
+         */
+        version_id: string;
+    };
+    query?: never;
+    url: '/api/v1/documents/{version_id}/metadata';
+};
+
+export type UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchError = UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchErrors[keyof UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchErrors];
+
+export type UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchResponses = {
+    /**
+     * Successful Response
+     */
+    200: VersionDto;
+};
+
+export type UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchResponse = UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchResponses[keyof UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchResponses];
+
 export type StructureApiV1DocumentsVersionIdStructureGetData = {
     body?: never;
     path: {
@@ -1383,12 +1701,116 @@ export type StructureApiV1DocumentsVersionIdStructureGetResponses = {
 
 export type StructureApiV1DocumentsVersionIdStructureGetResponse = StructureApiV1DocumentsVersionIdStructureGetResponses[keyof StructureApiV1DocumentsVersionIdStructureGetResponses];
 
+export type DeleteVersionApiV1DocumentsVersionIdVersionDeleteData = {
+    body?: never;
+    path: {
+        /**
+         * Version Id
+         */
+        version_id: string;
+    };
+    query?: never;
+    url: '/api/v1/documents/{version_id}/version';
+};
+
+export type DeleteVersionApiV1DocumentsVersionIdVersionDeleteErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DeleteVersionApiV1DocumentsVersionIdVersionDeleteError = DeleteVersionApiV1DocumentsVersionIdVersionDeleteErrors[keyof DeleteVersionApiV1DocumentsVersionIdVersionDeleteErrors];
+
+export type DeleteVersionApiV1DocumentsVersionIdVersionDeleteResponses = {
+    /**
+     * Successful Response
+     */
+    200: VersionDeletedDto;
+};
+
+export type DeleteVersionApiV1DocumentsVersionIdVersionDeleteResponse = DeleteVersionApiV1DocumentsVersionIdVersionDeleteResponses[keyof DeleteVersionApiV1DocumentsVersionIdVersionDeleteResponses];
+
+export type GetBindingsApiV1DocumentsVorVersionIdBindingsGetData = {
+    body?: never;
+    path: {
+        /**
+         * Vor Version Id
+         */
+        vor_version_id: string;
+    };
+    query?: never;
+    url: '/api/v1/documents/{vor_version_id}/bindings';
+};
+
+export type GetBindingsApiV1DocumentsVorVersionIdBindingsGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetBindingsApiV1DocumentsVorVersionIdBindingsGetError = GetBindingsApiV1DocumentsVorVersionIdBindingsGetErrors[keyof GetBindingsApiV1DocumentsVorVersionIdBindingsGetErrors];
+
+export type GetBindingsApiV1DocumentsVorVersionIdBindingsGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: BindingDto;
+};
+
+export type GetBindingsApiV1DocumentsVorVersionIdBindingsGetResponse = GetBindingsApiV1DocumentsVorVersionIdBindingsGetResponses[keyof GetBindingsApiV1DocumentsVorVersionIdBindingsGetResponses];
+
+export type PutBindingsApiV1DocumentsVorVersionIdBindingsPutData = {
+    body: BindingPut;
+    path: {
+        /**
+         * Vor Version Id
+         */
+        vor_version_id: string;
+    };
+    query?: never;
+    url: '/api/v1/documents/{vor_version_id}/bindings';
+};
+
+export type PutBindingsApiV1DocumentsVorVersionIdBindingsPutErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PutBindingsApiV1DocumentsVorVersionIdBindingsPutError = PutBindingsApiV1DocumentsVorVersionIdBindingsPutErrors[keyof PutBindingsApiV1DocumentsVorVersionIdBindingsPutErrors];
+
+export type PutBindingsApiV1DocumentsVorVersionIdBindingsPutResponses = {
+    /**
+     * Successful Response
+     */
+    200: BindingDto;
+};
+
+export type PutBindingsApiV1DocumentsVorVersionIdBindingsPutResponse = PutBindingsApiV1DocumentsVorVersionIdBindingsPutResponses[keyof PutBindingsApiV1DocumentsVorVersionIdBindingsPutResponses];
+
 export type ProjectsApiV1ProjectsGetData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Archived
+         */
+        archived?: boolean;
+    };
     url: '/api/v1/projects';
 };
+
+export type ProjectsApiV1ProjectsGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ProjectsApiV1ProjectsGetError = ProjectsApiV1ProjectsGetErrors[keyof ProjectsApiV1ProjectsGetErrors];
 
 export type ProjectsApiV1ProjectsGetResponses = {
     /**
@@ -1425,6 +1847,96 @@ export type CreateProjectApiV1ProjectsPostResponses = {
 };
 
 export type CreateProjectApiV1ProjectsPostResponse = CreateProjectApiV1ProjectsPostResponses[keyof CreateProjectApiV1ProjectsPostResponses];
+
+export type DeleteProjectApiV1ProjectsProjectIdDeleteData = {
+    body?: never;
+    path: {
+        /**
+         * Project Id
+         */
+        project_id: string;
+    };
+    query?: never;
+    url: '/api/v1/projects/{project_id}';
+};
+
+export type DeleteProjectApiV1ProjectsProjectIdDeleteErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DeleteProjectApiV1ProjectsProjectIdDeleteError = DeleteProjectApiV1ProjectsProjectIdDeleteErrors[keyof DeleteProjectApiV1ProjectsProjectIdDeleteErrors];
+
+export type DeleteProjectApiV1ProjectsProjectIdDeleteResponses = {
+    /**
+     * Successful Response
+     */
+    200: ProjectDto;
+};
+
+export type DeleteProjectApiV1ProjectsProjectIdDeleteResponse = DeleteProjectApiV1ProjectsProjectIdDeleteResponses[keyof DeleteProjectApiV1ProjectsProjectIdDeleteResponses];
+
+export type GetProjectApiV1ProjectsProjectIdGetData = {
+    body?: never;
+    path: {
+        /**
+         * Project Id
+         */
+        project_id: string;
+    };
+    query?: never;
+    url: '/api/v1/projects/{project_id}';
+};
+
+export type GetProjectApiV1ProjectsProjectIdGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetProjectApiV1ProjectsProjectIdGetError = GetProjectApiV1ProjectsProjectIdGetErrors[keyof GetProjectApiV1ProjectsProjectIdGetErrors];
+
+export type GetProjectApiV1ProjectsProjectIdGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: ProjectDto;
+};
+
+export type GetProjectApiV1ProjectsProjectIdGetResponse = GetProjectApiV1ProjectsProjectIdGetResponses[keyof GetProjectApiV1ProjectsProjectIdGetResponses];
+
+export type UpdateProjectApiV1ProjectsProjectIdPatchData = {
+    body: ProjectUpdate;
+    path: {
+        /**
+         * Project Id
+         */
+        project_id: string;
+    };
+    query?: never;
+    url: '/api/v1/projects/{project_id}';
+};
+
+export type UpdateProjectApiV1ProjectsProjectIdPatchErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type UpdateProjectApiV1ProjectsProjectIdPatchError = UpdateProjectApiV1ProjectsProjectIdPatchErrors[keyof UpdateProjectApiV1ProjectsProjectIdPatchErrors];
+
+export type UpdateProjectApiV1ProjectsProjectIdPatchResponses = {
+    /**
+     * Successful Response
+     */
+    200: ProjectDto;
+};
+
+export type UpdateProjectApiV1ProjectsProjectIdPatchResponse = UpdateProjectApiV1ProjectsProjectIdPatchResponses[keyof UpdateProjectApiV1ProjectsProjectIdPatchResponses];
 
 export type HistoryApiV1ProjectsProjectIdAuditsGetData = {
     body?: never;
@@ -1466,6 +1978,43 @@ export type HistoryApiV1ProjectsProjectIdAuditsGetResponses = {
 };
 
 export type HistoryApiV1ProjectsProjectIdAuditsGetResponse = HistoryApiV1ProjectsProjectIdAuditsGetResponses[keyof HistoryApiV1ProjectsProjectIdAuditsGetResponses];
+
+export type CatalogApiV1ProjectsProjectIdCatalogGetData = {
+    body?: never;
+    path: {
+        /**
+         * Project Id
+         */
+        project_id: string;
+    };
+    query?: {
+        /**
+         * Archived
+         */
+        archived?: boolean;
+    };
+    url: '/api/v1/projects/{project_id}/catalog';
+};
+
+export type CatalogApiV1ProjectsProjectIdCatalogGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CatalogApiV1ProjectsProjectIdCatalogGetError = CatalogApiV1ProjectsProjectIdCatalogGetErrors[keyof CatalogApiV1ProjectsProjectIdCatalogGetErrors];
+
+export type CatalogApiV1ProjectsProjectIdCatalogGetResponses = {
+    /**
+     * Response Catalog Api V1 Projects  Project Id  Catalog Get
+     *
+     * Successful Response
+     */
+    200: Array<DocumentDto>;
+};
+
+export type CatalogApiV1ProjectsProjectIdCatalogGetResponse = CatalogApiV1ProjectsProjectIdCatalogGetResponses[keyof CatalogApiV1ProjectsProjectIdCatalogGetResponses];
 
 export type DocumentsApiV1ProjectsProjectIdDocumentsGetData = {
     body?: never;

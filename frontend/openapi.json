@@ -143,8 +143,73 @@
         "title": "AuditStatusResponse",
         "type": "object"
       },
+      "BindingDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "candidates": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "confirmed": {
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "pdf_version_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Pdf Version Ids",
+            "type": "array"
+          },
+          "vor_version_id": {
+            "title": "Vor Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "vor_version_id",
+          "pdf_version_ids",
+          "confirmed",
+          "candidates"
+        ],
+        "title": "BindingDTO",
+        "type": "object"
+      },
+      "BindingPut": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "pdf_version_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Pdf Version Ids",
+            "type": "array"
+          }
+        },
+        "title": "BindingPut",
+        "type": "object"
+      },
       "Body_upload_document_api_v1_documents_post": {
         "properties": {
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
           "file": {
             "contentMediaType": "application/octet-stream",
             "title": "File",
@@ -155,13 +220,33 @@
             "title": "Kind",
             "type": "string"
           },
-          "project": {
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Project",
-            "type": "string"
+          "new_document": {
+            "default": false,
+            "title": "New Document",
+            "type": "boolean"
           },
           "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "file",
+          "project_id"
+        ],
+        "title": "Body_upload_document_api_v1_documents_post",
+        "type": "object"
+      },
+      "DocumentDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "archived": {
+            "default": false,
+            "title": "Archived",
+            "type": "boolean"
+          },
+          "current_version_id": {
             "anyOf": [
               {
                 "type": "string"
@@ -170,15 +255,139 @@
                 "type": "null"
               }
             ],
-            "title": "Project Id"
+            "title": "Current Version Id"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "vor",
+              "pdf"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pd_updated": {
+            "default": false,
+            "title": "Pd Updated",
+            "type": "boolean"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/VersionDTO"
+            },
+            "title": "Versions",
+            "type": "array"
           }
         },
         "required": [
-          "project",
+          "id",
+          "project_id",
           "kind",
-          "file"
+          "title",
+          "versions"
         ],
-        "title": "Body_upload_document_api_v1_documents_post",
+        "title": "DocumentDTO",
+        "type": "object"
+      },
+      "DocumentMetadataDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "construction_title": {
+            "default": "",
+            "title": "Construction Title",
+            "type": "string"
+          },
+          "document_code": {
+            "default": "",
+            "title": "Document Code",
+            "type": "string"
+          },
+          "extractor_version": {
+            "default": "",
+            "title": "Extractor Version",
+            "type": "string"
+          },
+          "pd_reference": {
+            "default": "",
+            "title": "Pd Reference",
+            "type": "string"
+          },
+          "raw_title": {
+            "default": "",
+            "title": "Raw Title",
+            "type": "string"
+          },
+          "sources": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/MetadataSourceDTO"
+            },
+            "title": "Sources",
+            "type": "object"
+          }
+        },
+        "title": "DocumentMetadataDTO",
+        "type": "object"
+      },
+      "DocumentPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived"
+          },
+          "current_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Version Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "DocumentPatch",
         "type": "object"
       },
       "DocumentUploadResponse": {
@@ -476,6 +685,28 @@
         "title": "HighlightDTO",
         "type": "object"
       },
+      "MetadataSourceDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "cell": {
+            "default": "",
+            "title": "Cell",
+            "type": "string"
+          },
+          "raw": {
+            "default": "",
+            "title": "Raw",
+            "type": "string"
+          },
+          "sheet": {
+            "default": "",
+            "title": "Sheet",
+            "type": "string"
+          }
+        },
+        "title": "MetadataSourceDTO",
+        "type": "object"
+      },
       "PdfRegionDTO": {
         "additionalProperties": false,
         "properties": {
@@ -651,6 +882,23 @@
       "ProjectDTO": {
         "additionalProperties": false,
         "properties": {
+          "archived": {
+            "default": false,
+            "title": "Archived",
+            "type": "boolean"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -665,6 +913,37 @@
           "name"
         ],
         "title": "ProjectDTO",
+        "type": "object"
+      },
+      "ProjectUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "ProjectUpdate",
         "type": "object"
       },
       "ReportStatus": {
@@ -1298,6 +1577,16 @@
             "title": "Kind",
             "type": "string"
           },
+          "metadata": {
+            "$ref": "#/components/schemas/DocumentMetadataDTO"
+          },
+          "metadata_overrides": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Metadata Overrides",
+            "type": "object"
+          },
           "number": {
             "title": "Number",
             "type": "integer"
@@ -1324,9 +1613,39 @@
           "number",
           "sha256",
           "size",
-          "created_at"
+          "created_at",
+          "metadata",
+          "metadata_overrides"
         ],
         "title": "VersionDTO",
+        "type": "object"
+      },
+      "VersionDeletedDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "title": "VersionDeletedDTO",
+        "type": "object"
+      },
+      "VersionMetadataPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "type": "object"
+          }
+        },
+        "title": "VersionMetadataPatch",
         "type": "object"
       },
       "VorPosition": {
@@ -1987,6 +2306,131 @@
         "summary": "Preflight Documents"
       }
     },
+    "/api/v1/documents/{document_id}": {
+      "patch": {
+        "operationId": "update_document_api_v1_documents__document_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentDTO"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Document"
+      }
+    },
+    "/api/v1/documents/{document_id}/detail": {
+      "delete": {
+        "operationId": "delete_document_api_v1_documents__document_id__detail_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentDTO"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Document"
+      },
+      "get": {
+        "operationId": "document_detail_api_v1_documents__document_id__detail_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentDTO"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Document Detail"
+      }
+    },
     "/api/v1/documents/{version_id}/content": {
       "get": {
         "operationId": "content_api_v1_documents__version_id__content_get",
@@ -2090,6 +2534,55 @@
         "summary": "Formatting"
       }
     },
+    "/api/v1/documents/{version_id}/metadata": {
+      "patch": {
+        "operationId": "update_version_metadata_api_v1_documents__version_id__metadata_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VersionMetadataPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionDTO"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Version Metadata"
+      }
+    },
     "/api/v1/documents/{version_id}/structure": {
       "get": {
         "operationId": "structure_api_v1_documents__version_id__structure_get",
@@ -2129,9 +2622,146 @@
         "summary": "Structure"
       }
     },
+    "/api/v1/documents/{version_id}/version": {
+      "delete": {
+        "operationId": "delete_version_api_v1_documents__version_id__version_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionDeletedDTO"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Version"
+      }
+    },
+    "/api/v1/documents/{vor_version_id}/bindings": {
+      "get": {
+        "operationId": "get_bindings_api_v1_documents__vor_version_id__bindings_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vor_version_id",
+            "required": true,
+            "schema": {
+              "title": "Vor Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BindingDTO"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Bindings"
+      },
+      "put": {
+        "operationId": "put_bindings_api_v1_documents__vor_version_id__bindings_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vor_version_id",
+            "required": true,
+            "schema": {
+              "title": "Vor Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BindingPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BindingDTO"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Bindings"
+      }
+    },
     "/api/v1/projects": {
       "get": {
         "operationId": "projects_api_v1_projects_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "archived",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Archived",
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -2146,6 +2776,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Projects"
@@ -2185,6 +2825,129 @@
           }
         },
         "summary": "Create Project"
+      }
+    },
+    "/api/v1/projects/{project_id}": {
+      "delete": {
+        "operationId": "delete_project_api_v1_projects__project_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDTO"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Project"
+      },
+      "get": {
+        "operationId": "get_project_api_v1_projects__project_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDTO"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Project"
+      },
+      "patch": {
+        "operationId": "update_project_api_v1_projects__project_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDTO"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Project"
       }
     },
     "/api/v1/projects/{project_id}/audits": {
@@ -2251,6 +3014,59 @@
           }
         },
         "summary": "History"
+      }
+    },
+    "/api/v1/projects/{project_id}/catalog": {
+      "get": {
+        "operationId": "catalog_api_v1_projects__project_id__catalog_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "archived",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Archived",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DocumentDTO"
+                  },
+                  "title": "Response Catalog Api V1 Projects  Project Id  Catalog Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Catalog"
       }
     },
     "/api/v1/projects/{project_id}/documents": {

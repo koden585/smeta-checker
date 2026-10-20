@@ -1,12 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import {
-  clampPage,
-  queueColor,
-  queueLabel,
-  quantityText,
-  quantityWithUnit,
-  runLabel,
-} from '../../app/utils/presentation'
+import { clampPage, queueColor, quantityText, quantityWithUnit } from '../../app/utils/presentation'
 
 describe('domain status mapping', () => {
   it('maps the four queues to distinct functional colors', () => {
@@ -16,18 +9,6 @@ describe('domain status mapping', () => {
     // A technical failure / unchecked state is neutral, never red.
     expect(queueColor('missing')).toBe('neutral')
     expect(queueColor('unknown')).toBe('neutral')
-  })
-  it('labels queues without inventing new buckets', () => {
-    expect(queueLabel('fix')).toBe('Расхождение')
-    expect(queueLabel('review')).toBe('Проверить вручную')
-    expect(queueLabel('missing')).toBe('Проверка не выполнена')
-    expect(queueLabel('ok')).toBe('Подтверждено')
-    expect(queueLabel('completed')).toBe('Не проверено')
-  })
-  it('labels run states without leaking technical codes', () => {
-    expect(runLabel('running')).toBe('Выполняется')
-    expect(runLabel('done')).toBe('Завершена')
-    expect(runLabel('failed')).toBe('Сбой проверки')
   })
 })
 

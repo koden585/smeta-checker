@@ -1,6 +1,8 @@
 import { z } from 'zod'
 import {
   zProjectDto,
+  zDocumentDto,
+  zBindingDto,
   zVersionDto,
   zRunDto,
   zSummaryDto,
@@ -79,9 +81,56 @@ export function useBackend() {
         body: JSON.stringify({ password }),
       }),
     gate: () => json('/api/gate', z.object({ locked: z.boolean() })),
-    projects: () => json(root + '/projects', z.array(zProjectDto)),
+    projects: (archived = false) =>
+      json(root + '/projects' + (archived ? '?archived=true' : ''), z.array(zProjectDto)),
+    project: (id: string) => json(`${root}/projects/${encodeURIComponent(id)}`, zProjectDto),
     createProject: (name: string) =>
       json(root + '/projects', zProjectDto, { method: 'POST', body: JSON.stringify({ name }) }),
+    renameProject: (id: string, name: string) =>
+      json(`${root}/projects/${encodeURIComponent(id)}`, zProjectDto, {
+        method: 'PATCH',
+        body: JSON.stringify({ name }),
+      }),
+    updateProject: (id: string, fields: { name?: string; archived?: boolean }) =>
+      json(`${root}/projects/${encodeURIComponent(id)}`, zProjectDto, {
+        method: 'PATCH',
+        body: JSON.stringify(fields),
+      }),
+    catalog: (id: string, archived = false) =>
+      json(
+        `${root}/projects/${encodeURIComponent(id)}/catalog${archived ? '?archived=true' : ''}`,
+        z.array(zDocumentDto),
+      ),
+    document: (id: string) =>
+      json(`${root}/documents/${encodeURIComponent(id)}/detail`, zDocumentDto),
+    updateDocument: (
+      id: string,
+      fields: { title?: string; archived?: boolean; current_version_id?: string },
+    ) =>
+      json(`${root}/documents/${encodeURIComponent(id)}`, zDocumentDto, {
+        method: 'PATCH',
+        body: JSON.stringify(fields),
+      }),
+    updateMetadata: (id: string, fields: Record<string, string>) =>
+      json(`${root}/documents/${encodeURIComponent(id)}/metadata`, zVersionDto, {
+        method: 'PATCH',
+        body: JSON.stringify({ fields }),
+      }),
+    removeVersion: (id: string) =>
+      json(
+        `${root}/documents/${encodeURIComponent(id)}/version`,
+        z.object({ deleted: z.boolean() }),
+        {
+          method: 'DELETE',
+        },
+      ),
+    bindings: (id: string) =>
+      json(`${root}/documents/${encodeURIComponent(id)}/bindings`, zBindingDto),
+    saveBindings: (id: string, pdfVersionIds: string[], confirmed = true) =>
+      json(`${root}/documents/${encodeURIComponent(id)}/bindings`, zBindingDto, {
+        method: 'PUT',
+        body: JSON.stringify({ pdf_version_ids: pdfVersionIds, confirmed }),
+      }),
     documents: (id: string) =>
       json(`${root}/projects/${encodeURIComponent(id)}/documents`, z.array(zVersionDto)),
     upload: (form: FormData) =>

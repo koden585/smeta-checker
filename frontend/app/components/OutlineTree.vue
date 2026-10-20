@@ -40,15 +40,15 @@ watch(
 )
 </script>
 <template>
-  <section ref="host" aria-label="Дерево разделов PDF">
-    <b style="display: block; font-size: 13px; margin: 0 4px 12px">Разделы PDF</b
+  <section ref="host" class="ot-tree" aria-label="Дерево разделов PDF">
+    <b class="ot-title">Разделы PDF</b
     ><UInput v-model="search" placeholder="Найти раздел" aria-label="Найти раздел" class="w-full" />
     <p v-if="error" class="muted" role="alert">{{ error }}</p>
-    <p v-else-if="!data" class="muted" style="padding: 16px 0" role="status">Открываем разделы…</p>
-    <p v-else-if="!data.nodes.length" class="muted" style="padding: 16px 0">
+    <p v-else-if="!data" class="muted ot-status" role="status">Открываем разделы…</p>
+    <p v-else-if="!data.nodes.length" class="muted ot-status">
       Разделы не выделены. Используйте страницы или поиск по PDF.
     </p>
-    <ul v-else style="margin-top: 10px">
+    <ul v-else class="ot-list">
       <OutlineBranch
         v-for="id in data.roots"
         :key="id"
@@ -62,3 +62,20 @@ watch(
     </ul>
   </section>
 </template>
+<style scoped>
+.ot-title {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ui-text-highlighted);
+  margin: 0 4px 12px;
+}
+.ot-status {
+  padding: 16px 0;
+}
+.ot-list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+</style>
