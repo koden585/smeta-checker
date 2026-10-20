@@ -88,7 +88,7 @@ class BaselineTests(unittest.TestCase):
         for case in self.summary["cases"]:
             with self.subTest(position=case["position"]):
                 self.assertTrue(case["exports_match"])
-                self.assertEqual(case["excel_status"], expected[case["position"]])
+                self.assertEqual(case["word_status"], expected[case["position"]])
 
     def test_offline_no_real_api_or_secrets(self):
         self.assertTrue(self.summary["offline"])

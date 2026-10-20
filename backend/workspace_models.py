@@ -23,10 +23,34 @@ class DTO(BaseModel):
 class ProjectDTO(DTO):
     id: str
     name: str
+    archived: bool = False
+    created_at: datetime | None = None
 
 
 class ProjectCreate(DTO):
     name: str = Field(min_length=1, max_length=256)
+
+
+
+
+class ProjectUpdate(DTO):
+    name: str | None = Field(default=None, min_length=1, max_length=256)
+    archived: bool | None = None
+
+
+class MetadataSourceDTO(DTO):
+    sheet: str = ""
+    cell: str = ""
+    raw: str = ""
+
+
+class DocumentMetadataDTO(DTO):
+    construction_title: str = ""
+    raw_title: str = ""
+    document_code: str = ""
+    pd_reference: str = ""
+    sources: dict[str, MetadataSourceDTO] = Field(default_factory=dict)
+    extractor_version: str = ""
 
 
 class VersionDTO(DTO):
@@ -39,6 +63,15 @@ class VersionDTO(DTO):
     sha256: str
     size: int
     created_at: datetime
+    metadata: DocumentMetadataDTO
+    metadata_overrides: dict[str, str]
+
+
+class BindingDTO(DTO):
+    vor_version_id: str
+    pdf_version_ids: list[str]
+    confirmed: bool
+    candidates: list[str]
 
 
 class RunDTO(DTO):
@@ -57,6 +90,37 @@ class RunDTO(DTO):
     finished_at: datetime | None
     preparation_done: int = 0
     preparation_total: int | None = None
+
+
+class DocumentDTO(DTO):
+    id: str
+    project_id: str
+    kind: Literal["vor", "pdf"]
+    title: str
+    archived: bool = False
+    current_version_id: str | None = None
+    versions: list[VersionDTO]
+    last_run: RunDTO | None = None
+    pd_updated: bool = False
+
+
+class DocumentPatch(DTO):
+    title: str | None = Field(default=None, max_length=2048)
+    archived: bool | None = None
+    current_version_id: str | None = None
+
+
+class VersionMetadataPatch(DTO):
+    fields: dict[str, str] = Field(default_factory=dict)
+
+
+class BindingPut(DTO):
+    pdf_version_ids: list[str] = Field(default_factory=list)
+    confirmed: bool = False
+
+
+class VersionDeletedDTO(DTO):
+    deleted: bool
 
 
 class ResultDTO(DTO):

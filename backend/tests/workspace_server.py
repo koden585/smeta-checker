@@ -78,6 +78,11 @@ def main():
     (args.root / "project.pdf").write_bytes(_fake_pdf_bytes())
     with TestClient(app) as client:
         client.headers["Authorization"] = "Bearer synthetic-e2e-only"
+        created = client.post(
+            "/api/v1/projects", json={"name": "Синтетический стенд · интеграция"}
+        )
+        created.raise_for_status()
+        project_id = created.json()["id"]
         versions = []
         for filename, kind, mime in [
             (
@@ -89,15 +94,20 @@ def main():
         ]:
             response = client.post(
                 "/api/v1/documents",
-                data={"project": "Синтетический стенд · интеграция", "kind": kind},
+                data={"project_id": project_id, "kind": kind, "new_document": "true"},
                 files={"file": (filename, (args.root / filename).read_bytes(), mime)},
             )
             response.raise_for_status()
             versions.append(response.json()["version_id"])
+        binding = client.put(
+            f"/api/v1/documents/{versions[0]}/bindings",
+            json={"pdf_version_ids": [versions[1]], "confirmed": True},
+        )
+        binding.raise_for_status()
         response = client.post(
             "/api/v1/audits",
             json={
-                "project": "Синтетический стенд · интеграция",
+                "project_id": project_id,
                 "vor_version_id": versions[0],
                 "pdf_version_ids": [versions[1]],
             },

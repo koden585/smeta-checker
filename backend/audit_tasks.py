@@ -4,7 +4,7 @@ Design: one ``runs`` row per audit, one ``position_jobs`` row per VOR position.
 ``prepare`` (queue ``pdf``) binds PDFs, builds PageTextIndex snapshots and creates
 queued jobs; ``audit_position`` (queue ``llm``) runs one position through the same
 ``worker_check_row`` path as the in-process runner and persists its result;
-``finalize`` (queue ``pdf``) merges stored results into Excel/Word with the shared
+``finalize`` (queue ``pdf``) merges stored results into Word with the shared
 ``build_run_artifacts``. ``recover`` requeues jobs whose worker died.
 
 Celery is imported lazily: importing this module stays cheap without a broker,
@@ -658,6 +658,11 @@ def audit_position(
             "failed",
             error=f"{type(exc).__name__}: {str(exc)[:300]}",
         )
+        # Failed is terminal too: without this chain a run whose last
+        # position fails never finalizes and stays in ``finalizing``.
+        _maybe_chain_finalize(
+            context, run_id, dispatch=dispatch, request_id=resolved_request
+        )
         raise
     finally:
         reset(token)
@@ -736,6 +741,7 @@ def _load_run_pdf_versions(context: TaskContext, run_id: UUID) -> dict[str, Any]
             sha256=ref.sha256,
             blob_key=ref.blob_key,
             size=ref.size,
+            filename=ref.filename,
         )
     return versions
 
@@ -749,11 +755,10 @@ def finalize_run(
     vor_bytes: bytes | None = None,
     request_id: str = "",
 ) -> dict[str, Any]:
-    """Merge stage: rebuild df/excel/word from stored results, finish the run.
+    """Merge stage: rebuild df/word from stored results, finish the run.
 
     Runs on the ``pdf`` queue. Every position must be ``done`` or ``failed``
-    (a failed worker position becomes a technical payload, never a silent
-    gap). Uses the shared ``build_run_artifacts`` so exports match the
+    gap). Uses the shared ``build_run_artifacts`` so the export matches the
     in-process runner byte-for-shape.
     """
     started = time.monotonic()
@@ -814,7 +819,6 @@ def finalize_run(
             tasks=tasks,
             tracking=tracking,
             results=results_list,
-            excel_bytes=bytes(artifacts["excel_bytes"]),
             word_bytes=bytes(artifacts["word_bytes"]),
             pdf_versions=dict(versions),
         )

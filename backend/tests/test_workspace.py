@@ -154,10 +154,12 @@ class WorkspaceTests(unittest.TestCase):
             )
 
     def _run(self, client, app, vor, pdf, project="ИГДИ"):
+        listed = client.get("/api/v1/projects").json()
+        project_id = next(p["id"] for p in listed if p["name"] == project)
         response = client.post(
             "/api/v1/audits",
             json={
-                "project": project,
+                "project_id": project_id,
                 "vor_version_id": vor["version_id"],
                 "pdf_version_ids": [pdf["version_id"]],
             },
@@ -211,10 +213,12 @@ class WorkspaceTests(unittest.TestCase):
             )
             self.assertNotEqual(updated["version_id"], vor["version_id"])
             self.assertEqual(client.get(f"/api/v1/audits/{run}/rows").json(), rows)
-            for kind in ("excel", "word"):
-                self.assertEqual(
-                    client.get(f"/api/v1/audits/{run}/reports/{kind}").status_code, 200
-                )
+            self.assertEqual(
+                client.get(f"/api/v1/audits/{run}/reports/word").status_code, 200
+            )
+            self.assertEqual(
+                client.get(f"/api/v1/audits/{run}/reports/excel").status_code, 400
+            )
 
     def test_content_range_etag_and_native_structure_without_model_calls(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -12,8 +12,6 @@ from docx.oxml.ns import nsdecls, qn
 from docx.opc.constants import RELATIONSHIP_TYPE
 from docx.shared import Inches, Pt
 import pandas as pd
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
 
 from audit_core import INCOMPLETE, TECHNICAL_ERROR
 from audit_measurements import format_ru
@@ -291,42 +289,6 @@ def _source_link(row):
         return None
     match = re.match(r"стр\. (\d+)", row["Где проверить"])
     return quote(name) + (f"#page={match[1]}" if match else "")
-
-
-def generate_excel_report(report):
-    out = io.BytesIO()
-    with pd.ExcelWriter(out, engine="openpyxl") as writer:
-        report.to_excel(writer, index=False, sheet_name="Аудит")
-        sheet = writer.sheets["Аудит"]
-        side = Side(style="thin", color="D3D3D3")
-        border = Border(left=side, right=side, top=side, bottom=side)
-        for cells in sheet:
-            for cell in cells:
-                # All document-supplied text is literal, never an Excel formula.
-                if isinstance(cell.value, str):
-                    cell.data_type = "s"
-                cell.border = border
-                cell.alignment = Alignment(vertical="top", wrap_text=True)
-        for cell in sheet[1]:
-            cell.fill = PatternFill("solid", fgColor="1F4E78")
-            cell.font = Font(color="FFFFFF", bold=True, size=10)
-        for i, (_, row) in enumerate(report.iterrows(), 2):
-            sheet.cell(i, 3).fill = PatternFill("solid", fgColor=STATUS_COLORS[row["Статус аудита"]])
-            link = _source_link(row)
-            if link:
-                sheet.cell(i, 5).hyperlink = link
-                sheet.cell(i, 5).font = Font(color="0563C1", underline="single")
-        for i, width in enumerate((8, 48, 28, 65, 32, 35), 1):
-            sheet.column_dimensions[get_column_letter(i)].width = width
-        sheet.freeze_panes = "C2"
-        sheet.auto_filter.ref = sheet.dimensions
-        sheet.sheet_properties.pageSetUpPr.fitToPage = True
-        sheet.page_setup.orientation = "landscape"
-        sheet.page_setup.paperSize = sheet.PAPERSIZE_A3
-        sheet.page_setup.fitToWidth = 1
-        sheet.page_setup.fitToHeight = 0
-        sheet.print_title_rows = "1:1"
-    return out.getvalue()
 
 
 def generate_word_report(report, meta):

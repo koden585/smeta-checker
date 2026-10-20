@@ -176,9 +176,12 @@ class FrozenPropagationTests(unittest.TestCase):
         from storage_db import DocumentVersionRow
 
         project = repo.get_or_create_project("ИГДИ")
-        vor = repo.add_document_version(project.id, vor_bytes, filename="vor.csv", kind="vor")
-        pdf = repo.add_document_version(project.id, pdf_bytes, filename="project.pdf", kind="pdf")
-        run = repo.create_run(project.id, vor.id, {"pdf_versions": {"project.pdf": str(pdf.id)}})
+        vor = repo.add_document_version(project.id, vor_bytes, filename="vor.csv", kind="vor",
+                                        new_document=True)
+        pdf = repo.add_document_version(project.id, pdf_bytes, filename="project.pdf", kind="pdf",
+                                        new_document=True)
+        run = repo.create_run(project.id, vor.id, {"pdf_versions": {"project.pdf": str(pdf.id)}},
+                              pdf_pins={"project.pdf": pdf.id})
         versions = {
             "project.pdf": DocumentVersionRow(
                 id=pdf.id,
@@ -187,6 +190,7 @@ class FrozenPropagationTests(unittest.TestCase):
                 sha256=pdf.sha256,
                 blob_key=pdf.blob_key,
                 size=pdf.size,
+                filename=pdf.filename,
             )
         }
         return run, versions

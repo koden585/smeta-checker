@@ -130,18 +130,39 @@ class ApiTests(unittest.TestCase):
         self.addCleanup(client.close)
         return client, app
 
-    def _upload(self, client, project, kind, filename, payload, content_type):
+    def _project_id(self, client, name="ИГДИ"):
+        existing = next((p for p in client.get("/api/v1/projects").json()
+                         if p["name"] == name), None)
+        if existing is not None:
+            return existing["id"]
+        response = client.post("/api/v1/projects", json={"name": name})
+        self.assertEqual(response.status_code, 201, response.text)
+        return response.json()["id"]
+
+    def _upload(self, client, project, kind, filename, payload, content_type,
+                project_id=None, document_id=None, new_document=None):
+        data = {"project_id": project_id or ApiTests._project_id(self, client, project), "kind": kind}
+        if document_id:
+            data["document_id"] = document_id
+        if new_document is None:
+            data["new_document"] = "false" if document_id else "true"
+        elif new_document:
+            data["new_document"] = "true"
         response = client.post(
             "/api/v1/documents",
-            data={"project": project, "kind": kind},
+            data=data,
             files={"file": (filename, payload, content_type)},
         )
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
     def _upload_pair(self, client, project="ИГДИ"):
+        created = client.post("/api/v1/projects", json={"name": project})
+        self.assertEqual(created.status_code, 201, created.text)
+        project_id = created.json()["id"]
         vor = self._upload(
-            client, project, "vor", "vor.csv", _fake_vor_bytes(), "text/csv"
+            client, project, "vor", "vor.csv", _fake_vor_bytes(), "text/csv",
+            project_id=project_id, new_document=True,
         )
         pdf = self._upload(
             client,
@@ -150,9 +171,10 @@ class ApiTests(unittest.TestCase):
             "project.pdf",
             _fake_pdf_bytes(),
             "application/pdf",
+            project_id=project_id,
+            new_document=True,
         )
         return vor, pdf
-
     def _wait_for_run(self, client, run_id, timeout=60.0):
         deadline = time.monotonic() + timeout
         last = None
@@ -183,7 +205,7 @@ class ApiTests(unittest.TestCase):
             client, _ = self._open_app(tmp)
             response = client.post(
                 "/api/v1/documents",
-                data={"project": "ИГДИ", "kind": "docx"},
+                data={"project_id": self._project_id(client), "kind": "docx"},
                 files={"file": ("vor.csv", _fake_vor_bytes(), "text/csv")},
             )
             self.assertEqual(response.status_code, 422)
@@ -194,7 +216,7 @@ class ApiTests(unittest.TestCase):
             client, _ = self._open_app(tmp)
             response = client.post(
                 "/api/v1/documents",
-                data={"project": "ИГДИ", "kind": "vor"},
+                data={"project_id": self._project_id(client), "kind": "vor"},
                 files={"file": ("vor.csv", b"col1;col2\n1;2\n", "text/csv")},
             )
             self.assertEqual(response.status_code, 400)
@@ -207,23 +229,32 @@ class ApiTests(unittest.TestCase):
             client, _ = self._open_app(tmp)
             response = client.post(
                 "/api/v1/documents",
-                data={"project": "ИГДИ", "kind": "pdf"},
+                data={"project_id": self._project_id(client), "kind": "pdf"},
                 files={"file": ("broken.pdf", b"%PDF-1.7 broken", "application/pdf")},
             )
             self.assertEqual(response.status_code, 400)
             self.assertEqual(response.json()["error"]["code"], "invalid_pdf")
 
-    def test_same_vor_bytes_reuse_version(self):
+    def test_same_bytes_independent_by_default_dedupe_explicit(self):
         with tempfile.TemporaryDirectory(prefix="smeta-api-") as tmp:
             client, _ = self._open_app(tmp)
+            project_id = client.post(
+                "/api/v1/projects", json={"name": "ИГДИ"}).json()["id"]
             first = self._upload(
-                client, "ИГДИ", "vor", "vor.csv", _fake_vor_bytes(), "text/csv"
+                client, "ИГДИ", "vor", "vor.csv", _fake_vor_bytes(), "text/csv",
+                project_id=project_id, new_document=True,
             )
             second = self._upload(
-                client, "ИГДИ", "vor", "vor.csv", _fake_vor_bytes(), "text/csv"
+                client, "ИГДИ", "vor", "vor.csv", _fake_vor_bytes(), "text/csv",
+                project_id=project_id, new_document=True,
             )
-            self.assertEqual(first["version_id"], second["version_id"])
-            self.assertEqual(second["version_no"], 1)
+            self.assertNotEqual(first["document_id"], second["document_id"])
+            repeat = self._upload(
+                client, "ИГДИ", "vor", "vor.csv", _fake_vor_bytes(), "text/csv",
+                project_id=project_id, document_id=first["document_id"],
+            )
+            self.assertEqual(repeat["version_id"], first["version_id"])
+            self.assertEqual(repeat["version_no"], 1)
 
     def test_preflight_reports_binding_status(self):
         with tempfile.TemporaryDirectory(prefix="smeta-api-") as tmp:
@@ -300,10 +331,12 @@ class ApiTests(unittest.TestCase):
                     __import__("uuid").UUID(pdf["version_id"])
                 ).sha256,
             )
-            for kind, prefix in (("excel", b"PK"), ("word", b"PK")):
-                report = client.get(f"/api/v1/audits/{run_id}/reports/{kind}")
-                self.assertEqual(report.status_code, 200, report.text[:200])
-                self.assertTrue(report.content.startswith(prefix))
+            report = client.get(f"/api/v1/audits/{run_id}/reports/word")
+            self.assertEqual(report.status_code, 200, report.text[:200])
+            self.assertTrue(report.content.startswith(b"PK"))
+            legacy = client.get(f"/api/v1/audits/{run_id}/reports/excel")
+            self.assertEqual(legacy.status_code, 400)
+            self.assertEqual(legacy.json()["error"]["code"], "unknown_report")
             runner.wait(run_id, timeout=5.0)
 
     def test_audit_unknown_run_is_json_404(self):
@@ -344,9 +377,10 @@ class ApiTests(unittest.TestCase):
             run_id = created.json()["run_id"]
             finished = self._wait_for_run(client, run_id)
             self.assertEqual(finished["status"], "done")
-            response = client.get(f"/api/v1/audits/{run_id}/reports/csv")
-            self.assertEqual(response.status_code, 400)
-            self.assertEqual(response.json()["error"]["code"], "unknown_report")
+            for kind in ("csv", "excel"):
+                response = client.get(f"/api/v1/audits/{run_id}/reports/{kind}")
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["error"]["code"], "unknown_report")
 
     def test_audit_with_dispatcher_enqueues_without_running_inline(self):
         dispatched = []
@@ -437,7 +471,7 @@ class ApiTests(unittest.TestCase):
             self.addCleanup(client.close)
             response = client.post(
                 "/api/v1/documents",
-                data={"project": "ИГДИ", "kind": "vor"},
+                data={"project_id": self._project_id(client), "kind": "vor"},
                 files={"file": ("vor.csv", _fake_vor_bytes(), "text/csv")},
             )
             self.assertEqual(response.status_code, 413)
@@ -448,7 +482,7 @@ class ApiTests(unittest.TestCase):
             client, _ = self._open_app(tmp)
             response = client.post(
                 "/api/v1/documents",
-                data={"project": "ИГДИ", "kind": "pdf"},
+                data={"project_id": self._project_id(client), "kind": "pdf"},
                 files={"file": ("a.pdf", _fake_pdf_bytes(), "image/png")},
             )
             self.assertEqual(response.status_code, 400)
@@ -484,7 +518,7 @@ class ApiTests(unittest.TestCase):
             for headers in ({}, {"Authorization": "Bearer wrong"}):
                 response = client.post(
                     "/api/v1/documents",
-                    data={"project": "ИГДИ", "kind": "pdf"},
+                    data={"project_id": "00000000-0000-0000-0000-000000000000", "kind": "pdf"},
                     files={"file": ("a.pdf", _fake_pdf_bytes(), "application/pdf")},
                     headers=headers,
                 )
@@ -511,5 +545,42 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 404)
             self.assertEqual(response.json()["error"]["code"], "run_not_found")
 
+    def test_project_update_archives_without_name_merge(self):
+        with tempfile.TemporaryDirectory(prefix="smeta-api-") as tmp:
+            client, _ = self._open_app(tmp)
+            first = client.post("/api/v1/projects", json={"name": "Дубль"})
+            second = client.post("/api/v1/projects", json={"name": "Дубль"})
+            self.assertEqual(first.status_code, 201, first.text)
+            self.assertEqual(second.status_code, 201, second.text)
+            self.assertNotEqual(first.json()["id"], second.json()["id"])
+            renamed = client.patch(
+                f"/api/v1/projects/{first.json()['id']}", json={"name": "  Новое  "}
+            )
+            self.assertEqual(renamed.status_code, 200, renamed.text)
+            self.assertEqual(renamed.json()["name"], "Новое")
+            archived = client.patch(
+                f"/api/v1/projects/{first.json()['id']}", json={"archived": True}
+            )
+            self.assertEqual(archived.status_code, 200, archived.text)
+            self.assertTrue(archived.json()["archived"])
+            visible = client.get("/api/v1/projects")
+            self.assertNotIn(first.json()["id"], [p["id"] for p in visible.json()])
+            hidden = client.get("/api/v1/projects?archived=true")
+            self.assertIn(first.json()["id"], [p["id"] for p in hidden.json()])
+            missing = client.patch(
+                "/api/v1/projects/00000000-0000-0000-0000-000000000000",
+                json={"name": "X"},
+            )
+            self.assertEqual(missing.status_code, 404)
+            blank = client.patch(
+                f"/api/v1/projects/{second.json()['id']}", json={"name": "  "})
+            self.assertEqual(blank.status_code, 400)
+
+    def test_suggest_name_endpoint_removed(self):
+        with tempfile.TemporaryDirectory(prefix="smeta-api-") as tmp:
+            client, _ = self._open_app(tmp)
+            response = client.post(
+                "/api/v1/projects/00000000-0000-0000-0000-000000000000/suggest-name")
+            self.assertEqual(response.status_code, 404)
 if __name__ == "__main__":
     unittest.main()

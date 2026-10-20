@@ -11,14 +11,21 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import Response
 
 from workspace_models import (
+    BindingDTO,
+    BindingPut,
+    DocumentDTO,
+    DocumentPatch,
     FormatDTO,
     ProjectCreate,
     ProjectDTO,
+    ProjectUpdate,
     RowsDTO,
     RunDTO,
     StructureDTO,
     SummaryDTO,
+    VersionDeletedDTO,
     VersionDTO,
+    VersionMetadataPatch,
     WorkspaceDTO,
 )
 from workspace_service import (
@@ -71,22 +78,186 @@ def workspace_router(get_context) -> APIRouter:
         return record
 
     @router.get("/api/v1/projects", response_model=list[ProjectDTO])
-    def projects(context=Depends(guarded)):
-        return context.repository.list_projects()
+    def projects(archived: bool = Query(False), context=Depends(guarded)):
+        return context.repository.list_projects(archived=archived)
 
     @router.post("/api/v1/projects", response_model=ProjectDTO, status_code=201)
     def create_project(payload: ProjectCreate, context=Depends(guarded)):
         name = payload.name.strip()
         if not name:
             raise ApiError(400, "project_required", "Укажите название проекта")
-        value = context.repository.get_or_create_project(name)
-        return {"id": str(value.id), "name": value.name}
+        # Independent UUID per call: duplicate names never merge.
+        value = context.repository.create_project(name)
+        return {"id": str(value.id), "name": value.name,
+                "archived": value.archived, "created_at": value.created_at}
+
+    @router.get("/api/v1/projects/{project_id}", response_model=ProjectDTO)
+    def get_project(project_id: str, context=Depends(guarded)):
+        return {"id": str(project(context, project_id).id),
+                "name": project(context, project_id).name,
+                "archived": project(context, project_id).archived,
+                "created_at": project(context, project_id).created_at}
+
+    @router.patch("/api/v1/projects/{project_id}", response_model=ProjectDTO)
+    def update_project(project_id: str, payload: ProjectUpdate,
+                       context=Depends(guarded)):
+        if payload.name is not None and not payload.name.strip():
+            raise ApiError(400, "project_required", "Укажите название проекта")
+        try:
+            _, presented = context.repository.update_project(
+                _parse_uuid(project_id, field="project_id"),
+                name=(payload.name.strip() if payload.name is not None else None),
+                archived=payload.archived,
+            )
+        except KeyError as exc:
+            raise ApiError(404, "project_not_found", "Проект не найден") from exc
+        except ValueError as exc:
+            raise ApiError(400, "project_invalid", str(exc)) from exc
+        return presented
+
+    @router.delete("/api/v1/projects/{project_id}", response_model=ProjectDTO)
+    def delete_project(project_id: str, context=Depends(guarded)):
+        try:
+            row = project(context, project_id)
+            context.repository.delete_project(row.id)
+        except KeyError as exc:
+            raise ApiError(404, "project_not_found", "Проект не найден") from exc
+        except LookupError as exc:
+            raise ApiError(409, "project_in_use", str(exc)) from exc
+        return {"id": str(row.id), "name": row.name,
+                "archived": row.archived, "created_at": row.created_at}
 
     @router.get(
         "/api/v1/projects/{project_id}/documents", response_model=list[VersionDTO]
     )
     def documents(project_id: str, context=Depends(guarded)):
         return context.repository.list_versions(project(context, project_id).id)
+
+    def _enrich_last_run(context, document: dict) -> dict:
+        last = dict(document.get("last_run") or {})
+        if not last.get("run_id"):
+            return document
+        try:
+            records = context.repository.run_progress_records(
+                run_id=_parse_uuid(str(last["run_id"]), field="run_id"))
+        except Exception:
+            return document
+        if not records:
+            return document
+        enriched = dict(document)
+        enriched["last_run"] = run_progress(context, records[0])
+        return enriched
+
+    @router.get("/api/v1/projects/{project_id}/catalog",
+                response_model=list[DocumentDTO])
+    def catalog(project_id: str, archived: bool = Query(False),
+                context=Depends(guarded)):
+        try:
+            documents = context.repository.catalog(
+                project(context, project_id).id, archived=archived)
+        except KeyError as exc:
+            raise ApiError(404, "project_not_found", "Проект не найден") from exc
+        return [_enrich_last_run(context, document) for document in documents]
+
+    def _document_or_404(context, document_id: str) -> dict:
+        try:
+            return context.repository.load_document(
+                _parse_uuid(document_id, field="document_id"))
+        except KeyError as exc:
+            raise ApiError(404, "document_not_found", "Документ не найден") from exc
+
+    @router.get("/api/v1/documents/{document_id}/detail",
+                response_model=DocumentDTO)
+    def document_detail(document_id: str, context=Depends(guarded)):
+        return _enrich_last_run(context, _document_or_404(context, document_id))
+
+    @router.patch("/api/v1/documents/{document_id}", response_model=DocumentDTO)
+    def update_document(document_id: str, payload: DocumentPatch,
+                        context=Depends(guarded)):
+        if payload.title is not None and not payload.title.strip():
+            raise ApiError(400, "document_invalid", "Название не может быть пустым")
+        try:
+            current_id = (_parse_uuid(payload.current_version_id,
+                                      field="current_version_id")
+                          if payload.current_version_id else ...)
+            updated = context.repository.update_document(
+                _parse_uuid(document_id, field="document_id"),
+                title=(payload.title.strip() if payload.title is not None else None),
+                archived=payload.archived,
+                current_version_id=current_id,
+            )
+            return _enrich_last_run(context, updated)
+        except KeyError as exc:
+            raise ApiError(404, "document_not_found", "Документ не найден") from exc
+        except ValueError as exc:
+            raise ApiError(400, "document_invalid", str(exc)) from exc
+
+    @router.delete("/api/v1/documents/{document_id}/detail",
+                   response_model=DocumentDTO)
+    def delete_document(document_id: str, context=Depends(guarded)):
+        try:
+            row = _enrich_last_run(context, _document_or_404(context, document_id))
+            from uuid import UUID as _UUID
+            context.repository.delete_document(_UUID(str(row["id"])))
+        except KeyError as exc:
+            raise ApiError(404, "document_not_found", "Документ не найден") from exc
+        except LookupError as exc:
+            raise ApiError(409, "document_in_use", str(exc)) from exc
+        return row
+
+    @router.patch("/api/v1/documents/{version_id}/metadata",
+                  response_model=VersionDTO)
+    def update_version_metadata(version_id: str, payload: VersionMetadataPatch,
+                                context=Depends(guarded)):
+        try:
+            return context.repository.update_version_metadata(
+                _parse_uuid(version_id, field="version_id"),
+                dict(payload.fields or {}),
+            )
+        except KeyError as exc:
+            raise ApiError(404, "version_not_found", "Версия не найдена") from exc
+        except ValueError as exc:
+            raise ApiError(400, "metadata_invalid", str(exc)) from exc
+
+    @router.delete("/api/v1/documents/{version_id}/version",
+                   response_model=VersionDeletedDTO)
+    def delete_version(version_id: str, context=Depends(guarded)):
+        try:
+            context.repository.delete_version(
+                _parse_uuid(version_id, field="version_id"))
+        except KeyError as exc:
+            raise ApiError(404, "version_not_found", "Версия не найдена") from exc
+        except LookupError as exc:
+            raise ApiError(409, "version_in_use", str(exc)) from exc
+        return {"deleted": True}
+
+    @router.get("/api/v1/documents/{vor_version_id}/bindings",
+                response_model=BindingDTO)
+    def get_bindings(vor_version_id: str, context=Depends(guarded)):
+        try:
+            return context.repository.get_binding(
+                _parse_uuid(vor_version_id, field="vor_version_id"))
+        except KeyError as exc:
+            raise ApiError(404, "version_not_found", "Версия не найдена") from exc
+        except ValueError as exc:
+            raise ApiError(400, "not_vor_version", str(exc)) from exc
+
+    @router.put("/api/v1/documents/{vor_version_id}/bindings",
+                response_model=BindingDTO)
+    def put_bindings(vor_version_id: str, payload: BindingPut,
+                     context=Depends(guarded)):
+        try:
+            return context.repository.save_binding(
+                _parse_uuid(vor_version_id, field="vor_version_id"),
+                [_parse_uuid(item, field="pdf_version_ids")
+                 for item in (payload.pdf_version_ids or [])],
+                confirmed=bool(payload.confirmed),
+            )
+        except KeyError as exc:
+            raise ApiError(404, "version_not_found", "Версия не найдена") from exc
+        except ValueError as exc:
+            raise ApiError(400, "binding_invalid", str(exc)) from exc
+
 
     @router.get("/api/v1/projects/{project_id}/audits", response_model=list[RunDTO])
     def history(

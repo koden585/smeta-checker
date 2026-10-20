@@ -365,6 +365,27 @@ class LlmPolicyTests(unittest.TestCase):
         self.assertEqual(settings.llm_input_cost_per_1k, 0.5)
         self.assertEqual(settings.llm_output_cost_per_1k, 1.5)
 
+    def test_settings_loader_trusts_selected_backend_host(self):
+        from unittest.mock import patch as mock_patch
+
+        with mock_patch.dict(os.environ, {}, clear=True):
+            settings = AuditSettings.load(
+                file_values={
+                    "ANYMODEL_API_KEY": "key",
+                    "ANYMODEL_MODEL": "ds/deepseek-v4-flash",
+                },
+                secrets=None,
+            )
+        self.assertIn("anymodel.org", settings.allowed_llm_hosts)
+        self.assertIn("ai.api.cloud.yandex.net", settings.allowed_llm_hosts)
+
+    def test_settings_loader_keeps_fail_closed_without_keys(self):
+        from unittest.mock import patch as mock_patch
+
+        with mock_patch.dict(os.environ, {}, clear=True):
+            settings = AuditSettings.load(file_values={}, secrets=None)
+        self.assertEqual(settings.allowed_llm_hosts, ("ai.api.cloud.yandex.net",))
+
 
 class MetricsTests(unittest.TestCase):
     def test_estimate_cost_none_without_split_or_rates(self):

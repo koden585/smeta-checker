@@ -8,12 +8,11 @@ import unittest
 from urllib.parse import unquote
 
 import docx
-import openpyxl
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from audit_reports import (DISCREPANCY, MANUAL, NOT_CHECKED, build_user_report,
-                           generate_excel_report, generate_word_report)
+                           generate_word_report)
 
 
 class ReportTests(unittest.TestCase):
@@ -125,7 +124,7 @@ class ReportTests(unittest.TestCase):
         self.assertIn("по расчёту", description)
         self.assertIn("25 м³", description)
 
-    def test_excel_colors_literal_names_and_word_navigation(self):
+    def test_word_colors_literal_names_and_navigation(self):
         report = self.make_report([
             ("ОК", {}),
             ("Ошибка", {"found_volume": "95", "volume_confirmed": False,
@@ -138,12 +137,6 @@ class ReportTests(unittest.TestCase):
                             "required": True}]}),
             ("Технический сбой", {"work_found": False, "found_pages": [], "found_page": None})])
         report.loc[0, "Наименование работ"] = "=1+1"
-        excel = openpyxl.load_workbook(io.BytesIO(generate_excel_report(report)))
-        sheet = excel.active
-        self.assertEqual([sheet.cell(i, 3).fill.fgColor.rgb for i in range(2, 6)],
-                         ["00FEE2E2", "00FEF3C7", "00E5E7EB", "00DCFCE7"])
-        self.assertEqual(sheet.cell(2, 2).data_type, "s")
-        self.assertEqual(unquote(sheet.cell(2, 5).hyperlink.target), "КР.pdf#page=18")
         word = docx.Document(io.BytesIO(generate_word_report(report, {})))
         table = word.tables[0]
         self.assertEqual(len(table.columns), 4)
@@ -161,8 +154,8 @@ class ReportTests(unittest.TestCase):
         report = build_user_report(frame, [{"pdf_name": "", "found_pages": []}], [task])
         self.assertEqual(report.iloc[0]["Наименование файла"], "КР.pdf\nАР.pdf")
         self.assertEqual(report.iloc[0]["Статус аудита"], NOT_CHECKED)
-        sheet = openpyxl.load_workbook(io.BytesIO(generate_excel_report(report))).active
-        self.assertIsNone(sheet.cell(2, 5).hyperlink)
+        word = docx.Document(io.BytesIO(generate_word_report(report, {})))
+        self.assertEqual(len([rel for rel in word.part.rels.values() if rel.reltype.endswith("/hyperlink")]), 0)
         self.assertEqual(report.iloc[0]["Где проверить"], "Место не установлено")
 
 
