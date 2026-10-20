@@ -7,6 +7,12 @@
       "skillPath": "skills/langfuse/SKILL.md",
       "computedHash": "ff5c606d22961ae0c70968e8944c73ce576a3a0a8422415861d6d7839a45539d"
     },
+    "nuxt-ui": {
+      "source": "nuxt/ui",
+      "sourceType": "github",
+      "skillPath": "skills/nuxt-ui/SKILL.md",
+      "computedHash": "23710257054af81129f08bdf972e8c94af0fa2adfa63168b928d443d30cab90f"
+    },
     "pydantic": {
       "source": "pydantic/skills",
       "sourceType": "github",

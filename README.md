@@ -1,21 +1,75 @@
 # Аудит ВОР и проектной документации
 
-Запуск:
+> **Первый запуск?** Начните с [инструкции для чайника](docs/docker-quickstart.md):
+> весь проект поднимается одной командой `docker compose up -d --build`.
+
+## Интерфейс КДФП / Nuxt
+
+Nuxt-интерфейс подключён к настоящему REST API и постоянному хранилищу
+PostgreSQL + blobs. Он использует предметную логику backend и сохранённые
+версии документов. Это единственный пользовательский интерфейс проекта.
+
+### Что реализовано
+
+- Проекты, загрузка XLSX/CSV/PDF и версии документов; выбор одной версии каждого документа перед аудитом.
+- Предварительная проверка привязок ВОР к PDF. Неполный комплект требует явного решения продолжить доступные проверки.
+- Один сохранённый аудит на ВОР с неизменным снимком позиций и версиями PDF; история переживает перезапуск.
+- Прогресс подготовки PDF по страницам, счётчики позиций и этап сборки отчётов. Опрос восстанавливается после временной ошибки соединения.
+- Результаты с очередями «Исправить», «Проверить вручную», «Проверка не выполнена», поиском, пагинацией и экспортом Excel/Word.
+- Окно сверки: исходный лист и точные ячейки XLSX, PDF.js, физические/печатные страницы, дерево разделов, поиск, цитаты и выделение при однозначном совпадении с текстовым слоем.
+- Проверка оформления выбранного листа XLSX без LLM. Несколько рабочих листов сохраняют исходные строки и адреса ячеек.
+- OpenAPI, сгенерированные TypeScript/Zod-контракты, frontend-проверки и браузерные E2E в CI.
+
+### Архитектура и исправления
+
+```text
+Браузер → Nuxt/Nitro BFF → FastAPI /api/v1 → PostgreSQL + blobs
+                                          └→ Celery / отдельный PDF+LLM worker
+```
+
+API token хранится только на сервере Nitro; браузер получает подписанную HttpOnly-сессию. BFF проверяет локальный адрес, Host и same-origin для записи. Это локальное приложение; публичный многопользовательский доступ с ролями пока не реализован.
+
+История и progress читают метаданные и сгруппированные счётчики одним SQL-запросом с пагинацией в БД, без содержимого результатов и payload задач. Без Celery настоящий аудит выполняется в отдельном процессе: тяжёлый PDF parser не блокирует HTTP-сервер. Supervisor останавливает worker при отсутствии продвижения дольше `AUDIT_TASK_TIME_LIMIT` (по умолчанию 600 секунд).
+
+Отключён зависавший нейросетевой Layout-анализатор и повторное сканирование всего PDF ради заголовков на каждой странице. Используется PyMuPDF4LLM RAG с HTML-таблицами. Для страниц со свыше 5000 векторных путей сохраняется доступный native text, дорогой анализ колонок/таблиц пропускается и фиксируется необходимость ручной проверки. Режим извлечения включён в ключ кэша; ограниченный анализ не выдаётся за подтверждение данных.
+
+### Быстрый запуск Nuxt + API
+
+Единственный поддерживаемый запуск — Docker Compose
+(подробно: [инструкция для чайника](docs/docker-quickstart.md)):
+
+```powershell
+Copy-Item .env.example .env   # заполнить POSTGRES_PASSWORD, AUDIT_API_TOKEN
+docker compose up -d --build
+```
+
+Интерфейс: **http://127.0.0.1:3000/**, API: **http://localhost:8000/**.
+Нативный запуск без Docker не поддерживается.
+
+### Проверено и что остаётся
+
+Локальные проверки: **456 passed, 1 skipped, 76 subtests** в Python, **8 unit** и **6 Playwright**; прошли Ruff, Pyright, TypeScript, lint, форматирование, проверка API-контрактов и production build. Пропущен native OCR без Tesseract. E2E используют отдельную БД и синтетический LLM-клиент.
+
+Пока не подключены ONLYOFFICE, сохранение редакторских ревизий и их восстановление, PDF-заметки и экспорт аннотированного PDF. История другого приложения автоматически не переносится.
+
+Команды frontend-проверок — в [frontend/README.md](frontend/README.md), устройство и границы интеграции — в [IMPLEMENTATION.md](docs/integration/IMPLEMENTATION.md), исходный сравнительный разбор — в [REVIEW.md](docs/integration/REVIEW.md).
+
+## Backend: установка и настройки
 
 ```powershell
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
-uv sync --frozen
-uv run streamlit run app.py
+cd backend; uv sync --frozen
+uv run uvicorn api:get_app --factory
 ```
 
-Зависимости описаны в `pyproject.toml` и зафиксированы в `uv.lock`
-(Python 3.12 из `.python-version`). `requirements.txt` — экспорт из лока
-для Streamlit Community Cloud; после изменения зависимостей обновляйте его:
+Зависимости описаны в `backend/pyproject.toml` и зафиксированы в `backend/uv.lock`
+(Python 3.14 из `backend/.python-version`). `backend/requirements.txt` — экспорт из лока
+для pip-установок без uv; после изменения зависимостей обновляйте его из `backend/`:
 `uv export --frozen --no-dev --format requirements.txt -o requirements.txt`.
-Проверки: `uv run ruff check .`, `uv run pyright`, `uv run pytest`.
+Проверки (из `backend/`): `uv run ruff check .`, `uv run pyright`, `uv run pytest`.
 Новые `.py`-файлы должны проходить `ruff format --check`.
 
-Перед запуском заполните `.env`. Провайдер по умолчанию — Yandex Cloud:
+Перед запуском заполните корневой `.env`. Провайдер по умолчанию — Yandex Cloud:
 нужны `YANDEX_CLOUD_API_KEY` и `YANDEX_CLOUD_FOLDER`.
 Модель задается только настройкой `YANDEX_CLOUD_MODEL` (по умолчанию `qwen3.6-35b-a3b/latest`), выбора модели в приложении нет.
 В `YANDEX_CLOUD_API_KEY` требуется секретное значение API-ключа, а не его
@@ -24,13 +78,19 @@ uv run streamlit run app.py
 `ANYMODEL_API_KEY` и `ANYMODEL_MODEL` (сырой id из каталога `GET /v1/models`,
 например `ds/deepseek-v4-flash`), тогда они имеют приоритет над Yandex.
 `AUDIT_ALLOWED_LLM_HOSTS` должен содержать `anymodel.org`.
-Приложение перечитывает `.env` из папки проекта при каждом запуске проверки
-или обновлении страницы. Значения из этого файла имеют приоритет над окружением
-процесса и Streamlit Secrets; если файла нет, используются окружение и Secrets.
+Приложение перечитывает `.env` при каждом вызове настройки. Значения из этого
+файла имеют приоритет над окружением процесса; если файла нет, используется окружение.
 
 ## Структура
 
-* `app.py` — только Streamlit: ввод файлов, прогресс, результаты, инспектор.
+Монорепозиторий: `backend/` — Python (API, Celery-воркеры, тесты);
+`frontend/` — Nuxt 4 (интерфейс КДФП). В корне: `compose.yaml`, `.env.example`, `docs/`.
+
+Backend:
+
+* `api.py` — REST API поверх сервисов (issue #18): импорт документов,
+  префлайт привязки, фоновый запуск аудита, результаты и скачивание отчётов.
+  OpenAPI — `/openapi.json`, ошибки — единый `{"error": {code, message, details}}`.
 * `audit_service.py` — оркестрация без UI: префлайт привязки PDF
   (`preflight_bindings`), подготовка позиций, пул потоков, `run_audit`.
 * `audit_llm.py` — LLM-адаптер: `audit_position_hybrid` (промпт, бюджеты,
@@ -38,30 +98,27 @@ uv run streamlit run app.py
 * `audit_models.py` — типизированные доменные модели Pydantic: `Document`,
   `VorPosition`, `AuditResult`, `Evidence`, `AuditSettings`, явные статусы
   и ошибки. Между модулями ходят модели; pandas и dict — только на границах
-  импорта/экспорта (Excel/CSV, Streamlit, Excel/Word).
+  импорта/экспорта (Excel/CSV, API, Excel/Word).
 * `vor_parse.py` — парсер ВОР (`load_vor_positions`, legacy `load_vor_with_metadata`).
 * `audit_settings.py` — настройки `.env` → окружение → переданные secrets.
 * `storage_models.py`, `storage_db.py`, `storage_blobs.py`, `alembic/` —
   постоянное хранение: метаданные в PostgreSQL, байты в контент-адресном
   blob-хранилище (`file://`, шов под S3-compatible). История запусков
   append-only и переживает перезапуск; документы идентифицируются sha256.
-* `api.py` — REST API поверх сервисов (issue #18): импорт документов,
-  префлайт привязки, фоновый запуск аудита, результаты и скачивание отчётов.
-  Streamlit не импортируется; OpenAPI — `/openapi.json`, ошибки — единый
-  `{"error": {code, message, details}}`.
 * `audit_tasks.py` — фоновые задания Celery (issue #19): `prepare_run` (CPU,
   очередь `pdf`), `audit_position` (сеть, очередь `llm`), `finalize_run` и
-  `recover_run`. Без брокера API выполняет те же функции в fallback-потоке.
-* `Dockerfile`, `compose.yaml`, `scripts/backup.sh`, `scripts/restore.sh` —
-  production-деплой (issue #22): один образ для api/ui/воркеров, Postgres +
-  Redis + Streamlit UI + pdf/llm-воркеры, бэкап/восстановление.
-  `scripts/verify.sh` — живая проверка стека (health/auth/upload/рестарт/бэкап)
-  без квоты LLM.
+  `recover_run`. Без брокера API выполняет те же функции в отдельном fallback-процессе.
 * `audit_core.py`, `pdf_text.py`, `pdf_binding.py`, `audit_reports.py`,
   `audit_tracing.py`, `vor_rules.py` — предметное ядро и отчёты.
 
-Предметные модули не импортируют `streamlit`. Аудит вызывается обычным
-Python-кодом без запуска UI:
+Деплой (issue #22): `backend/Dockerfile`, корневой `compose.yaml`,
+`backend/scripts/backup.sh`, `backend/scripts/restore.sh` — один образ для
+api/воркеров, Postgres + Redis + Nuxt + pdf/llm-воркеры,
+бэкап/восстановление. `backend/scripts/verify.sh` — живая проверка стека
+(health/auth/upload/рестарт/бэкап) без квоты LLM.
+
+Предметные модули не зависят от UI. Аудит вызывается обычным
+Python-кодом:
 
 ```python
 import fitz
@@ -105,6 +162,7 @@ print(outcome["issues"])
 ```powershell
 $env:DATABASE_URL = "postgresql+psycopg://smeta:secret@localhost:5432/smeta"
 $env:BLOB_STORE_URL = "file://./.audit_blobs"
+cd backend
 uv run uvicorn api:get_app --factory
 ```
 
@@ -116,7 +174,7 @@ uv run uvicorn api:get_app --factory
 `POST /api/v1/audits` возвращает 202 сразу: с настроенным `CELERY_BROKER_URL`
 запуск уходит в очередь Redis/Celery (`prepare_run` на `pdf` → по одной
 `audit_position` на `llm` → `finalize_run` на `pdf`), без брокера тот же
-конвейер `audit_tasks` выполняется в fallback-потоке процесса. Статусы
+конвейер `audit_tasks` выполняется в отдельном fallback-процессе. Статусы
 позиций (`queued`/`running`/`done`/`failed`) хранятся в `position_jobs`,
 повторный claim тем же воркером идемпотентен, чужой получает `LookupError`;
 результаты позиций пишутся в `position_results` по мере готовности.
@@ -129,6 +187,7 @@ LLM — на очереди `llm` (`AUDIT_LLM_CONCURRENCY=8`):
 
 ```powershell
 $env:CELERY_BROKER_URL = "redis://localhost:6379/0"
+cd backend
 uv run celery -A audit_tasks:worker worker -Q pdf -c 2 --max-memory-per-child 1000000
 uv run celery -A audit_tasks:worker worker -Q llm -c 8
 ```
@@ -178,8 +237,9 @@ Direct-run проходит тот же encode/decode-контракт в пам
 ```powershell
 # Применить миграции (или DATABASE_URL в .env — это же делает open_repository)
 $env:DATABASE_URL = "postgresql+psycopg://smeta:secret@localhost:5432/smeta"
+cd backend
 uv run alembic upgrade head
-uv run streamlit run app.py
+uv run uvicorn api:get_app --factory
 ```
 
 Схема: `projects` → `documents` → `document_versions` (sha256, blob_key),
@@ -200,7 +260,7 @@ uv run streamlit run app.py
 ## Production Compose (issue #22)
 
 Один `compose.yaml` поднимает минимальную систему на CPU-only сервере:
-`api` (uvicorn, `:8000`), `ui` (Streamlit, `:8501`), `db` (PostgreSQL 16),
+`api` (uvicorn, `:8000`), `workspace` (Nuxt, `:3000`), `db` (PostgreSQL 16),
 `redis` (брокер Celery с AOF), `worker-pdf` (очередь `pdf`:
 подготовка/OCR/финализация) и `worker-llm` (очередь `llm`: сетевые запросы к
 выбранному LLM-провайдеру). Миграции выполняет одноразовый сервис `migrate`
@@ -211,20 +271,20 @@ cp .env.example .env  # заполнить POSTGRES_PASSWORD, AUDIT_API_TOKEN, L
 docker compose up -d --build
 docker compose ps     # все healthy
 curl -s http://localhost:8000/healthz  # {"status":"ok"}
-# UI: http://localhost:8501 (порт — UI_PORT в .env)
-set -a; . ./.env; set +a; ./scripts/verify.sh  # живая проверка без квоты LLM
+# Nuxt: http://127.0.0.1:3000 (порт — WORKSPACE_PORT в .env)
+set -a; . ./.env; set +a; ./backend/scripts/verify.sh  # живая проверка без квоты LLM
 ```
 
 Конфигурация CPU-only: `worker-pdf -c 2 --max-memory-per-child 1000000`
 (OCR держит PyMuPDF-документы в памяти),
 `worker-llm -c 8` (сеть, не CPU). Переопределения — через `.env`:
-`AUDIT_PDF_CONCURRENCY`, `AUDIT_LLM_CONCURRENCY`, `API_PORT`, `UI_PORT`.
+`AUDIT_PDF_CONCURRENCY`, `AUDIT_LLM_CONCURRENCY`, `API_PORT`, `WORKSPACE_PORT`.
 Без `POSTGRES_PASSWORD`/`AUDIT_API_TOKEN` compose валится до старта —
 это fail-closed, а не значения по умолчанию.
 
 Аутентификация: `AUDIT_API_TOKEN` в `.env` → все `/api/v1/*` требуют
 `Authorization: Bearer <токен>`. Пустой токен оставляет локальный доступ
-открытым (тесты, Streamlit UI); production всегда с токеном.
+открытым (тесты и локальная разработка); production всегда с токеном.
 Сгенерировать: `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 
 Деградация без LLM: без ключа провайдера `POST /api/v1/audits`
@@ -236,8 +296,8 @@ set -a; . ./.env; set +a; ./scripts/verify.sh  # живая проверка б�
 Бэкап и восстановление (Postgres custom-dump + файловые блобы):
 
 ```bash
-./scripts/backup.sh                 # → ./backups/<UTC-stamp>/
-./scripts/restore.sh ./backups/<stamp>  # останавливает api/workers, pg_restore + blobs
+./backend/scripts/backup.sh                 # → ./backups/<UTC-stamp>/
+./backend/scripts/restore.sh ./backups/<stamp>  # останавливает api/workers, pg_restore + blobs
 ```
 
 Обновление и перезапуск:
@@ -261,7 +321,7 @@ API — только для локального запуска без compose. 
 внутри своего процесса (`run_audit`), а не через очередь Celery: Celery-путь
 доступен только через REST API. PDF-кеш и блобы — локальные volumes одного
 хоста, не S3 и не multi-node. TLS завершается выше (reverse proxy), compose
-слушает plain HTTP на `API_PORT`/`UI_PORT`. `finalize_run` ставится
+слушает plain HTTP на `API_PORT`. `finalize_run` ставится
 автоматически только на Celery-пути; задачи, зависшие `running` при жёстком
 убийстве воркера, требуют ручного `recover_run` через `celery call`.
 
@@ -275,7 +335,7 @@ SDK `langfuse==5.0.1` входит в зависимости проекта. В 
 (по умолчанию `development`) подписывает окружение деплоя: задайте
 `production` на main и `development` на dev, чтобы трейсы не смешивались.
 Настройки читаются через тот же `get_setting`, что и ключи моделей:
-`.env` → окружение → Streamlit Secrets.
+`.env` → окружение.
 
 После обычного запуска аудита:
 
@@ -662,13 +722,13 @@ Markdown) с растровым изображением или не менее 
 0,34/размеров стр. 56 и колонки Т-500-К стр. 80 геометрическая и остаётся
 `review_required`, а не подтверждением.
 
-Замер кеша без LLM и OCR: `uv run python tests/benchmark_pdf_cache.py --pdf <ПД.pdf>
+Замер кеша без LLM и OCR (из `backend/`): `uv run python tests/benchmark_pdf_cache.py --pdf <ПД.pdf>
 --output .audit_cache/pdf-bench`. Синтетический PDF на 6 страниц с таблицами
 (PyMuPDF/PyMuPDF4LLM/Layout 1.28.2): холодный прогон 0.745 с (6 промахов),
 тёплый 0.023 с (6 попаданий), тексты/ошибки/флаги сканов побайтово равны.
 Артефакты: `.audit_cache/pdf-bench/summary.json` и `cache/`.
 
-Пакеты для Linux перечислены в `packages.txt`; devcontainer устанавливает их
+Пакеты для Linux перечислены в `backend/packages.txt`; devcontainer устанавливает их
 при создании окружения. Для Debian/Ubuntu:
 
 ```bash
@@ -715,8 +775,8 @@ uv run pytest
 Воспроизводимый эталон для рефакторинга без LLM API и секретов:
 
 ```powershell
-uv run pytest tests/test_baseline.py -v
-uv run python tests/baseline_audit.py --output .audit_cache/baseline-dev
+uv run pytest tests/test_baseline.py -v  # из backend/
+uv run python tests/baseline_audit.py --output .audit_cache/baseline-dev  # из backend/
 uv run python tests/baseline_audit.py --output .audit_cache/baseline-diff --compare .audit_cache/baseline-dev/summary.json .audit_cache/baseline-after/summary.json
 ```
 
@@ -734,7 +794,7 @@ uv run python tests/baseline_audit.py --output .audit_cache/baseline-diff --comp
 Для отдельного реального прогона через Qwen в Yandex Cloud:
 
 ```powershell
-python tests/run_live_yandex.py
+python tests/run_live_yandex.py  # из backend/
 ```
 
 Этот прогон отправляет синтетические документы в Yandex Cloud и расходует квоту API.
@@ -799,8 +859,8 @@ PyMuPDF 1.28.2 — версии библиотек совпадают с `requir
 1/(60+rank)) на одном замороженном корпусе, без PDF/OCR/сети в `compare`:
 
 ```sh
-uv run python tests/benchmark_evidence_retrieval.py prepare --gold docs/research/2026-10-19-pd-vor/gold.json --output .audit_cache/evidence-retrieval/corpus
-uv run python tests/benchmark_evidence_retrieval.py compare --gold docs/research/2026-10-19-pd-vor/gold.json --corpus .audit_cache/evidence-retrieval/corpus --output .audit_cache/evidence-retrieval/comparison
+uv run python tests/benchmark_evidence_retrieval.py prepare --gold ../docs/research/2026-10-19-pd-vor/gold.json  # из backend/ --output .audit_cache/evidence-retrieval/corpus
+uv run python tests/benchmark_evidence_retrieval.py compare --gold ../docs/research/2026-10-19-pd-vor/gold.json  # из backend/ --corpus .audit_cache/evidence-retrieval/corpus --output .audit_cache/evidence-retrieval/comparison
 ```
 
 `prepare` один раз извлекает 22 позиционных snapshot в фиксированном порядке
