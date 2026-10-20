@@ -4,8 +4,8 @@ Metadata lives in PostgreSQL (migrated with Alembic); bytes live in the blob
 store and are referenced by ``blob_key``. History is append-only: reruns add
 rows, re-uploads add versions. Documents are UUID identities; versions carry
 their own source filename and extracted metadata. Run PDF pins are relational
-(``run_pdf_versions``); VOR->PDF bindings persist per VOR version unconfirmed
-until an explicit PUT.
+(``run_pdf_versions``). VOR designations verify against PDF text at audit
+time; no manual binding is stored.
 """
 
 from __future__ import annotations
@@ -33,8 +33,6 @@ from storage_models import (
     Run,
     RunArtifact,
     RunPdfVersion,
-    VorBinding,
-    VorBindingPdf,
 )
 
 
@@ -353,13 +351,6 @@ class Repository:
             current_ids.add(pdf_doc.current_version_id)
         return set(selected) != set(current_ids)
 
-    def _binding_selection(self, session, vor_version_id: UUID) -> list[UUID]:
-        binding = session.get(VorBinding, vor_version_id)
-        if binding is None:
-            return []
-        return [row.pdf_version_id for row in session.scalars(
-            select(VorBindingPdf).where(
-                VorBindingPdf.vor_version_id == vor_version_id)).all()]
 
     def catalog(self, project_id: UUID,
                 *, archived: bool = False) -> list[dict[str, Any]]:
@@ -649,47 +640,9 @@ class Repository:
                 session.flush()
             row = self._append_version(session, document, payload,
                                        filename=filename, metadata=metadata)
-            # Inherit the previous confirmed binding as UNCONFIRMED for a new
-            # VOR revision, mapped to current PDF revisions.
-            if document.kind == "vor":
-                self._inherit_binding_unconfirmed(session, document, row.id)
             session.commit()
             return row
 
-    def _inherit_binding_unconfirmed(self, session, document: Document,
-                                     new_vor_version_id: UUID) -> None:
-        from sqlalchemy import select as _select
-        if session.get(VorBinding, new_vor_version_id) is not None:
-            return
-        previous = session.scalars(
-            _select(DocumentVersion).where(
-                DocumentVersion.document_id == document.id,
-                DocumentVersion.id != new_vor_version_id,
-            ).order_by(DocumentVersion.version_no.desc())).first()
-        if previous is None:
-            return
-        old_binding = session.get(VorBinding, previous.id)
-        if old_binding is None:
-            return
-        old_pdfs = [row.pdf_version_id for row in session.scalars(
-            _select(VorBindingPdf).where(
-                VorBindingPdf.vor_version_id == previous.id)).all()]
-        remapped: list[UUID] = []
-        for pdf_version_id in old_pdfs:
-            old_pdf = session.get(DocumentVersion, pdf_version_id)
-            if old_pdf is None:
-                continue
-            pdf_doc = session.get(Document, old_pdf.document_id)
-            if pdf_doc is None:
-                continue
-            target = pdf_doc.current_version_id or old_pdf.id
-            if target not in remapped:
-                remapped.append(target)
-        session.add(VorBinding(vor_version_id=new_vor_version_id, confirmed=False))
-        session.flush()
-        for pdf_version_id in remapped:
-            session.add(VorBindingPdf(vor_version_id=new_vor_version_id,
-                                      pdf_version_id=pdf_version_id))
 
     def delete_version(self, version_id: UUID) -> bool:
         """Delete one unused revision. Blobs are content-addressed and stay."""
@@ -710,16 +663,6 @@ class Repository:
                     RunPdfVersion.version_id == version.id))
             if pinned:
                 raise LookupError("version is pinned by run snapshots")
-            bound = session.scalar(
-                select(func.count()).select_from(VorBindingPdf).where(
-                    VorBindingPdf.pdf_version_id == version.id))
-            if bound:
-                raise LookupError("version is used by bindings")
-            as_binding = session.get(VorBinding, version.id) is not None
-            if as_binding and session.scalar(
-                    select(func.count()).select_from(VorBindingPdf).where(
-                        VorBindingPdf.vor_version_id == version.id)):
-                raise LookupError("version is used by bindings")
             if document.current_version_id == version.id:
                 replacement = session.scalars(
                     select(DocumentVersion).where(
@@ -728,10 +671,6 @@ class Repository:
                     ).order_by(DocumentVersion.version_no.desc())).first()
                 document.current_version_id = (
                     replacement.id if replacement is not None else None)
-            if as_binding:
-                binding = session.get(VorBinding, version.id)
-                if binding is not None:
-                    session.delete(binding)
             session.delete(version)
             session.commit()
             if not document.title:
@@ -765,16 +704,7 @@ class Repository:
                         RunPdfVersion.version_id == version.id))
                 if pinned:
                     raise LookupError("document is pinned by run snapshots")
-                bound = session.scalar(
-                    select(func.count()).select_from(VorBindingPdf).where(
-                        (VorBindingPdf.pdf_version_id == version.id)
-                        | (VorBindingPdf.vor_version_id == version.id)))
-                if bound:
-                    raise LookupError("document is used by bindings")
             for version in versions:
-                binding = session.get(VorBinding, version.id)
-                if binding is not None:
-                    session.delete(binding)
                 session.delete(version)
             session.delete(document)
             session.commit()
@@ -800,126 +730,15 @@ class Repository:
                             RunPdfVersion.version_id == version.id))
                     if pinned:
                         raise LookupError("project has pinned snapshots")
-                    bound = session.scalar(
-                        select(func.count()).select_from(VorBindingPdf).where(
-                            (VorBindingPdf.pdf_version_id == version.id)
-                            | (VorBindingPdf.vor_version_id == version.id)))
-                    if bound:
-                        raise LookupError("project has bindings")
             for document in documents:
                 for version in session.scalars(select(DocumentVersion).where(
                         DocumentVersion.document_id == document.id)).all():
-                    binding = session.get(VorBinding, version.id)
-                    if binding is not None:
-                        session.delete(binding)
                     session.delete(version)
                 session.delete(document)
             session.delete(project)
             session.commit()
             return True
 
-    def get_binding(self, vor_version_id: UUID) -> dict[str, Any]:
-        with Session(self._engine) as session:
-            vor = session.get(DocumentVersion, vor_version_id)
-            if vor is None:
-                raise KeyError(str(vor_version_id))
-            document = session.get(Document, vor.document_id)
-            if document is None or document.kind != "vor":
-                raise ValueError("not a VOR version")
-            binding = session.get(VorBinding, vor_version_id)
-            selected = ([row.pdf_version_id for row in session.scalars(
-                select(VorBindingPdf).where(
-                    VorBindingPdf.vor_version_id == vor_version_id)).all()]
-                if binding is not None else [])
-            return {
-                "vor_version_id": str(vor_version_id),
-                "pdf_version_ids": [str(value) for value in selected],
-                "confirmed": bool(binding.confirmed) if binding is not None else False,
-                "candidates": [str(value) for value in
-                               self._binding_candidates(session, document, vor)],
-            }
-
-    def _normalize_code(self, value: str) -> str:
-        import re
-        return re.sub(r"[^0-9a-zа-яё]+", "", str(value or "").casefold())
-
-    def _metadata_codes(self, version: DocumentVersion) -> set[str]:
-        codes: set[str] = set()
-        source = {**dict(version.metadata_ or {}), **dict(version.metadata_overrides or {})}
-        for key in ("document_code", "pd_reference"):
-            normalized = self._normalize_code(source.get(key))
-            if normalized:
-                codes.add(normalized)
-        return codes
-
-    def _binding_candidates(self, session, document: Document,
-                            vor: DocumentVersion) -> list[UUID]:
-        wanted = self._metadata_codes(vor)
-        if not wanted:
-            return []
-        matches: list[UUID] = []
-        pdf_documents = session.scalars(select(Document).where(
-            Document.project_id == document.project_id,
-            Document.kind == "pdf", Document.archived == False)).all()  # noqa: E712
-        for pdf_doc in pdf_documents:
-            current = (session.get(DocumentVersion, pdf_doc.current_version_id)
-                       if pdf_doc.current_version_id else None)
-            if current is None:
-                continue
-            if wanted & self._metadata_codes(current) and current.id not in matches:
-                matches.append(current.id)
-        return matches
-
-    def save_binding(self, vor_version_id: UUID, pdf_version_ids: list[UUID],
-                     *, confirmed: bool) -> dict[str, Any]:
-        seen: list[UUID] = []
-        for value in pdf_version_ids or []:
-            if value not in seen:
-                seen.append(value)
-        with Session(self._engine) as session:
-            vor = session.get(DocumentVersion, vor_version_id)
-            if vor is None:
-                raise KeyError(str(vor_version_id))
-            document = session.get(Document, vor.document_id)
-            if document is None or document.kind != "vor":
-                raise ValueError("not a VOR version")
-            if bool(document.archived):
-                raise ValueError("document is archived")
-            project = session.get(Project, document.project_id)
-            if project is None or bool(project.archived):
-                raise ValueError("project is archived")
-            pdf_docs: list[UUID] = []
-            for pdf_version_id in seen:
-                pdf_version = session.get(DocumentVersion, pdf_version_id)
-                if pdf_version is None:
-                    raise KeyError(str(pdf_version_id))
-                pdf_doc = session.get(Document, pdf_version.document_id)
-                if pdf_doc is None or pdf_doc.kind != "pdf":
-                    raise ValueError("binding target is not a PDF version")
-                if pdf_doc.project_id != document.project_id:
-                    raise ValueError("binding crosses projects")
-                if bool(pdf_doc.archived):
-                    raise ValueError("PDF document is archived")
-                if pdf_doc.id in pdf_docs:
-                    raise ValueError("duplicate PDF document in binding")
-                pdf_docs.append(pdf_doc.id)
-            binding = session.get(VorBinding, vor_version_id)
-            if binding is None:
-                binding = VorBinding(vor_version_id=vor_version_id,
-                                     confirmed=bool(confirmed))
-                session.add(binding)
-            else:
-                binding.confirmed = bool(confirmed)
-            session.flush()
-            for row in session.scalars(select(VorBindingPdf).where(
-                    VorBindingPdf.vor_version_id == vor_version_id)).all():
-                session.delete(row)
-            session.flush()
-            for pdf_version_id in seen:
-                session.add(VorBindingPdf(vor_version_id=vor_version_id,
-                                          pdf_version_id=pdf_version_id))
-            session.commit()
-            return self.get_binding(vor_version_id)
 
     def create_run(
         self, project_id: UUID, vor_version_id: UUID, config: dict[str, Any],

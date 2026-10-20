@@ -493,6 +493,28 @@ def _check_active_versions(context: ApiContext, project_id: UUID,
         raise ApiError(400, "project_archived", "Проект архивирован")
 
 
+def _resolve_pdf_pool(context: ApiContext, project_id: UUID,
+                      pdf_ids: list[UUID]) -> list[UUID]:
+    """Default to current revisions of every active project PDF.
+
+    An explicit non-empty selection stays untouched (tests, API clients);
+    the UI no longer selects revisions — designations verify against the
+    whole project pool at audit time.
+    """
+    if pdf_ids:
+        return pdf_ids
+    pool = []
+    for document in context.repository.catalog(project_id, archived=False):
+        if document.get("kind") != "pdf" or not document.get("current_version_id"):
+            continue
+        pool.append(_parse_uuid(str(document["current_version_id"]),
+                                field="pdf_version_ids"))
+    if not pool:
+        raise ApiError(400, "pdf_pool_empty",
+                       "В проекте нет проектных PDF для проверки.")
+    return pool
+
+
 def _check_pdf_names(context: ApiContext, version_ids: list[UUID]):
     names = set()
     for version_id in version_ids:
@@ -735,11 +757,11 @@ def create_app(context: ApiContext | None = None) -> FastAPI:
         _require_api_token(context, request)
         _require_configured(context)
         vor_id = _parse_uuid(payload.vor_version_id, field="vor_version_id")
-        pdf_ids = [
+        owner = _project_for_payload(context, payload)
+        pdf_ids = _resolve_pdf_pool(context, owner.id, [
             _parse_uuid(item, field="pdf_version_ids")
             for item in payload.pdf_version_ids
-        ]
-        owner = _project_for_payload(context, payload)
+        ])
         _check_project_versions(context, owner.id, [vor_id, *pdf_ids])
         _check_active_versions(context, owner.id, [vor_id, *pdf_ids])
         _check_pdf_names(context, pdf_ids)
@@ -759,10 +781,10 @@ def create_app(context: ApiContext | None = None) -> FastAPI:
         stored_project = _project_for_payload(context, payload)
         project = stored_project.name
         vor_id = _parse_uuid(payload.vor_version_id, field="vor_version_id")
-        pdf_ids = [
+        pdf_ids = _resolve_pdf_pool(context, stored_project.id, [
             _parse_uuid(item, field="pdf_version_ids")
             for item in payload.pdf_version_ids
-        ]
+        ])
         _check_project_versions(context, stored_project.id, [vor_id, *pdf_ids])
         _check_pdf_names(context, pdf_ids)
         _check_active_versions(context, stored_project.id, [vor_id, *pdf_ids])

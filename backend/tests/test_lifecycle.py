@@ -168,7 +168,7 @@ class LifecycleTests(unittest.TestCase):
             )
             self.assertEqual(bad.status_code, 400)
 
-    def test_used_version_delete_rejected_and_cross_project_binding(self):
+    def test_used_version_delete_rejected_and_run_pins_cross_project(self):
         with tempfile.TemporaryDirectory(prefix="smeta-lifecycle-") as tmp:
             client, app = self._open_app(tmp)
             project_id = self._project(client, "Первый")
@@ -203,17 +203,15 @@ class LifecycleTests(unittest.TestCase):
                 project_id=other_id,
                 new_document=True,
             )
-            bad = client.put(
-                f"/api/v1/documents/{vor['version_id']}/bindings",
-                json={"pdf_version_ids": [other_pdf["version_id"]], "confirmed": True},
+            bad = client.post(
+                "/api/v1/audits",
+                json={
+                    "project_id": project_id,
+                    "vor_version_id": vor["version_id"],
+                    "pdf_version_ids": [other_pdf["version_id"]],
+                },
             )
             self.assertEqual(bad.status_code, 400)
-            saved = client.put(
-                f"/api/v1/documents/{vor['version_id']}/bindings",
-                json={"pdf_version_ids": [pdf["version_id"]], "confirmed": True},
-            )
-            self.assertEqual(saved.status_code, 200, saved.text)
-            self.assertTrue(saved.json()["confirmed"])
             created = client.post(
                 "/api/v1/audits",
                 json={
@@ -227,8 +225,8 @@ class LifecycleTests(unittest.TestCase):
             for version_id in (vor["version_id"], pdf["version_id"]):
                 denied = client.delete(f"/api/v1/documents/{version_id}/version")
                 self.assertEqual(denied.status_code, 409, denied.text)
-            # Inherited binding for a new revision is unconfirmed, remapped to
-            # current PDF revisions, never inferred confirmation.
+            # A new VOR revision verifies against current PDFs at audit
+            # time; no binding is inherited or stored.
             child = self._upload(
                 client,
                 "Первый",
@@ -239,11 +237,8 @@ class LifecycleTests(unittest.TestCase):
                 project_id=project_id,
                 document_id=vor["document_id"],
             )
-            inherited = client.get(
-                f"/api/v1/documents/{child['version_id']}/bindings"
-            ).json()
-            self.assertFalse(inherited["confirmed"])
-            self.assertEqual(inherited["pdf_version_ids"], [pdf["version_id"]])
+            gone = client.get(f"/api/v1/documents/{child['version_id']}/bindings")
+            self.assertEqual(gone.status_code, 404)
 
     def test_archive_restore_keeps_docs_archived_and_run_snapshot_stable(self):
         with tempfile.TemporaryDirectory(prefix="smeta-lifecycle-") as tmp:
@@ -338,7 +333,7 @@ class LifecycleTests(unittest.TestCase):
             ).json()
             self.assertIn(pdf["document_id"], [d["id"] for d in visible])
 
-    def test_database_rejects_cross_project_bindings_pins_and_current_version(self):
+    def test_database_rejects_cross_project_pins_and_current_version(self):
         from sqlalchemy import create_engine, text
         from sqlalchemy.exc import IntegrityError
         from storage_blobs import FileBlobStore
@@ -369,18 +364,15 @@ class LifecycleTests(unittest.TestCase):
             repo = open_repository(_postgres_url(), FileBlobStore(tmp))
             from uuid import UUID
 
-            repo.save_binding(UUID(vor["version_id"]), [], confirmed=False)
             run = repo.create_run(UUID(owner), UUID(vor["version_id"]), {})
             engine = create_engine(_postgres_url())
             self.addCleanup(engine.dispose)
             params = {
-                "vor": vor["version_id"],
                 "pdf": pdf["version_id"],
                 "doc": vor["document_id"],
                 "run": str(run.id),
             }
             for statement, state in (
-                ("INSERT INTO vor_binding_pdfs VALUES (:vor, :pdf)", "23514"),
                 (
                     "INSERT INTO run_pdf_versions VALUES (:run, 'source.pdf', :pdf)",
                     "23514",

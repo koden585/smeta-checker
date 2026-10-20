@@ -11,8 +11,6 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import Response
 
 from workspace_models import (
-    BindingDTO,
-    BindingPut,
     DocumentDTO,
     DocumentPatch,
     FormatDTO,
@@ -230,34 +228,6 @@ def workspace_router(get_context) -> APIRouter:
         except LookupError as exc:
             raise ApiError(409, "version_in_use", str(exc)) from exc
         return {"deleted": True}
-
-    @router.get("/api/v1/documents/{vor_version_id}/bindings",
-                response_model=BindingDTO)
-    def get_bindings(vor_version_id: str, context=Depends(guarded)):
-        try:
-            return context.repository.get_binding(
-                _parse_uuid(vor_version_id, field="vor_version_id"))
-        except KeyError as exc:
-            raise ApiError(404, "version_not_found", "Версия не найдена") from exc
-        except ValueError as exc:
-            raise ApiError(400, "not_vor_version", str(exc)) from exc
-
-    @router.put("/api/v1/documents/{vor_version_id}/bindings",
-                response_model=BindingDTO)
-    def put_bindings(vor_version_id: str, payload: BindingPut,
-                     context=Depends(guarded)):
-        try:
-            return context.repository.save_binding(
-                _parse_uuid(vor_version_id, field="vor_version_id"),
-                [_parse_uuid(item, field="pdf_version_ids")
-                 for item in (payload.pdf_version_ids or [])],
-                confirmed=bool(payload.confirmed),
-            )
-        except KeyError as exc:
-            raise ApiError(404, "version_not_found", "Версия не найдена") from exc
-        except ValueError as exc:
-            raise ApiError(400, "binding_invalid", str(exc)) from exc
-
 
     @router.get("/api/v1/projects/{project_id}/audits", response_model=list[RunDTO])
     def history(

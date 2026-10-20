@@ -67,13 +67,6 @@ class VersionDTO(DTO):
     metadata_overrides: dict[str, str]
 
 
-class BindingDTO(DTO):
-    vor_version_id: str
-    pdf_version_ids: list[str]
-    confirmed: bool
-    candidates: list[str]
-
-
 class RunDTO(DTO):
     run_id: str
     project_id: str
@@ -112,11 +105,6 @@ class DocumentPatch(DTO):
 
 class VersionMetadataPatch(DTO):
     fields: dict[str, str] = Field(default_factory=dict)
-
-
-class BindingPut(DTO):
-    pdf_version_ids: list[str] = Field(default_factory=list)
-    confirmed: bool = False
 
 
 class VersionDeletedDTO(DTO):

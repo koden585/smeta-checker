@@ -192,8 +192,6 @@ class MigrationTests(unittest.TestCase):
         "runs",
         "position_results",
         "run_artifacts",
-        "vor_bindings",
-        "vor_binding_pdfs",
         "run_pdf_versions",
     }
 

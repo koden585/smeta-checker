@@ -341,6 +341,7 @@ class VorPosition(BaseModel):
     page_ref: str = ""
     file_ref: str = ""
     explicit_refs: list[str] = Field(default_factory=list)
+    designation_refs: list[str] = Field(default_factory=list)
     comment: str = ""
     formula: str = ""
     formula_refs: dict[str, Any] = Field(default_factory=dict)
@@ -374,7 +375,7 @@ class VorPosition(BaseModel):
                 raise ValueError("primary_pages must hold 1-based page numbers")
         return items
 
-    @field_validator("explicit_refs", mode="before")
+    @field_validator("explicit_refs", "designation_refs", mode="before")
     @classmethod
     def _validate_refs(cls, value: Any) -> Any:
         return [str(item) for item in (value or [])]
@@ -397,6 +398,7 @@ class VorPosition(BaseModel):
             "position_source": self.position_source.model_dump(mode="json") if self.position_source else None,
             "target_pdf_name": self.document_id,
             "explicit_refs": list(self.explicit_refs),
+            "designation_refs": list(self.designation_refs),
             "bind_error": self.bind_error,
             "prep_error": self.prep_error,
             "target_indices": list(self.target_indices),
@@ -418,6 +420,7 @@ class VorPosition(BaseModel):
             page_ref=str(task.get("w_page", "") or ""),
             file_ref=str(task.get("file_refs", task.get("file_ref", "")) or ""),
             explicit_refs=list(task.get("explicit_refs", []) or []),
+            designation_refs=list(task.get("designation_refs", []) or []),
             comment=str(task.get("w_comment", "") or ""),
             formula=str(task.get("w_formula", "") or ""),
             position_type=str(task.get("position_type", "") or ""),

@@ -47,6 +47,28 @@ def _fake_vor_bytes():
     return (header + "\n1;Copper cable;45;m;;project.pdf;1\n").encode("utf-8-sig")
 
 
+def _designation_pdf_bytes(*texts):
+    # fitz insert_textbox without an embedded TTF renders Cyrillic as "?",
+    # so fixtures use Latin designations; Cyrillic matching is covered by
+    # test_pdf_binding unit tests against real extracted strings.
+    with fitz.open() as pdf:
+        for text in texts:
+            page = pdf.new_page()
+            page.insert_textbox(fitz.Rect(50, 50, 500, 600), text)
+        return bytes(pdf.tobytes())
+
+
+def _designation_vor_bytes(reference):
+    header = (
+        "№ п.п.;Наименование работ, ресурсов, затрат по проекту;"
+        "Объём работ / Количество;Ед. изм.;Ссылка на чертежи в ПД;"
+        "Наименование файла;Номер страниц (через пробел)"
+    )
+    return (
+        header + f"\n1;Beregoukreplenie otkosa;100;m3;{reference};design.pdf;1\n"
+    ).encode("utf-8-sig")
+
+
 def _ok_client_factory():
     class FakeClient:
         def __init__(self, **_kwargs):
@@ -338,6 +360,120 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(legacy.status_code, 400)
             self.assertEqual(legacy.json()["error"]["code"], "unknown_report")
             runner.wait(run_id, timeout=5.0)
+
+    def test_missing_designation_is_error_without_llm_call(self):
+        with tempfile.TemporaryDirectory(prefix="smeta-api-") as tmp:
+            client, app = self._open_app(tmp)
+            created = client.post("/api/v1/projects", json={"name": "ТКР"})
+            project_id = created.json()["id"]
+            vor = self._upload(
+                client, "ТКР", "vor", "vor.csv",
+                _designation_vor_bytes("30/09-TKR16.GCH l. 1,"),
+                "text/csv", project_id=project_id, new_document=True,
+            )
+            pdf = self._upload(
+                client, "ТКР", "pdf", "design.pdf",
+                _designation_pdf_bytes(
+                    "PROJECT DOCUMENTATION 30/09-TKR16 Volume 3.16",
+                    "Specification 30/09-TKR16.SO sheet 1",
+                ),
+                "application/pdf", project_id=project_id, new_document=True,
+            )
+            with patch("audit_tracing._configured_client", return_value=None):
+                created = client.post(
+                    "/api/v1/audits",
+                    json={
+                        "project": "ТКР",
+                        "vor_version_id": vor["version_id"],
+                        "pdf_version_ids": [pdf["version_id"]],
+                    },
+                )
+            self.assertEqual(created.status_code, 202, created.text)
+            run_id = created.json()["run_id"]
+            finished = self._wait_for_run(client, run_id)
+            self.assertEqual(finished["status"], "done")
+            results = client.get(f"/api/v1/audits/{run_id}/results").json()
+            self.assertEqual(len(results["results"]), 1)
+            row = results["results"][0]
+            self.assertEqual(row["status"], "Ошибка")
+            self.assertIn("30/09-TKR16.GCH", row["discrepancy_details"])
+            self.assertIn("обозначения отсутствуют", row["discrepancy_details"])
+            self.assertEqual(row["requests"], 0)
+
+    def test_found_designation_passes_to_audit(self):
+        with tempfile.TemporaryDirectory(prefix="smeta-api-") as tmp:
+            client, app = self._open_app(tmp)
+            created = client.post("/api/v1/projects", json={"name": "ТКР"})
+            project_id = created.json()["id"]
+            vor = self._upload(
+                client, "ТКР", "vor", "vor.csv",
+                _designation_vor_bytes("30/09-TKR16.SO l. 1,"),
+                "text/csv", project_id=project_id, new_document=True,
+            )
+            pdf = self._upload(
+                client, "ТКР", "pdf", "design.pdf",
+                _designation_pdf_bytes(
+                    "PROJECT DOCUMENTATION 30/09-TKR16 Volume 3.16 "
+                    "Beregoukreplenie otkosa 100 m3",
+                    "Specification 30/09-TKR16.SO sheet 1",
+                ),
+                "application/pdf", project_id=project_id, new_document=True,
+            )
+            with patch("audit_tracing._configured_client", return_value=None):
+                created = client.post(
+                    "/api/v1/audits",
+                    json={
+                        "project": "ТКР",
+                        "vor_version_id": vor["version_id"],
+                        "pdf_version_ids": [pdf["version_id"]],
+                    },
+                )
+            self.assertEqual(created.status_code, 202, created.text)
+            run_id = created.json()["run_id"]
+            finished = self._wait_for_run(client, run_id)
+            self.assertEqual(finished["status"], "done")
+            results = client.get(f"/api/v1/audits/{run_id}/results").json()
+            row = results["results"][0]
+            self.assertNotIn("обозначения отсутствуют",
+                             row["discrepancy_details"])
+
+    def test_audit_without_pdf_selection_uses_project_pool(self):
+        with tempfile.TemporaryDirectory(prefix="smeta-api-") as tmp:
+            client, app = self._open_app(tmp)
+            vor, pdf = self._upload_pair(client)
+            with patch("audit_tracing._configured_client", return_value=None):
+                created = client.post(
+                    "/api/v1/audits",
+                    json={
+                        "project": "ИГДИ",
+                        "vor_version_id": vor["version_id"],
+                    },
+                )
+            self.assertEqual(created.status_code, 202, created.text)
+            run_id = created.json()["run_id"]
+            finished = self._wait_for_run(client, run_id)
+            self.assertEqual(finished["status"], "done")
+            results = client.get(f"/api/v1/audits/{run_id}/results").json()
+            self.assertEqual(results["results"][0]["status"], "ОК")
+
+    def test_audit_without_any_pdf_is_explicit_error(self):
+        with tempfile.TemporaryDirectory(prefix="smeta-api-") as tmp:
+            client, _ = self._open_app(tmp)
+            created = client.post("/api/v1/projects", json={"name": "Пустой"})
+            project_id = created.json()["id"]
+            vor = self._upload(
+                client, "Пустой", "vor", "vor.csv", _fake_vor_bytes(),
+                "text/csv", project_id=project_id, new_document=True,
+            )
+            response = client.post(
+                "/api/v1/audits",
+                json={
+                    "project": "Пустой",
+                    "vor_version_id": vor["version_id"],
+                },
+            )
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.json()["error"]["code"], "pdf_pool_empty")
 
     def test_audit_unknown_run_is_json_404(self):
         with tempfile.TemporaryDirectory(prefix="smeta-api-") as tmp:

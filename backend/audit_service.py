@@ -25,7 +25,12 @@ from audit_models import AuditResult, expected_scope_hint, position_source_dict,
 from audit_reports import build_user_report, generate_word_report
 from audit_snapshot import decode_snapshot, encode_snapshot
 from audit_tracing import TracingRun
-from pdf_binding import resolve_pdf_name, resolve_position_pdfs
+from pdf_binding import (
+    index_designations,
+    resolve_pdf_name,
+    resolve_position_pdfs,
+    verify_designations,
+)
 from pdf_text import PDFTextSource
 from vor_parse import load_vor_frame_positions, load_vor_positions
 
@@ -173,28 +178,57 @@ def worker_check_row(task, audit_position):
         audit = technical_error(task["prep_error"])
     elif task.get("bind_error"):
         audit = empty_result("Ошибка", task["bind_error"])
-    elif task["text_index"] is None:
+    elif task.get("text_index") is None:
         wanted = "; ".join(task.get("explicit_refs") or []) or task["target_pdf_name"]
         audit = empty_result(
             "Ошибка", f"Не удалось привязать PDF к строке. Искали: '{wanted}'"
         )
     else:
-        audit = audit_position(
-            text_index=task["text_index"],
-            target_indices=task["target_indices"],
-            work_name=task["w_name"],
-            volume=task["w_vol"],
-            unit=task["w_unit"],
-            ref_text=task["w_ref"],
-            page_ref=task["w_page"],
-            comment_text=task["w_comment"],
-            formula_text=task["w_formula"],
-            position_type=task.get("position_type", ""),
-            calculation=task.get("calculation", {}),
-            expected_scope=expected_scope_hint(task.get("position_source")),
-            claim_specs=task.get("claim_specs") or build_claim_specs(
-                _position_view(task)),
+        declared = list(task.get("designation_refs") or [])
+        designation_index = index_designations(
+            (number, text)
+            for number, text in enumerate(task["text_index"].texts, start=1)
         )
+        found_designations, missing_designations = verify_designations(
+            declared, designation_index
+        )
+        task["designation_found"] = found_designations
+        task["designation_index"] = designation_index
+        if missing_designations:
+            files = task.get("target_pdf_name") or "загруженной ПД"
+            missing = ", ".join(f"'{item}'" for item in missing_designations)
+            audit = empty_result(
+                "Ошибка",
+                f"ВОР ссылается на {missing}, "
+                f"в {files} обозначения отсутствуют",
+            )
+            audit["checks"] = [
+                {
+                    "claim_id": "basis:designation",
+                    "kind": "basis",
+                    "state": "contradiction",
+                    "reasons": ["designation_missing_in_pd"],
+                    "facts": [],
+                    "required": True,
+                }
+            ]
+        else:
+            audit = audit_position(
+                text_index=task["text_index"],
+                target_indices=task["target_indices"],
+                work_name=task["w_name"],
+                volume=task["w_vol"],
+                unit=task["w_unit"],
+                ref_text=task["w_ref"],
+                page_ref=task["w_page"],
+                comment_text=task["w_comment"],
+                formula_text=task["w_formula"],
+                position_type=task.get("position_type", ""),
+                calculation=task.get("calculation", {}),
+                expected_scope=expected_scope_hint(task.get("position_source")),
+                claim_specs=task.get("claim_specs") or build_claim_specs(
+                    _position_view(task)),
+            )
     validated = (
         audit
         if isinstance(audit, AuditResult)
