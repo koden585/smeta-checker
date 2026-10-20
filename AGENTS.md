@@ -1,15 +1,27 @@
 # Работа с проектом
 
+Монорепозиторий: `backend/` (Python 3.14, uv) + `frontend/` (Nuxt 4, pnpm).
+Общее: `compose.yaml`, `.env` / `.env.example`, `docs/`.
+
 - Изменяйте только согласованный worktree; не переносите правки в `dev` или другие деревья без отдельного задания.
-- Окружение: `uv sync --frozen` (Python 3.12 из `.python-version`, пины в `uv.lock`). Команда регрессий: `uv run pytest`.
+- Backend: команды из `backend/` — `uv sync --frozen`, `uv run pytest`, `uv run ruff check .`, `uv run pyright`. Пины в `backend/uv.lock`.
 - Живые обращения к модели расходуют квоту и передают фрагменты документов провайдеру. Не заменяйте их тестовыми ответами при заявлении о live-проверке.
-- Секреты храните только в игнорируемом `.env` либо окружении. Не записывайте их в команды, отчёты и коммиты.
+- Секреты храните только в игнорируемом корневом `.env` либо окружении. Не записывайте их в команды, отчёты и коммиты.
+
+## Frontend (Nuxt workspace)
+
+- Каталог `frontend/` (pnpm 11.25.0, Node 24). Установка: `pnpm --dir frontend install --frozen-lockfile`.
+- После изменения Python DTO (из `backend/`): `uv run python -m scripts.export_frontend_openapi`, затем `pnpm --dir frontend run api:generate`.
+- Проверки: `pnpm --dir frontend run fmt:check`, `lint`, `typecheck`, `test:unit`, `api:check` (`PYTHON` — абсолютный путь к `backend/.venv/bin/python`), `build`.
+- E2E: отдельная БД `smeta_test_ui` + `backend/tests/workspace_server.py` (синтетический LLM-клиент, без квоты), затем `pnpm --dir frontend run test:e2e` с `FRONTEND_URL` и `E2E_FIXTURE_ROOT`. Детали — в `frontend/README.md`.
+- `app/generated/` и `openapi.json` — генерируемые, вручную не править. `public/pdfjs` собран из `pdfjs-dist@6.4.299`.
+- BFF-токен (`NUXT_BACKEND_TOKEN`) только в серверном окружении; секреты — только `.env`.
 
 ## Браузер
 
-Для интерактивной проверки Streamlit используйте `agent-browser` CLI или его MCP-инструменты. Справка: `agent-browser --help`.
+Для интерактивной проверки Nuxt используйте `agent-browser` CLI или его MCP-инструменты. Справка: `agent-browser --help`.
 
-1. Используйте именованную сессию: `agent-browser --session smeta-check open http://127.0.0.1:8501`.
+1. Используйте именованную сессию: `agent-browser --session smeta-check open http://127.0.0.1:3000`.
 2. Получайте свежие ссылки элементов: `agent-browser --session smeta-check snapshot -i`.
 3. Выполняйте действия через `click @ref`, `fill @ref "текст"`, `press Enter`; после перерисовки получайте новый snapshot.
 4. Сохраняйте снимки и отчёты в игнорируемую `.audit_cache/`. Проверяйте содержимое изображения, прежде чем заявлять о визуальной проверке.

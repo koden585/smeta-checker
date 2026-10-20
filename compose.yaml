@@ -1,5 +1,5 @@
 # issue 22: minimal production system on a CPU-only server.
-# One file starts api + ui + postgres + redis + pdf/llm workers.
+# One file starts api + workspace (Nuxt) + postgres + redis + pdf/llm workers.
 # Secrets: copy .env.example to .env and fill POSTGRES_PASSWORD, AUDIT_API_TOKEN,
 # LLM keys (YANDEX_* or ANYMODEL_*). Compose reads .env automatically.
 name: smeta-checker
@@ -40,7 +40,7 @@ services:
       retries: 5
 
   migrate:
-    build: .
+    build: ./backend
     restart: "no"
     depends_on:
       db:
@@ -50,7 +50,7 @@ services:
     command: ["alembic", "upgrade", "head"]
 
   api:
-    build: .
+    build: ./backend
     restart: unless-stopped
     depends_on:
       migrate:
@@ -88,45 +88,37 @@ services:
       retries: 3
       start_period: 40s
 
-  ui:
-    build: .
+  workspace:
+    build: ./frontend
     restart: unless-stopped
     depends_on:
-      migrate:
-        condition: service_completed_successfully
-      db:
+      api:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-smeta}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-smeta}
-      BLOB_STORE_URL: file:///srv/smeta/.audit_blobs
-      YANDEX_CLOUD_API_KEY: ${YANDEX_CLOUD_API_KEY:-}
-      YANDEX_CLOUD_FOLDER: ${YANDEX_CLOUD_FOLDER:-}
-      YANDEX_CLOUD_MODEL: ${YANDEX_CLOUD_MODEL:-qwen3.6-35b-a3b/latest}
-      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
-      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
-      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
-      LANGFUSE_ENVIRONMENT: ${LANGFUSE_ENVIRONMENT:-production}
-    volumes:
-      - blobs:/srv/smeta/.audit_blobs
-      - pdfcache:/srv/smeta/.audit_cache
+      HOST: 0.0.0.0
+      PORT: 3000
+      NUXT_BACKEND_URL: http://api:8000
+      NUXT_BACKEND_TOKEN: ${AUDIT_API_TOKEN:?Set AUDIT_API_TOKEN in .env}
+      # Port is published on host loopback only (see ports below); inside the
+      # container the peer is the Docker gateway, so the BFF trusts the proxy
+      # but keeps Host allowlist, same-origin and session checks.
+      NUXT_TRUST_PROXY: "1"
+      # Empty = localhost only. LAN IP/hostname = intranet (plain HTTP).
+      # Domain = world-facing, requires WORKSPACE_PASSWORD + TLS proxy.
+      NUXT_PUBLIC_HOST: ${NUXT_PUBLIC_HOST:-}
+      WORKSPACE_PASSWORD: ${WORKSPACE_PASSWORD:-}
     ports:
-      - "${UI_PORT:-8501}:8501"
-    command:
-      - streamlit
-      - run
-      - app.py
-      - --server.port=8501
-      - --server.address=0.0.0.0
-      - --server.headless=true
+      - "${WORKSPACE_BIND:-127.0.0.1}:${WORKSPACE_PORT:-3000}:3000"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8501/_stcore/health"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)})"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 60s
+      start_period: 30s
+    security_opt: [no-new-privileges:true]
 
   worker-pdf:
-    build: .
+    build: ./backend
     restart: unless-stopped
     depends_on:
       migrate:
@@ -175,7 +167,7 @@ services:
       start_period: 60s
 
   worker-llm:
-    build: .
+    build: ./backend
     restart: unless-stopped
     depends_on:
       migrate:
