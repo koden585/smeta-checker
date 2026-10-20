@@ -1,7 +1,6 @@
 <script setup lang="ts">
 const props = defineProps<{ active?: 'projects' | 'create' }>()
 const onProjects = computed(() => props.active !== 'create')
-const onCreate = computed(() => props.active === 'create')
 </script>
 
 <template>
@@ -20,9 +19,6 @@ const onCreate = computed(() => props.active === 'create')
         :aria-current="onProjects ? 'page' : undefined"
         icon="i-lucide-layout-dashboard"
         >Проекты</UButton
-      >
-      <UButton v-if="!onCreate" to="/upload" icon="i-lucide-plus" color="neutral" variant="outline"
-        >Новый проект</UButton
       >
       <UColorModeButton
         class="theme-button"

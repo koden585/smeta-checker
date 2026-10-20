@@ -241,7 +241,6 @@ onBeforeUnmount(() => {
         <UIcon name="i-lucide-folder-open" class="dashboard-empty-icon" aria-hidden="true" />
         <h2>Пока нет проектов</h2>
         <p class="muted">Создайте проект и загрузите первую ведомость и проектные PDF.</p>
-        <UButton to="/upload" icon="i-lucide-plus" color="primary">Новый проект</UButton>
       </div>
 
       <template v-else>
