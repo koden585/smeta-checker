@@ -43,8 +43,8 @@ const visible = computed(() => !props.search || matches(props.node))
         :aria-expanded="open"
         @click="open = !open"
       >
-        {{ open ? '▾' : '▸' }}</button
-      ><span v-else class="outline-toggle"></span
+        <UIcon :name="open ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" /></button
+      ><span v-else class="outline-toggle" aria-hidden="true"></span
       ><button
         class="outline-label"
         :class="{ active: node.id === selected }"
@@ -81,33 +81,39 @@ const visible = computed(() => !props.search || matches(props.node))
   align-items: start;
 }
 .outline-toggle {
-  flex: 0 0 15px;
-  padding-top: 8px;
+  flex: 0 0 44px;
+  min-height: 44px;
   background: none;
   border: 0;
-  font-size: 13px;
-  color: var(--text-color-muted);
+  font-size: 14px;
+  color: var(--ui-text-muted);
 }
 .outline-label {
-  font-size: 11px;
+  font-size: 14px;
   line-height: 1.5;
   text-align: left;
-  padding: 7px 6px;
+  padding: 12px 8px;
+  min-height: 44px;
   width: 100%;
-  border-left: 2px solid var(--border-color-muted);
-  color: var(--text-color-default);
+  border-left: 2px solid var(--ui-border);
+  color: var(--ui-text);
+  background: none;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
 }
 .outline-label small {
   display: block;
-  font-size: 10px;
-  color: var(--text-color-muted);
+  font-size: 14px;
+  color: var(--ui-text-muted);
   margin-top: 2px;
 }
 .outline-label.active {
-  background: var(--color-primary-50);
-  border-left-color: var(--color-primary);
+  background: var(--app-selected-bg);
+  color: var(--app-selected-text);
+  border-left-color: var(--ui-primary);
 }
 .outline-label:hover {
-  background: var(--background-color-elevated);
+  background: var(--ui-bg-muted);
 }
 </style>

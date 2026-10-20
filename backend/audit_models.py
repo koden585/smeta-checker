@@ -1,7 +1,7 @@
 """Typed domain models: VOR input, LLM evidence, audit results, settings.
 
 Pandas DataFrames and implicit dicts remain only at import/export boundaries
-(Excel/CSV parsing, API responses, Excel/Word reports). Between modules
+(Excel/CSV parsing, API responses, Word reports). Between modules
 the audit exchanges these Pydantic models; legacy dict helpers preserve the
 historical ``run_audit``/``tracking`` shapes for the UI, baseline and scripts.
 """
@@ -852,7 +852,21 @@ class AuditSettings(BaseModel):
             file_values=file_values,
             secrets=secrets,
         )
-
+        # Trust the host of the explicitly selected backend: AnyModel keys
+        # route traffic there, so requiring a second manual allowlist entry
+        # only produces a dead audit. Users who set neither key stay on the
+        # Yandex default and keep the fail-closed check for anything else.
+        if llm_api_key.strip() or llm_model.strip():
+            try:
+                selected_host = (
+                    urlparse(str(llm_base_url)).hostname or ""
+                ).lower()
+            except ValueError:
+                selected_host = ""
+            if selected_host and selected_host not in {
+                host.lower() for host in llm_hosts
+            }:
+                llm_hosts = (*llm_hosts, selected_host)
         return cls(
             yandex_cloud_folder=get_setting(
                 "YANDEX_CLOUD_FOLDER", "", file_values=file_values, secrets=secrets

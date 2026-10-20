@@ -149,17 +149,16 @@ def versions():
 
 def summarize(saved, inputs):
     import docx
-    import pandas as pd
 
-    from export_checks import exports_match
+    from export_checks import word_matches, word_status_for
 
     table, tracking = saved["df"], saved["tracking"]
-    excel = pd.read_excel(io.BytesIO(saved["excel_bytes"]))
     word = docx.Document(io.BytesIO(saved["word_bytes"]))
     cases = []
-    for idx, ((_, row), track) in enumerate(zip(table.iterrows(), tracking), 1):
+    for (_, row), track in zip(table.iterrows(), tracking):
+        position = str(row.iloc[0]).removesuffix(".0")
         cases.append({
-            "position": str(row.iloc[0]).removesuffix(".0"),
+            "position": position,
             "work": track.get("work_name", ""),
             "status": str(row["Статус аудита"]),
             "page": str(row["[ПД] Фактическая страница"]),
@@ -175,10 +174,8 @@ def summarize(saved, inputs):
             "contexts": int(track.get("contexts", 0)),
             "evidence": track.get("evidence", []),
             "details": str(row["Детали расхождений"]),
-            "excel_status": excel.loc[excel["№"].astype(str).str.removesuffix(".0")
-                                      == str(row.iloc[0]).removesuffix(".0"),
-                                      "Статус аудита"].iloc[0],
-            "exports_match": bool(exports_match(excel, word, row, track)),
+            "word_status": word_status_for(word, position),
+            "exports_match": bool(word_matches(word, row, track)),
         })
     return {
         "positions": len(cases),
@@ -244,7 +241,7 @@ def compare_summaries(old, new):
     fields = ("status", "page", "found_volume", "found_unit", "work_found",
               "volume_confirmed", "unit_confirmed", "comment_confirmed",
               "search_complete", "requests", "contexts",
-              "evidence", "excel_status", "exports_match")
+              "evidence", "word_status", "exports_match")
     for before, after in zip(old["cases"], new["cases"]):
         if before["position"] != after["position"] or before["work"] != after["work"]:
             raise ValueError("Position order changed; inputs are not comparable")

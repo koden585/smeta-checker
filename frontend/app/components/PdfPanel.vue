@@ -250,16 +250,15 @@ defineExpose({
 </script>
 <template>
   <div class="pdf-container">
-    <div class="toolbar pane-toolbar">
+    <div class="toolbar pdf-toolbar">
       <UButton
-        size="xs"
         variant="outline"
         color="neutral"
+        icon="i-lucide-chevron-left"
         aria-label="Предыдущая страница PDF"
         :disabled="page <= 1"
         @click="changePage(page - 1)"
-        >←</UButton
-      ><UInput
+      /><UInput
         type="number"
         :model-value="page"
         :min="1"
@@ -267,34 +266,31 @@ defineExpose({
         aria-label="Физическая страница PDF"
         class="page-input"
         @change="changePage(Number(($event.target as HTMLInputElement).value))"
-      /><span class="muted">из {{ count || '…' }}</span
+      /><span class="muted pdf-count">из {{ count || '…' }}</span
       ><UButton
-        size="xs"
         variant="outline"
         color="neutral"
+        icon="i-lucide-chevron-right"
         aria-label="Следующая страница PDF"
         :disabled="page >= count"
         @click="changePage(page + 1)"
-        >→</UButton
-      ><UButton
-        size="xs"
+      /><UButton
         variant="outline"
         color="neutral"
+        icon="i-lucide-zoom-out"
         aria-label="Уменьшить PDF"
         @click="zoom = Math.max(0.5, zoom - 0.5)"
-        >⌕ −</UButton
-      ><UButton
-        size="xs"
+      /><UButton
         variant="outline"
         color="neutral"
+        icon="i-lucide-zoom-in"
         aria-label="Увеличить PDF"
         @click="zoom = Math.min(4, zoom + 0.5)"
-        >⌕ +</UButton
-      ><UButton size="xs" variant="ghost" color="neutral" @click="zoom = 1">По ширине</UButton
+      /><UButton variant="ghost" color="neutral" @click="zoom = 1">По ширине</UButton
       ><span v-if="busy" class="muted" role="status">Открываем…</span>
     </div>
     <div v-if="error" class="error-box" role="alert">
-      {{ error }} <UButton size="xs" @click="open">Повторить</UButton>
+      {{ error }} <UButton @click="open">Повторить</UButton>
     </div>
     <div ref="scroll" class="pdf-scroll">
       <div
@@ -339,18 +335,26 @@ defineExpose({
   flex: 1;
   min-height: 0;
 }
+.pdf-toolbar {
+  min-height: 44px;
+  font-size: 14px;
+}
+.pdf-count {
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
 .pdf-scroll {
   overflow: auto;
   flex: 1;
   min-height: 100px;
-  background: var(--background-color-elevated);
+  background: var(--ui-bg-muted);
   padding: 12px;
 }
 .pdf-stage {
   position: relative;
   margin: 0 auto;
-  background: var(--background-color-default);
-  box-shadow: var(--shadow-panel);
+  background: var(--ui-bg);
+  border: 1px solid var(--ui-border);
   --user-unit: 1;
   --total-scale-factor: var(--scale-factor);
   --min-font-size: 1;
@@ -378,22 +382,19 @@ defineExpose({
   transform-origin: 0 0;
 }
 .textLayer :deep(::selection) {
-  background: var(--color-info-200);
+  background: color-mix(in srgb, var(--ui-info) 35%, transparent);
 }
 .pdf-mark,
 .pdf-note {
   position: absolute;
-  background: color-mix(in srgb, var(--color-warning-300) 40%, transparent);
-  outline: 1px solid var(--color-warning-500);
+  background: color-mix(in srgb, var(--color-amber-400) 22%, transparent);
+  outline: 2px solid var(--color-amber-700);
+  outline-offset: -2px;
   pointer-events: none;
   z-index: 3;
 }
 .pdf-mark.quantity {
-  outline: 2px solid var(--color-warning-600);
-}
-.pdf-note {
-  background: color-mix(in srgb, var(--color-warning-300) 30%, transparent);
-  outline: 2px solid var(--color-warning-500);
+  outline-width: 3px;
 }
 .pending {
   outline-style: dashed;
@@ -406,6 +407,6 @@ defineExpose({
   touch-action: none;
 }
 .page-input {
-  width: 66px;
+  width: 72px;
 }
 </style>

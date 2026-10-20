@@ -2,7 +2,10 @@
 
 Metadata lives in PostgreSQL (migrated with Alembic); bytes live in the blob
 store and are referenced by ``blob_key``. History is append-only: reruns add
-rows, re-uploads add versions, and ``reset_for_tests`` is the only delete path.
+rows, re-uploads add versions. Documents are UUID identities; versions carry
+their own source filename and extracted metadata. Run PDF pins are relational
+(``run_pdf_versions``); VOR->PDF bindings persist per VOR version unconfirmed
+until an explicit PUT.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from storage_blobs import BlobStore
 from storage_models import (
+    Base,
     Document,
     DocumentVersion,
     PositionJob,
@@ -28,6 +32,9 @@ from storage_models import (
     Project,
     Run,
     RunArtifact,
+    RunPdfVersion,
+    VorBinding,
+    VorBindingPdf,
 )
 
 
@@ -35,6 +42,18 @@ from storage_models import (
 class ProjectRow:
     id: UUID
     name: str
+    archived: bool = False
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentRow:
+    id: UUID
+    project_id: UUID
+    kind: str
+    title: str
+    archived: bool
+    current_version_id: UUID | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +66,8 @@ class VersionRef:
     sha256: str
     blob_key: str
     size: int
+    metadata: dict[str, Any] | None = None
+    metadata_overrides: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,7 +78,9 @@ class DocumentVersionRow:
     sha256: str
     blob_key: str
     size: int
-
+    filename: str = ""
+    metadata: dict[str, Any] | None = None
+    metadata_overrides: dict[str, Any] | None = None
 
 @dataclass(frozen=True, slots=True)
 class RunRow:
@@ -130,7 +153,13 @@ class Repository:
         ):
             raise RuntimeError("reset_for_tests is restricted to test databases")
         # NOTE: never str(engine.url) — SQLAlchemy masks the password as "***".
-        downgrade(self._database_url)
+        # A downgrade cannot reconstruct filename uniqueness after independent
+        # same-named documents have been created. Only test data is reset here.
+        tables = [*Base.metadata.tables, "alembic_version"]
+        with self._engine.begin() as connection:
+            connection.exec_driver_sql(
+                "DROP TABLE IF EXISTS " + ", ".join(tables) + " CASCADE"
+            )
         migrate(self._database_url)
 
     def get_or_create_project(self, name: str) -> ProjectRow:
@@ -141,33 +170,59 @@ class Repository:
                 session.add(project)
                 session.commit()
                 session.refresh(project)
-            return ProjectRow(id=project.id, name=project.name)
+            return ProjectRow(id=project.id, name=project.name,
+                              archived=bool(project.archived),
+                              created_at=project.created_at)
 
     def create_project(self, name: str) -> ProjectRow:
+        # Independent UUID per call: name reuse never merges projects.
         with Session(self._engine) as session:
             project = Project(name=name)
             session.add(project)
             session.commit()
             session.refresh(project)
-            return ProjectRow(id=project.id, name=project.name)
+            return ProjectRow(id=project.id, name=project.name,
+                              archived=bool(project.archived),
+                              created_at=project.created_at)
 
-    def list_project_names(self) -> list[str]:
+    def update_project(
+        self, project_id: UUID, *, name: str | None = None,
+        archived: bool | None = None,
+    ) -> tuple[ProjectRow, dict[str, Any]]:
         with Session(self._engine) as session:
-            return list(
-                session.scalars(select(Project.name).order_by(Project.name)).all()
-            )
+            project = session.get(Project, project_id)
+            if project is None:
+                raise KeyError(str(project_id))
+            if name is not None:
+                project.name = name
+            if archived is not None:
+                project.archived = bool(archived)
+            session.commit()
+            session.refresh(project)
+            row = ProjectRow(id=project.id, name=project.name,
+                             archived=bool(project.archived),
+                             created_at=project.created_at)
+            return row, {"id": str(row.id), "name": row.name,
+                         "archived": row.archived, "created_at": row.created_at}
 
-    def list_projects(self) -> list[dict[str, Any]]:
+    def list_projects(self, *, archived: bool = False) -> list[dict[str, Any]]:
         with Session(self._engine) as session:
-            return [{"id": str(p.id), "name": p.name}
-                    for p in session.scalars(select(Project).order_by(Project.created_at.desc(), Project.id))]
+            rows = session.scalars(
+                select(Project).where(Project.archived == bool(archived)).order_by(
+                    Project.created_at.desc(), Project.id)
+            ).all()
+            return [{"id": str(p.id), "name": p.name,
+                     "archived": bool(p.archived), "created_at": p.created_at}
+                    for p in rows]
 
     def load_project(self, project_id: UUID) -> ProjectRow:
         with Session(self._engine) as session:
             project = session.get(Project, project_id)
             if project is None:
                 raise KeyError(str(project_id))
-            return ProjectRow(id=project.id, name=project.name)
+            return ProjectRow(id=project.id, name=project.name,
+                              archived=bool(project.archived),
+                              created_at=project.created_at)
 
     def list_versions(self, project_id: UUID) -> list[dict[str, Any]]:
         with Session(self._engine) as session:
@@ -179,9 +234,12 @@ class Repository:
                 )
             ).all()
             return [{"id": str(v.id), "project_id": str(d.project_id),
-                     "document_id": str(d.id), "filename": d.filename, "kind": d.kind,
+                     "document_id": str(d.id), "filename": v.filename, "kind": d.kind,
                      "number": v.version_no, "sha256": v.sha256, "size": v.size,
-                     "created_at": v.created_at} for d, v in rows]
+                     "created_at": v.created_at,
+                     "metadata": dict(v.metadata_ or {}),
+                     "metadata_overrides": dict(v.metadata_overrides or {})}
+                    for d, v in rows]
 
     def version_project_id(self, version_id: UUID) -> UUID:
         with Session(self._engine) as session:
@@ -192,6 +250,188 @@ class Repository:
                 raise KeyError(str(version_id))
             return value
 
+    def _document_title(self, metadata: dict[str, Any],
+                        overrides: dict[str, Any] | None, filename: str) -> str:
+        merged = dict(metadata or {})
+        for key, value in dict(overrides or {}).items():
+            if str(value or "").strip():
+                merged[key] = value
+            else:
+                merged.pop(key, None)
+        code = str(merged.get("document_code") or "").strip()
+        title = str(merged.get("raw_title") or "").strip()
+        combined = f"{code} {title}".strip()
+        return combined or str(filename or "")
+
+    def _present_version(self, session, version: DocumentVersion,
+                         document: Document) -> dict[str, Any]:
+        metadata = dict(version.metadata_ or {})
+        overrides = dict(version.metadata_overrides or {})
+        return {
+            "id": str(version.id), "project_id": str(document.project_id),
+            "document_id": str(document.id), "filename": version.filename,
+            "kind": document.kind, "number": version.version_no,
+            "sha256": version.sha256, "size": version.size,
+            "created_at": version.created_at, "metadata": metadata,
+            "metadata_overrides": overrides,
+        }
+
+    def _present_document(self, session, document: Document,
+                          *, include_runs: bool = True) -> dict[str, Any]:
+        versions = session.scalars(
+            select(DocumentVersion).where(
+                DocumentVersion.document_id == document.id
+            ).order_by(DocumentVersion.version_no.desc())
+        ).all()
+        presented = [self._present_version(session, v, document) for v in versions]
+        payload: dict[str, Any] = {
+            "id": str(document.id), "project_id": str(document.project_id),
+            "kind": document.kind,
+            "title": document.title or self._document_title(
+                presented[0]["metadata"] if presented else {},
+                presented[0]["metadata_overrides"] if presented else {}, ""),
+            "archived": bool(document.archived),
+            "current_version_id": (str(document.current_version_id)
+                                   if document.current_version_id else None),
+            "versions": presented,
+            "last_run": None, "pd_updated": False,
+        }
+        if include_runs:
+            payload["last_run"] = self._document_last_run(session, document)
+            payload["pd_updated"] = self._document_pd_updated(
+                session, document, presented, payload["last_run"])
+        return payload
+
+    def _document_last_run(self, session, document: Document) -> dict[str, Any] | None:
+        version_ids = set(session.scalars(select(DocumentVersion.id).where(
+            DocumentVersion.document_id == document.id)).all())
+        if not version_ids:
+            return None
+        run = session.scalar(
+            select(Run).where(Run.vor_version_id.in_(version_ids)).order_by(
+                Run.created_at.desc(), Run.id.desc()))
+        if run is None:
+            return None
+        return {"run_id": str(run.id), "created_at": run.created_at}
+
+    def _document_pd_updated(self, session, document: Document,
+                             presented: list[dict[str, Any]],
+                             last_run: dict[str, Any] | None) -> bool:
+        # Badge only; verdicts stay immutable. Compares pinned PDF versions of
+        # the last run against current PDF revisions of mapped documents.
+        if document.kind != "vor" or not last_run:
+            return False
+        try:
+            from uuid import UUID as _UUID
+            run = session.get(Run, _UUID(str(last_run["run_id"])))
+        except Exception:
+            return False
+        if run is None:
+            return False
+        pinned = {row.version_id for row in session.scalars(
+            select(RunPdfVersion).where(RunPdfVersion.run_id == run.id)).all()}
+        if not pinned:
+            mapping = dict((run.config or {}).get("pdf_versions") or {})
+            try:
+                from uuid import UUID as _UUID
+                pinned = {_UUID(str(value)) for value in mapping.values()}
+            except Exception:
+                pinned = set()
+        if not pinned:
+            return False
+        selected = pinned
+        current_ids: set[UUID] = set()
+        for pdf_version_id in selected:
+            version = session.get(DocumentVersion, pdf_version_id)
+            if version is None:
+                return True
+            pdf_doc = session.get(Document, version.document_id)
+            if pdf_doc is None:
+                return True
+            if pdf_doc.current_version_id is None:
+                continue
+            current_ids.add(pdf_doc.current_version_id)
+        return set(selected) != set(current_ids)
+
+    def _binding_selection(self, session, vor_version_id: UUID) -> list[UUID]:
+        binding = session.get(VorBinding, vor_version_id)
+        if binding is None:
+            return []
+        return [row.pdf_version_id for row in session.scalars(
+            select(VorBindingPdf).where(
+                VorBindingPdf.vor_version_id == vor_version_id)).all()]
+
+    def catalog(self, project_id: UUID,
+                *, archived: bool = False) -> list[dict[str, Any]]:
+        with Session(self._engine) as session:
+            project = session.get(Project, project_id)
+            if project is None:
+                raise KeyError(str(project_id))
+            documents = session.scalars(select(Document).where(
+                Document.project_id == project_id,
+                Document.archived == bool(archived)).order_by(
+                Document.created_at, Document.id)).all()
+            return [self._present_document(session, document) for document in documents]
+
+    def load_document(self, document_id: UUID) -> dict[str, Any]:
+        with Session(self._engine) as session:
+            document = session.get(Document, document_id)
+            if document is None:
+                raise KeyError(str(document_id))
+            return self._present_document(session, document)
+
+    def update_document(
+        self, document_id: UUID, *, title: str | None = None,
+        archived: bool | None = None, current_version_id: UUID | None = ...,
+    ) -> dict[str, Any]:
+        with Session(self._engine) as session:
+            document = session.get(Document, document_id)
+            if document is None:
+                raise KeyError(str(document_id))
+            if title is not None:
+                cleaned = str(title).strip()
+                if not cleaned:
+                    raise ValueError("title must not be blank")
+                document.title = cleaned
+            if archived is not None:
+                document.archived = bool(archived)
+            if current_version_id is not ...:
+                if current_version_id is None:
+                    document.current_version_id = None
+                else:
+                    version = session.get(DocumentVersion, current_version_id)
+                    if version is None or version.document_id != document.id:
+                        raise KeyError(str(current_version_id))
+                    document.current_version_id = version.id
+            session.commit()
+            session.refresh(document)
+            return self._present_document(session, document)
+
+    def update_version_metadata(self, version_id: UUID,
+                                fields: dict[str, str]) -> dict[str, Any]:
+        allowed = {"construction_title", "raw_title", "document_code", "pd_reference"}
+        cleaned: dict[str, str] = {}
+        for key, value in dict(fields or {}).items():
+            if key not in allowed:
+                raise ValueError(f"unknown metadata field: {key}")
+            text = str(value or "")
+            if len(text) > 2048:
+                raise ValueError(f"metadata field too long: {key}")
+            cleaned[key] = text
+        with Session(self._engine) as session:
+            version = session.get(DocumentVersion, version_id)
+            if version is None:
+                raise KeyError(str(version_id))
+            document = session.get(Document, version.document_id)
+            if document is None:
+                raise KeyError(str(version_id))
+            overrides = dict(version.metadata_overrides or {})
+            overrides.update(cleaned)
+            version.metadata_overrides = overrides
+            session.commit()
+            session.refresh(version)
+            return self._present_version(session, version, document)
+
     def persist_vor_run(
         self,
         *,
@@ -201,7 +441,6 @@ class Repository:
         tasks: list[dict[str, Any]],
         tracking: list[dict[str, Any]],
         results: list[dict[str, Any]],
-        excel_bytes: bytes,
         word_bytes: bytes,
         model_name: str,
         project_name: str = "default",
@@ -210,13 +449,14 @@ class Repository:
     ) -> UUID:
         """Persist one VOR audit as a new run; returns the run id.
 
-        Documents are identified by sha256 of their source bytes, not by
-        basename: PDFs resolve through the same pool keys the auditor used,
-        VOR bytes are read without disturbing the caller's stream position.
+        Each upload gets an independent document identity; blobs dedupe by
+        content address. VOR bytes are read without disturbing the caller's
+        stream position.
         """
         project = self.get_or_create_project(project_name)
         vor_version = self.add_document_version(
-            project.id, _read_source_bytes(vor_source), filename=vor_name, kind="vor"
+            project.id, _read_source_bytes(vor_source), filename=vor_name, kind="vor",
+            new_document=True,
         )
         pdf_versions: dict[str, DocumentVersionRow] = {}
         for key, doc in (pdf_pool or {}).items():
@@ -226,7 +466,8 @@ class Repository:
             else:
                 pdf_bytes = _read_source_bytes(source)
             pdf_versions[key] = self.add_document_version(
-                project.id, pdf_bytes, filename=key, kind="pdf"
+                project.id, pdf_bytes, filename=key, kind="pdf",
+                new_document=True,
             )
         run = self.create_run(
             project.id,
@@ -244,7 +485,6 @@ class Repository:
             tasks=tasks,
             tracking=tracking,
             results=results,
-            excel_bytes=bytes(excel_bytes),
             word_bytes=bytes(word_bytes),
             pdf_versions=pdf_versions,
         )
@@ -258,11 +498,10 @@ class Repository:
         tasks: list[dict[str, Any]],
         tracking: list[dict[str, Any]],
         results: list[dict[str, Any]],
-        excel_bytes: bytes,
         word_bytes: bytes,
         pdf_versions: dict[str, DocumentVersionRow],
     ) -> None:
-        """Write position results and Excel/Word artifacts into an open run.
+        """Write position results and the Word artifact into an open run.
 
         ``run_audit(..., run_id=...)`` reuses this for API-created runs so the
         stored payload shape stays identical across all entry points.
@@ -272,11 +511,10 @@ class Repository:
             payload = serialize_position_result(
                 task, result, track, pdf_versions)
             self.save_position_result(run_id, int(task.get("idx", 0)), payload)
-        self.save_run_report(run_id, "excel", bytes(excel_bytes))
         self.save_run_report(run_id, "word", bytes(word_bytes))
 
     def load_version(self, version_id: UUID) -> VersionRef:
-        """Load one document version with its document filename and kind."""
+        """Load one document version with its per-version filename and kind."""
         with Session(self._engine) as session:
             version = session.get(DocumentVersion, version_id)
             if version is None:
@@ -287,76 +525,415 @@ class Repository:
             return VersionRef(
                 id=version.id,
                 document_id=document.id,
-                filename=document.filename,
+                filename=version.filename,
                 kind=document.kind,
                 version_no=version.version_no,
                 sha256=version.sha256,
                 blob_key=version.blob_key,
                 size=version.size,
+                metadata=dict(version.metadata_ or {}),
+                metadata_overrides=dict(version.metadata_overrides or {}),
             )
+
+    def _extract_metadata(self, data: bytes, filename: str, kind: str) -> dict[str, Any]:
+        try:
+            from document_metadata import extract_document_metadata
+        except Exception:
+            return {}
+        try:
+            result = extract_document_metadata(bytes(data), str(filename), str(kind))
+        except Exception:
+            return {}
+        return dict(result or {})
+
+    def _append_version(self, session, document: Document, data: bytes,
+                        *, filename: str,
+                        metadata: dict[str, Any] | None) -> DocumentVersionRow:
+        from sqlalchemy import select as _select
+        blob = self._blobs.put(bytes(data))
+        existing = session.scalar(
+            _select(DocumentVersion).where(
+                DocumentVersion.document_id == document.id,
+                DocumentVersion.sha256 == blob.sha256,
+            )
+        )
+        if existing is not None:
+            return DocumentVersionRow(
+                id=existing.id,
+                document_id=document.id,
+                version_no=existing.version_no,
+                sha256=existing.sha256,
+                blob_key=existing.blob_key,
+                size=existing.size,
+                filename=existing.filename,
+                metadata=dict(existing.metadata_ or {}),
+                metadata_overrides=dict(existing.metadata_overrides or {}),
+            )
+        version_no = (
+            session.scalar(
+                _select(
+                    func.coalesce(func.max(DocumentVersion.version_no), 0)
+                ).where(DocumentVersion.document_id == document.id)
+            )
+            or 0
+        ) + 1
+        extracted = (dict(metadata) if metadata is not None
+                     else self._extract_metadata(bytes(data), filename, document.kind))
+        version = DocumentVersion(
+            document_id=document.id,
+            filename=filename,
+            version_no=version_no,
+            sha256=blob.sha256,
+            blob_key=blob.key,
+            size=blob.size,
+            metadata_=extracted,
+            metadata_overrides={},
+        )
+        session.add(version)
+        session.flush()
+        # Auto-current rule: first PDF version becomes current; every new VOR
+        # revision becomes current. Explicit PATCH may move it afterwards.
+        if document.current_version_id is None or document.kind == "vor":
+            document.current_version_id = version.id
+        if not document.title:
+            document.title = self._document_title(extracted, {}, filename)
+        return DocumentVersionRow(
+            id=version.id,
+            document_id=document.id,
+            version_no=version.version_no,
+            sha256=version.sha256,
+            blob_key=version.blob_key,
+            size=version.size,
+            filename=version.filename,
+            metadata=dict(version.metadata_ or {}),
+            metadata_overrides={},
+        )
 
     def add_document_version(
-        self, project_id: UUID, data: bytes, *, filename: str, kind: str
+        self, project_id: UUID, data: bytes, *, filename: str, kind: str,
+        document_id: UUID | None = None, new_document: bool = False,
+        metadata: dict[str, Any] | None = None,
     ) -> DocumentVersionRow:
-        blob = self._blobs.put(bytes(data))
+        """Append a version. Default creates an independent document identity.
+
+        ``document_id`` appends to that exact document (project/kind/archive
+        validated); ``new_document=True`` forces a separate identity even for
+        the same bytes. Same bytes in one document dedupe; blobs are shared.
+        """
+        payload = bytes(data)
         with Session(self._engine) as session:
-            document = session.scalar(
-                select(Document).where(
-                    Document.project_id == project_id,
-                    Document.kind == kind,
-                    Document.filename == filename,
-                )
-            )
+            project = session.get(Project, project_id)
+            if project is None:
+                raise KeyError(str(project_id))
+            if project.archived:
+                raise ValueError("project is archived")
+            document: Document | None = None
+            if document_id is not None:
+                document = session.get(Document, document_id, with_for_update=True)
+                if document is None:
+                    raise KeyError(str(document_id))
+                if document.project_id != project_id:
+                    raise ValueError("document belongs to another project")
+                if document.kind != kind:
+                    raise ValueError("document kind mismatch")
+                if bool(document.archived):
+                    raise ValueError("document is archived")
             if document is None:
-                document = Document(project_id=project_id, kind=kind, filename=filename)
+                # New-document default: never auto-merge by filename. Internal
+                # legacy callers pass explicit new_document=True as well; the
+                # HTTP layer always sends document_id or new_document=true.
+                if not new_document:
+                    raise ValueError("explicit document_id or new_document required")
+                document = Document(project_id=project_id, kind=kind, title="")
                 session.add(document)
                 session.flush()
-            existing = session.scalar(
-                select(DocumentVersion).where(
-                    DocumentVersion.document_id == document.id,
-                    DocumentVersion.sha256 == blob.sha256,
-                )
-            )
-            if existing is not None:
-                return DocumentVersionRow(
-                    id=existing.id,
-                    document_id=document.id,
-                    version_no=existing.version_no,
-                    sha256=existing.sha256,
-                    blob_key=existing.blob_key,
-                    size=existing.size,
-                )
-            version_no = (
-                session.scalar(
-                    select(
-                        func.coalesce(func.max(DocumentVersion.version_no), 0)
-                    ).where(DocumentVersion.document_id == document.id)
-                )
-                or 0
-            ) + 1
-            version = DocumentVersion(
-                document_id=document.id,
-                version_no=version_no,
-                sha256=blob.sha256,
-                blob_key=blob.key,
-                size=blob.size,
-            )
-            session.add(version)
+            row = self._append_version(session, document, payload,
+                                       filename=filename, metadata=metadata)
+            # Inherit the previous confirmed binding as UNCONFIRMED for a new
+            # VOR revision, mapped to current PDF revisions.
+            if document.kind == "vor":
+                self._inherit_binding_unconfirmed(session, document, row.id)
             session.commit()
-            session.refresh(version)
-            return DocumentVersionRow(
-                id=version.id,
-                document_id=document.id,
-                version_no=version.version_no,
-                sha256=version.sha256,
-                blob_key=version.blob_key,
-                size=version.size,
-            )
+            return row
+
+    def _inherit_binding_unconfirmed(self, session, document: Document,
+                                     new_vor_version_id: UUID) -> None:
+        from sqlalchemy import select as _select
+        if session.get(VorBinding, new_vor_version_id) is not None:
+            return
+        previous = session.scalars(
+            _select(DocumentVersion).where(
+                DocumentVersion.document_id == document.id,
+                DocumentVersion.id != new_vor_version_id,
+            ).order_by(DocumentVersion.version_no.desc())).first()
+        if previous is None:
+            return
+        old_binding = session.get(VorBinding, previous.id)
+        if old_binding is None:
+            return
+        old_pdfs = [row.pdf_version_id for row in session.scalars(
+            _select(VorBindingPdf).where(
+                VorBindingPdf.vor_version_id == previous.id)).all()]
+        remapped: list[UUID] = []
+        for pdf_version_id in old_pdfs:
+            old_pdf = session.get(DocumentVersion, pdf_version_id)
+            if old_pdf is None:
+                continue
+            pdf_doc = session.get(Document, old_pdf.document_id)
+            if pdf_doc is None:
+                continue
+            target = pdf_doc.current_version_id or old_pdf.id
+            if target not in remapped:
+                remapped.append(target)
+        session.add(VorBinding(vor_version_id=new_vor_version_id, confirmed=False))
+        session.flush()
+        for pdf_version_id in remapped:
+            session.add(VorBindingPdf(vor_version_id=new_vor_version_id,
+                                      pdf_version_id=pdf_version_id))
+
+    def delete_version(self, version_id: UUID) -> bool:
+        """Delete one unused revision. Blobs are content-addressed and stay."""
+        with Session(self._engine) as session:
+            version = session.get(DocumentVersion, version_id)
+            if version is None:
+                raise KeyError(str(version_id))
+            document = session.get(Document, version.document_id)
+            if document is None:
+                raise KeyError(str(version_id))
+            usage = session.scalar(
+                select(func.count()).select_from(Run).where(
+                    Run.vor_version_id == version.id))
+            if usage:
+                raise LookupError("version is used by runs")
+            pinned = session.scalar(
+                select(func.count()).select_from(RunPdfVersion).where(
+                    RunPdfVersion.version_id == version.id))
+            if pinned:
+                raise LookupError("version is pinned by run snapshots")
+            bound = session.scalar(
+                select(func.count()).select_from(VorBindingPdf).where(
+                    VorBindingPdf.pdf_version_id == version.id))
+            if bound:
+                raise LookupError("version is used by bindings")
+            as_binding = session.get(VorBinding, version.id) is not None
+            if as_binding and session.scalar(
+                    select(func.count()).select_from(VorBindingPdf).where(
+                        VorBindingPdf.vor_version_id == version.id)):
+                raise LookupError("version is used by bindings")
+            if document.current_version_id == version.id:
+                replacement = session.scalars(
+                    select(DocumentVersion).where(
+                        DocumentVersion.document_id == document.id,
+                        DocumentVersion.id != version.id,
+                    ).order_by(DocumentVersion.version_no.desc())).first()
+                document.current_version_id = (
+                    replacement.id if replacement is not None else None)
+            if as_binding:
+                binding = session.get(VorBinding, version.id)
+                if binding is not None:
+                    session.delete(binding)
+            session.delete(version)
+            session.commit()
+            if not document.title:
+                current = None
+                if document.current_version_id is not None:
+                    current = session.get(DocumentVersion,
+                                          document.current_version_id)
+                if current is not None:
+                    document.title = self._document_title(
+                        dict(current.metadata_ or {}),
+                        dict(current.metadata_overrides or {}), current.filename)
+                    session.commit()
+            return True
+
+    def delete_document(self, document_id: UUID) -> bool:
+        """Hard-delete only when no version is referenced anywhere."""
+        with Session(self._engine) as session:
+            document = session.get(Document, document_id)
+            if document is None:
+                raise KeyError(str(document_id))
+            versions = session.scalars(select(DocumentVersion).where(
+                DocumentVersion.document_id == document.id)).all()
+            for version in versions:
+                usage = session.scalar(
+                    select(func.count()).select_from(Run).where(
+                        Run.vor_version_id == version.id))
+                if usage:
+                    raise LookupError("document is used by runs")
+                pinned = session.scalar(
+                    select(func.count()).select_from(RunPdfVersion).where(
+                        RunPdfVersion.version_id == version.id))
+                if pinned:
+                    raise LookupError("document is pinned by run snapshots")
+                bound = session.scalar(
+                    select(func.count()).select_from(VorBindingPdf).where(
+                        (VorBindingPdf.pdf_version_id == version.id)
+                        | (VorBindingPdf.vor_version_id == version.id)))
+                if bound:
+                    raise LookupError("document is used by bindings")
+            for version in versions:
+                binding = session.get(VorBinding, version.id)
+                if binding is not None:
+                    session.delete(binding)
+                session.delete(version)
+            session.delete(document)
+            session.commit()
+            return True
+
+    def delete_project(self, project_id: UUID) -> bool:
+        """Hard-delete only when the project holds no used objects."""
+        with Session(self._engine) as session:
+            project = session.get(Project, project_id)
+            if project is None:
+                raise KeyError(str(project_id))
+            documents = session.scalars(select(Document).where(
+                Document.project_id == project.id)).all()
+            runs = session.scalar(select(func.count()).select_from(Run).where(
+                Run.project_id == project.id))
+            if runs:
+                raise LookupError("project has runs")
+            for document in documents:
+                for version in session.scalars(select(DocumentVersion).where(
+                        DocumentVersion.document_id == document.id)).all():
+                    pinned = session.scalar(
+                        select(func.count()).select_from(RunPdfVersion).where(
+                            RunPdfVersion.version_id == version.id))
+                    if pinned:
+                        raise LookupError("project has pinned snapshots")
+                    bound = session.scalar(
+                        select(func.count()).select_from(VorBindingPdf).where(
+                            (VorBindingPdf.pdf_version_id == version.id)
+                            | (VorBindingPdf.vor_version_id == version.id)))
+                    if bound:
+                        raise LookupError("project has bindings")
+            for document in documents:
+                for version in session.scalars(select(DocumentVersion).where(
+                        DocumentVersion.document_id == document.id)).all():
+                    binding = session.get(VorBinding, version.id)
+                    if binding is not None:
+                        session.delete(binding)
+                    session.delete(version)
+                session.delete(document)
+            session.delete(project)
+            session.commit()
+            return True
+
+    def get_binding(self, vor_version_id: UUID) -> dict[str, Any]:
+        with Session(self._engine) as session:
+            vor = session.get(DocumentVersion, vor_version_id)
+            if vor is None:
+                raise KeyError(str(vor_version_id))
+            document = session.get(Document, vor.document_id)
+            if document is None or document.kind != "vor":
+                raise ValueError("not a VOR version")
+            binding = session.get(VorBinding, vor_version_id)
+            selected = ([row.pdf_version_id for row in session.scalars(
+                select(VorBindingPdf).where(
+                    VorBindingPdf.vor_version_id == vor_version_id)).all()]
+                if binding is not None else [])
+            return {
+                "vor_version_id": str(vor_version_id),
+                "pdf_version_ids": [str(value) for value in selected],
+                "confirmed": bool(binding.confirmed) if binding is not None else False,
+                "candidates": [str(value) for value in
+                               self._binding_candidates(session, document, vor)],
+            }
+
+    def _normalize_code(self, value: str) -> str:
+        import re
+        return re.sub(r"[^0-9a-zа-яё]+", "", str(value or "").casefold())
+
+    def _metadata_codes(self, version: DocumentVersion) -> set[str]:
+        codes: set[str] = set()
+        source = {**dict(version.metadata_ or {}), **dict(version.metadata_overrides or {})}
+        for key in ("document_code", "pd_reference"):
+            normalized = self._normalize_code(source.get(key))
+            if normalized:
+                codes.add(normalized)
+        return codes
+
+    def _binding_candidates(self, session, document: Document,
+                            vor: DocumentVersion) -> list[UUID]:
+        wanted = self._metadata_codes(vor)
+        if not wanted:
+            return []
+        matches: list[UUID] = []
+        pdf_documents = session.scalars(select(Document).where(
+            Document.project_id == document.project_id,
+            Document.kind == "pdf", Document.archived == False)).all()  # noqa: E712
+        for pdf_doc in pdf_documents:
+            current = (session.get(DocumentVersion, pdf_doc.current_version_id)
+                       if pdf_doc.current_version_id else None)
+            if current is None:
+                continue
+            if wanted & self._metadata_codes(current) and current.id not in matches:
+                matches.append(current.id)
+        return matches
+
+    def save_binding(self, vor_version_id: UUID, pdf_version_ids: list[UUID],
+                     *, confirmed: bool) -> dict[str, Any]:
+        seen: list[UUID] = []
+        for value in pdf_version_ids or []:
+            if value not in seen:
+                seen.append(value)
+        with Session(self._engine) as session:
+            vor = session.get(DocumentVersion, vor_version_id)
+            if vor is None:
+                raise KeyError(str(vor_version_id))
+            document = session.get(Document, vor.document_id)
+            if document is None or document.kind != "vor":
+                raise ValueError("not a VOR version")
+            if bool(document.archived):
+                raise ValueError("document is archived")
+            project = session.get(Project, document.project_id)
+            if project is None or bool(project.archived):
+                raise ValueError("project is archived")
+            pdf_docs: list[UUID] = []
+            for pdf_version_id in seen:
+                pdf_version = session.get(DocumentVersion, pdf_version_id)
+                if pdf_version is None:
+                    raise KeyError(str(pdf_version_id))
+                pdf_doc = session.get(Document, pdf_version.document_id)
+                if pdf_doc is None or pdf_doc.kind != "pdf":
+                    raise ValueError("binding target is not a PDF version")
+                if pdf_doc.project_id != document.project_id:
+                    raise ValueError("binding crosses projects")
+                if bool(pdf_doc.archived):
+                    raise ValueError("PDF document is archived")
+                if pdf_doc.id in pdf_docs:
+                    raise ValueError("duplicate PDF document in binding")
+                pdf_docs.append(pdf_doc.id)
+            binding = session.get(VorBinding, vor_version_id)
+            if binding is None:
+                binding = VorBinding(vor_version_id=vor_version_id,
+                                     confirmed=bool(confirmed))
+                session.add(binding)
+            else:
+                binding.confirmed = bool(confirmed)
+            session.flush()
+            for row in session.scalars(select(VorBindingPdf).where(
+                    VorBindingPdf.vor_version_id == vor_version_id)).all():
+                session.delete(row)
+            session.flush()
+            for pdf_version_id in seen:
+                session.add(VorBindingPdf(vor_version_id=vor_version_id,
+                                          pdf_version_id=pdf_version_id))
+            session.commit()
+            return self.get_binding(vor_version_id)
 
     def create_run(
-        self, project_id: UUID, vor_version_id: UUID, config: dict[str, Any]
+        self, project_id: UUID, vor_version_id: UUID, config: dict[str, Any],
+        pdf_pins: dict[str, UUID] | None = None,
     ) -> RunRow:
         with Session(self._engine) as session:
+            vor = session.get(DocumentVersion, vor_version_id)
+            if vor is None:
+                raise KeyError(str(vor_version_id))
+            document = session.get(Document, vor.document_id)
+            if document is None or document.kind != "vor":
+                raise ValueError("not a VOR version")
+            if document.project_id != project_id:
+                raise ValueError("version belongs to another project")
             run = Run(
                 project_id=project_id,
                 vor_version_id=vor_version_id,
@@ -364,6 +941,18 @@ class Repository:
                 status="running",
             )
             session.add(run)
+            session.flush()
+            for source_key, version_id in dict(pdf_pins or {}).items():
+                pdf_version = session.get(DocumentVersion, version_id)
+                if pdf_version is None:
+                    raise KeyError(str(version_id))
+                pdf_doc = session.get(Document, pdf_version.document_id)
+                if pdf_doc is None or pdf_doc.kind != "pdf":
+                    raise ValueError("pinned version is not a PDF")
+                if pdf_doc.project_id != project_id:
+                    raise ValueError("pinned version belongs to another project")
+                session.add(RunPdfVersion(run_id=run.id, source_key=str(source_key),
+                                          version_id=pdf_version.id))
             session.commit()
             session.refresh(run)
             return RunRow(
@@ -373,6 +962,11 @@ class Repository:
                 status=run.status,
                 created_at=run.created_at,
             )
+
+    def run_pinned_versions(self, run_id: UUID) -> dict[str, UUID]:
+        with Session(self._engine) as session:
+            return {str(row.source_key): row.version_id for row in session.scalars(
+                select(RunPdfVersion).where(RunPdfVersion.run_id == run_id)).all()}
 
     def update_run_config(self, run_id: UUID, patch: dict[str, Any]) -> None:
         """Merge ``patch`` into the stored run config (metrics, timings)."""
@@ -661,7 +1255,7 @@ class Repository:
             PositionResult.run_id, func.count().label("count"),
         ).where(PositionResult.run_id.in_(select(page.c.id))).group_by(PositionResult.run_id).subquery()
         query = select(
-            page, Document.filename, jobs.c.queue, jobs.c.status.label("job_status"),
+            page, DocumentVersion.filename, jobs.c.queue, jobs.c.status.label("job_status"),
             jobs.c.count.label("job_count"), results.c.count.label("result_count"),
         ).join(DocumentVersion, DocumentVersion.id == page.c.vor_version_id).join(
             Document, Document.id == DocumentVersion.document_id,
@@ -710,7 +1304,6 @@ class Repository:
             if run is None:
                 raise KeyError(str(run_id))
             version = session.get(DocumentVersion, run.vor_version_id)
-            document = session.get(Document, version.document_id) if version else None
             results = session.scalars(
                 select(PositionResult)
                 .where(PositionResult.run_id == run_id)
@@ -722,7 +1315,7 @@ class Repository:
                 "status": run.status,
                 "config": dict(run.config or {}),
                 "vor_version_id": run.vor_version_id,
-                "vor_filename": document.filename if document else "",
+                "vor_filename": version.filename if version else "",
                 "vor_sha256": version.sha256 if version else "",
                 "results": [dict(item.result) for item in results],
                 "indexed_results": [{"position_index": item.position_index,

@@ -104,7 +104,6 @@ def _chat_completion_text(response):
     content = getattr(message, "content", None)
     return content if isinstance(content, str) else ""
 
-
 def audit_position_hybrid(
     text_index,
     target_indices,

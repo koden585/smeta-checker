@@ -9,10 +9,33 @@ const backend = useBackend(),
   selected = ref(''),
   offset = ref(0),
   error = ref(''),
-  busy = ref(true)
+  busy = ref(true),
+  renaming = ref(false),
+  renamingName = ref(''),
+  renamingBusy = ref(false)
+const projectName = computed(() => projects.value.find((p) => p.id === selected.value)?.name || '')
 let epoch = 0
 let active = true
 let timer: ReturnType<typeof setTimeout> | undefined
+function startRename() {
+  renamingName.value = projectName.value
+  renaming.value = true
+}
+async function saveRename() {
+  const name = renamingName.value.trim()
+  if (!name || !selected.value || renamingBusy.value) return
+  renamingBusy.value = true
+  try {
+    const renamed = await backend.renameProject(selected.value, name)
+    const project = projects.value.find((p) => p.id === selected.value)
+    if (project) project.name = renamed.name
+    renaming.value = false
+  } catch (e) {
+    error.value = readableError(e)
+  } finally {
+    renamingBusy.value = false
+  }
+}
 function changePage(delta: number) {
   offset.value = Math.max(0, offset.value + delta)
   loadRuns()
@@ -50,10 +73,12 @@ watch(selected, (id) => {
 })
 async function initialize() {
   busy.value = true
-  error.value = ''
   try {
     await backend.connect()
     projects.value = await backend.projects()
+    const requested = typeof route.query.project === 'string' ? route.query.project : ''
+    if (requested && !projects.value.some((project) => project.id === requested))
+      projects.value.push(await backend.project(requested))
     if (!active) return
     const id = projects.value.some((p) => p.id === route.query.project)
       ? String(route.query.project)
@@ -74,56 +99,220 @@ onBeforeUnmount(() => {
 })
 </script>
 <template>
-  <main class="shell">
-    <header class="topbar">
-      <NuxtLink to="/" class="brand">КД<span>ФП</span> · Проверка ВОР</NuxtLink
-      ><UButton to="/upload">Новая проверка</UButton>
-    </header>
-    <h1 class="page-title">Проверки</h1>
-    <p class="muted">Сохранённые запуски с исходными версиями документов</p>
-    <div v-if="error" class="error-box" role="alert">
-      {{ error }}
-      <UButton variant="link" @click="selected ? loadRuns() : initialize()">Повторить</UButton>
-    </div>
-    <div v-if="projects.length" class="toolbar" style="margin: 24px 0">
+  <div>
+    <WorkspaceHeader active="projects" />
+    <main id="main-content" tabindex="-1" class="shell">
+      <div class="page-heading">
+        <div>
+          <h1>Проверки</h1>
+          <div v-if="renaming" class="history-rename">
+            <UInput
+              v-model="renamingName"
+              aria-label="Новое название проекта"
+              :disabled="renamingBusy"
+              autofocus
+              @keydown.enter="saveRename"
+              @keydown.escape="renaming = false"
+            />
+            <UButton
+              icon="i-lucide-check"
+              aria-label="Сохранить название"
+              color="primary"
+              :loading="renamingBusy"
+              @click="saveRename"
+            />
+            <UButton
+              icon="i-lucide-x"
+              aria-label="Отменить переименование"
+              color="neutral"
+              variant="ghost"
+              :disabled="renamingBusy"
+              @click="renaming = false"
+            />
+          </div>
+          <p v-else class="muted history-project">
+            {{ projectName || 'Сохранённые запуски с исходными версиями документов' }}
+            <UButton
+              v-if="projectName"
+              icon="i-lucide-pencil"
+              :aria-label="`Переименовать ${projectName}`"
+              color="neutral"
+              variant="ghost"
+              size="xs"
+              @click="startRename"
+            />
+          </p>
+        </div>
+        <div class="heading-actions">
+          <UButton v-if="selected" :to="`/projects/${selected}`" variant="outline">
+            В проект
+          </UButton>
+        </div>
+      </div>
+      <div v-if="error" class="error-box" role="alert">
+        {{ error }}
+        <UButton variant="link" @click="selected ? loadRuns() : initialize()">Повторить</UButton>
+      </div>
       <USelect
+        v-if="projects.length"
         v-model="selected"
         :items="projects.map((p) => ({ label: p.name, value: p.id }))"
         aria-label="Проект истории"
-      /><UButton :to="`/upload?project=${selected}`" variant="outline">Дополнить комплект</UButton>
-    </div>
-    <p v-if="busy" class="empty" role="status">Открываем историю…</p>
-    <div v-else-if="runs.length" class="panel" style="overflow: auto">
-      <table class="results">
-        <thead>
-          <tr>
-            <th>Ведомость</th>
-            <th>Создано</th>
-            <th>Состояние</th>
-            <th>Позиций обработано</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="r in runs" :key="r.run_id">
-            <td>
-              {{ r.vor_filename }}
-              <p class="muted">{{ r.run_id.slice(0, 8) }}</p>
-            </td>
-            <td>{{ r.created_at ? new Date(r.created_at).toLocaleString('ru-RU') : '—' }}</td>
-            <td>{{ runLabel(r.status) }}</td>
-            <td>{{ r.done + r.failed }} / {{ r.total ?? '…' }}</td>
-            <td>
-              <UButton variant="link" :to="`/audits/${r.run_id}`">Открыть проверку →</UButton>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <p v-else class="empty">Сохранённых проверок пока нет. Загрузите ВОР и проектные PDF.</p>
-    <div v-if="offset || runs.length === 50" class="toolbar" style="margin-top: 20px">
-      <UButton :disabled="offset === 0" @click="changePage(-50)">Назад</UButton
-      ><UButton :disabled="runs.length < 50" @click="changePage(50)">Далее</UButton>
-    </div>
-  </main>
+        class="project-select"
+      />
+      <p v-if="busy" class="empty" role="status">Открываем историю…</p>
+      <div v-else-if="runs.length" class="panel table-wrap" :aria-busy="busy">
+        <table class="results">
+          <thead>
+            <tr>
+              <th scope="col">Проверка</th>
+              <th scope="col">Создано</th>
+              <th scope="col">Состояние</th>
+              <th scope="col">Позиций обработано</th>
+              <th scope="col"><span class="visually-hidden">Действия</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="r in runs"
+              :key="r.run_id"
+              class="run-row"
+              tabindex="0"
+              role="link"
+              :aria-label="`Открыть проверку ${r.vor_filename}`"
+              @click="router.push(`/audits/${r.run_id}`)"
+              @keydown.enter="router.push(`/audits/${r.run_id}`)"
+            >
+              <td>
+                <strong class="run-name">{{ r.vor_filename }}</strong>
+                <p class="muted">{{ projectName }}</p>
+              </td>
+              <td class="numbers">
+                {{ r.created_at ? new Date(r.created_at).toLocaleString('ru-RU') : '—' }}
+              </td>
+              <td>
+                <UBadge
+                  :color="
+                    r.status === 'done' ? 'success' : r.status === 'failed' ? 'error' : 'warning'
+                  "
+                  variant="subtle"
+                >
+                  {{ runLabel(r.status) }}
+                </UBadge>
+              </td>
+              <td class="numbers">{{ r.done + r.failed }} / {{ r.total ?? '…' }}</td>
+              <td class="row-action">
+                <UButton variant="ghost" :to="`/audits/${r.run_id}`" @click.stop>
+                  Открыть проверку
+                </UButton>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div v-else class="empty empty-state">
+        <p>Сохранённых проверок пока нет. Загрузите ВОР и проектные PDF.</p>
+        <UButton to="/upload">Новая проверка</UButton>
+      </div>
+      <div v-if="offset || runs.length === 50" class="toolbar pagination">
+        <UButton :disabled="offset === 0" @click="changePage(-50)">Назад</UButton>
+        <UButton :disabled="runs.length < 50" @click="changePage(50)">Далее</UButton>
+      </div>
+    </main>
+  </div>
 </template>
+<style scoped>
+.heading-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.history-project {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.history-rename {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.project-select {
+  max-width: 420px;
+  margin: 20px 0;
+}
+.table-wrap {
+  overflow: auto;
+}
+.run-name {
+  display: block;
+  color: var(--ui-text-highlighted);
+  overflow-wrap: anywhere;
+}
+.numbers {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.row-action {
+  text-align: right;
+  white-space: nowrap;
+}
+.run-row {
+  cursor: pointer;
+}
+.pagination {
+  margin-top: 20px;
+}
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: flex-start;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+@media (max-width: 700px) {
+  .results thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .results tbody {
+    display: block;
+  }
+  .results tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    padding: 20px 16px;
+  }
+  .results td {
+    display: block;
+    padding: 0;
+    border: 0;
+  }
+  .results td:first-child,
+  .row-action {
+    grid-column: 1 / -1;
+  }
+  .results tbody tr + tr {
+    border-top: 1px solid var(--ui-border);
+  }
+  .row-action {
+    text-align: start;
+  }
+  .row-action > :first-child {
+    width: 100%;
+  }
+}
+</style>

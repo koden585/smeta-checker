@@ -54,13 +54,41 @@ export const zAuditStatusResponse = z.object({
 });
 
 /**
+ * BindingDTO
+ */
+export const zBindingDto = z.object({
+    candidates: z.array(z.string()),
+    confirmed: z.boolean(),
+    pdf_version_ids: z.array(z.string()),
+    vor_version_id: z.string()
+});
+
+/**
+ * BindingPut
+ */
+export const zBindingPut = z.object({
+    confirmed: z.boolean().optional().default(false),
+    pdf_version_ids: z.array(z.string()).optional()
+});
+
+/**
  * Body_upload_document_api_v1_documents_post
  */
 export const zBodyUploadDocumentApiV1DocumentsPost = z.object({
+    document_id: z.string().nullish(),
     file: z.string(),
     kind: z.string().regex(/^(vor|pdf)$/),
-    project: z.string().min(1).max(256),
-    project_id: z.string().nullish()
+    new_document: z.boolean().optional().default(false),
+    project_id: z.string()
+});
+
+/**
+ * DocumentPatch
+ */
+export const zDocumentPatch = z.object({
+    archived: z.boolean().nullish(),
+    current_version_id: z.string().nullish(),
+    title: z.string().max(2048).nullish()
 });
 
 /**
@@ -147,6 +175,27 @@ export const zHighlightDto = z.object({
 });
 
 /**
+ * MetadataSourceDTO
+ */
+export const zMetadataSourceDto = z.object({
+    cell: z.string().optional().default(''),
+    raw: z.string().optional().default(''),
+    sheet: z.string().optional().default('')
+});
+
+/**
+ * DocumentMetadataDTO
+ */
+export const zDocumentMetadataDto = z.object({
+    construction_title: z.string().optional().default(''),
+    document_code: z.string().optional().default(''),
+    extractor_version: z.string().optional().default(''),
+    pd_reference: z.string().optional().default(''),
+    raw_title: z.string().optional().default(''),
+    sources: z.record(z.string(), zMetadataSourceDto).optional()
+});
+
+/**
  * PdfRegionDTO
  */
 export const zPdfRegionDto = z.object({
@@ -198,8 +247,18 @@ export const zProjectCreate = z.object({
  * ProjectDTO
  */
 export const zProjectDto = z.object({
+    archived: z.boolean().optional().default(false),
+    created_at: z.iso.datetime().nullish(),
     id: z.string(),
     name: z.string()
+});
+
+/**
+ * ProjectUpdate
+ */
+export const zProjectUpdate = z.object({
+    archived: z.boolean().nullish(),
+    name: z.string().min(1).max(256).nullish()
 });
 
 /**
@@ -391,10 +450,27 @@ export const zVersionDto = z.object({
     filename: z.string(),
     id: z.string(),
     kind: z.enum(['vor', 'pdf']),
+    metadata: zDocumentMetadataDto,
+    metadata_overrides: z.record(z.string(), z.string()),
     number: z.int(),
     project_id: z.string(),
     sha256: z.string(),
     size: z.int()
+});
+
+/**
+ * DocumentDTO
+ */
+export const zDocumentDto = z.object({
+    archived: z.boolean().optional().default(false),
+    current_version_id: z.string().nullish(),
+    id: z.string(),
+    kind: z.enum(['vor', 'pdf']),
+    last_run: zRunDto.nullish(),
+    pd_updated: z.boolean().optional().default(false),
+    project_id: z.string(),
+    title: z.string(),
+    versions: z.array(zVersionDto)
 });
 
 /**
@@ -405,6 +481,20 @@ export const zSummaryDto = z.object({
     project: zProjectDto,
     queues: z.record(z.string(), z.int()),
     run: zRunDto
+});
+
+/**
+ * VersionDeletedDTO
+ */
+export const zVersionDeletedDto = z.object({
+    deleted: z.boolean()
+});
+
+/**
+ * VersionMetadataPatch
+ */
+export const zVersionMetadataPatch = z.object({
+    fields: z.record(z.string(), z.string()).optional()
 });
 
 /**
@@ -540,6 +630,35 @@ export const zPreflightDocumentsApiV1DocumentsPreflightPostBody = zAuditCreateRe
  */
 export const zPreflightDocumentsApiV1DocumentsPreflightPostResponse = zPreflightResponse;
 
+export const zUpdateDocumentApiV1DocumentsDocumentIdPatchBody = zDocumentPatch;
+
+export const zUpdateDocumentApiV1DocumentsDocumentIdPatchPath = z.object({
+    document_id: z.string()
+});
+
+/**
+ * Successful Response
+ */
+export const zUpdateDocumentApiV1DocumentsDocumentIdPatchResponse = zDocumentDto;
+
+export const zDeleteDocumentApiV1DocumentsDocumentIdDetailDeletePath = z.object({
+    document_id: z.string()
+});
+
+/**
+ * Successful Response
+ */
+export const zDeleteDocumentApiV1DocumentsDocumentIdDetailDeleteResponse = zDocumentDto;
+
+export const zDocumentDetailApiV1DocumentsDocumentIdDetailGetPath = z.object({
+    document_id: z.string()
+});
+
+/**
+ * Successful Response
+ */
+export const zDocumentDetailApiV1DocumentsDocumentIdDetailGetResponse = zDocumentDto;
+
 export const zContentApiV1DocumentsVersionIdContentGetPath = z.object({
     version_id: z.string()
 });
@@ -561,6 +680,17 @@ export const zFormattingApiV1DocumentsVersionIdFormatChecksPostQuery = z.object(
  */
 export const zFormattingApiV1DocumentsVersionIdFormatChecksPostResponse = zFormatDto;
 
+export const zUpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchBody = zVersionMetadataPatch;
+
+export const zUpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchPath = z.object({
+    version_id: z.string()
+});
+
+/**
+ * Successful Response
+ */
+export const zUpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchResponse = zVersionDto;
+
 export const zStructureApiV1DocumentsVersionIdStructureGetPath = z.object({
     version_id: z.string()
 });
@@ -569,6 +699,39 @@ export const zStructureApiV1DocumentsVersionIdStructureGetPath = z.object({
  * Successful Response
  */
 export const zStructureApiV1DocumentsVersionIdStructureGetResponse = zStructureDto;
+
+export const zDeleteVersionApiV1DocumentsVersionIdVersionDeletePath = z.object({
+    version_id: z.string()
+});
+
+/**
+ * Successful Response
+ */
+export const zDeleteVersionApiV1DocumentsVersionIdVersionDeleteResponse = zVersionDeletedDto;
+
+export const zGetBindingsApiV1DocumentsVorVersionIdBindingsGetPath = z.object({
+    vor_version_id: z.string()
+});
+
+/**
+ * Successful Response
+ */
+export const zGetBindingsApiV1DocumentsVorVersionIdBindingsGetResponse = zBindingDto;
+
+export const zPutBindingsApiV1DocumentsVorVersionIdBindingsPutBody = zBindingPut;
+
+export const zPutBindingsApiV1DocumentsVorVersionIdBindingsPutPath = z.object({
+    vor_version_id: z.string()
+});
+
+/**
+ * Successful Response
+ */
+export const zPutBindingsApiV1DocumentsVorVersionIdBindingsPutResponse = zBindingDto;
+
+export const zProjectsApiV1ProjectsGetQuery = z.object({
+    archived: z.boolean().optional().default(false)
+});
 
 /**
  * Response Projects Api V1 Projects Get
@@ -583,6 +746,35 @@ export const zCreateProjectApiV1ProjectsPostBody = zProjectCreate;
  * Successful Response
  */
 export const zCreateProjectApiV1ProjectsPostResponse = zProjectDto;
+
+export const zDeleteProjectApiV1ProjectsProjectIdDeletePath = z.object({
+    project_id: z.string()
+});
+
+/**
+ * Successful Response
+ */
+export const zDeleteProjectApiV1ProjectsProjectIdDeleteResponse = zProjectDto;
+
+export const zGetProjectApiV1ProjectsProjectIdGetPath = z.object({
+    project_id: z.string()
+});
+
+/**
+ * Successful Response
+ */
+export const zGetProjectApiV1ProjectsProjectIdGetResponse = zProjectDto;
+
+export const zUpdateProjectApiV1ProjectsProjectIdPatchBody = zProjectUpdate;
+
+export const zUpdateProjectApiV1ProjectsProjectIdPatchPath = z.object({
+    project_id: z.string()
+});
+
+/**
+ * Successful Response
+ */
+export const zUpdateProjectApiV1ProjectsProjectIdPatchResponse = zProjectDto;
 
 export const zHistoryApiV1ProjectsProjectIdAuditsGetPath = z.object({
     project_id: z.string()
@@ -599,6 +791,21 @@ export const zHistoryApiV1ProjectsProjectIdAuditsGetQuery = z.object({
  * Successful Response
  */
 export const zHistoryApiV1ProjectsProjectIdAuditsGetResponse = z.array(zRunDto);
+
+export const zCatalogApiV1ProjectsProjectIdCatalogGetPath = z.object({
+    project_id: z.string()
+});
+
+export const zCatalogApiV1ProjectsProjectIdCatalogGetQuery = z.object({
+    archived: z.boolean().optional().default(false)
+});
+
+/**
+ * Response Catalog Api V1 Projects  Project Id  Catalog Get
+ *
+ * Successful Response
+ */
+export const zCatalogApiV1ProjectsProjectIdCatalogGetResponse = z.array(zDocumentDto);
 
 export const zDocumentsApiV1ProjectsProjectIdDocumentsGetPath = z.object({
     project_id: z.string()

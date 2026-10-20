@@ -7,9 +7,7 @@ const backend = useBackend(),
   locked = ref(true),
   checking = ref(true)
 const back = computed(() =>
-  typeof route.query.back === 'string' && route.query.back.startsWith('/')
-    ? route.query.back
-    : '/history',
+  typeof route.query.back === 'string' && route.query.back.startsWith('/') ? route.query.back : '/',
 )
 async function login() {
   if (busy.value) return
@@ -39,24 +37,56 @@ onMounted(async () => {
 })
 </script>
 <template>
-  <main class="shell" style="max-width: 460px">
-    <h1 class="page-title">КДФП · Проверка ВОР</h1>
-    <p v-if="checking" class="empty">Проверяем доступ…</p>
-    <template v-else>
-      <p v-if="error" class="error-box" role="alert">{{ error }}</p>
-      <form v-if="locked && !error" class="panel" style="padding: 24px" @submit.prevent="login">
-        <h2>Вход</h2>
-        <p class="muted">Этот стенд защищён общим паролем.</p>
-        <UInput
-          v-model="password"
-          type="password"
-          placeholder="Пароль"
-          aria-label="Пароль стенда"
-          autocomplete="current-password"
-          style="margin: 16px 0"
-        />
-        <UButton type="submit" :loading="busy" :disabled="!password">Войти</UButton>
-      </form>
-    </template>
-  </main>
+  <div>
+    <WorkspaceHeader />
+    <main id="main-content" class="shell login-shell" tabindex="-1">
+      <section class="login-content">
+        <div class="page-heading">
+          <div>
+            <h1>Вход в рабочее пространство</h1>
+            <p class="muted">Проверка ВОР и сохранённые результаты доступны по паролю стенда.</p>
+          </div>
+        </div>
+        <p v-if="checking" class="empty" role="status">Проверяем доступ…</p>
+        <template v-else>
+          <p v-if="error" class="error-box" role="alert">{{ error }}</p>
+          <form v-if="locked" class="panel login-form" @submit.prevent="login">
+            <UFormField label="Пароль стенда" name="password" required>
+              <UInput
+                v-model="password"
+                type="password"
+                aria-label="Пароль стенда"
+                autocomplete="current-password"
+                :disabled="busy"
+                class="w-full"
+              />
+            </UFormField>
+            <UButton type="submit" :loading="busy" :disabled="!password || busy" block>
+              Войти
+            </UButton>
+          </form>
+        </template>
+      </section>
+    </main>
+  </div>
 </template>
+
+<style scoped>
+.login-content {
+  max-width: 460px;
+  margin: 64px auto;
+}
+.login-form {
+  padding: 28px;
+  display: grid;
+  gap: 24px;
+}
+@media (max-width: 640px) {
+  .login-content {
+    margin-block: 32px;
+  }
+  .login-form {
+    padding: 20px;
+  }
+}
+</style>

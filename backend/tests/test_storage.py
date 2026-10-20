@@ -90,18 +90,21 @@ class RepositoryTests(unittest.TestCase):
             repo = self._open(FileBlobStore(tmp))
             project = repo.create_project("ИГДИ")
             vor_version = repo.add_document_version(
-                project.id, b"vor-bytes", filename="vor.xlsx", kind="vor"
+                project.id, b"vor-bytes", filename="vor.xlsx", kind="vor",
+                new_document=True,
             )
             pdf_version = repo.add_document_version(
-                project.id, b"pdf-bytes", filename="project.pdf", kind="pdf"
+                project.id, b"pdf-bytes", filename="project.pdf", kind="pdf",
+                new_document=True,
             )
             run = repo.create_run(
                 project.id,
                 vor_version.id,
                 {"pdf_version_id": str(pdf_version.id), "model": "qwen-test"},
+                pdf_pins={"project.pdf": pdf_version.id},
             )
             repo.save_position_result(run.id, 0, _ok_result())
-            repo.save_run_report(run.id, "excel", b"excel-bytes")
+            repo.save_run_report(run.id, "word", b"word-bytes")
             repo.finish_run(run.id, "done")
 
             fresh = open_repository(_postgres_url(), blob_store=FileBlobStore(tmp))
@@ -117,14 +120,17 @@ class RepositoryTests(unittest.TestCase):
             self.assertEqual(
                 loaded["results"][0]["evidence"][0]["quote"], "Copper cable"
             )
-            self.assertEqual(fresh.load_run_report(run.id, "excel"), b"excel-bytes")
+            self.assertEqual(fresh.load_run_report(run.id, "word"), b"word-bytes")
+            self.assertEqual(fresh.run_pinned_versions(run.id),
+                             {"project.pdf": pdf_version.id})
 
     def test_rerun_appends_new_run_without_touching_history(self):
         with tempfile.TemporaryDirectory(prefix="smeta-blobs-") as tmp:
             repo = self._open(FileBlobStore(tmp))
             project = repo.create_project("ИГДИ")
             vor_version = repo.add_document_version(
-                project.id, b"vor-bytes", filename="vor.xlsx", kind="vor"
+                project.id, b"vor-bytes", filename="vor.xlsx", kind="vor",
+                new_document=True,
             )
             first = repo.create_run(project.id, vor_version.id, {})
             repo.save_position_result(first.id, 0, _ok_result())
@@ -138,19 +144,22 @@ class RepositoryTests(unittest.TestCase):
             self.assertEqual(len(loaded["results"]), 1)
             self.assertEqual(loaded["results"][0]["status"], "ОК")
 
-    def test_reupload_creates_new_version_with_hash_identity(self):
+    def test_reupload_explicit_document_appends_version_with_hash_identity(self):
         with tempfile.TemporaryDirectory(prefix="smeta-blobs-") as tmp:
             repo = self._open(FileBlobStore(tmp))
             project = repo.create_project("ИГДИ")
             first = repo.add_document_version(
-                project.id, b"bytes-v1", filename="vor.xlsx", kind="vor"
+                project.id, b"bytes-v1", filename="vor.xlsx", kind="vor",
+                new_document=True,
             )
             same = repo.add_document_version(
-                project.id, b"bytes-v1", filename="vor.xlsx", kind="vor"
+                project.id, b"bytes-v1", filename="vor.xlsx", kind="vor",
+                document_id=first.document_id,
             )
             self.assertEqual(same.id, first.id)
             second = repo.add_document_version(
-                project.id, b"bytes-v2", filename="vor.xlsx", kind="vor"
+                project.id, b"bytes-v2", filename="vor.xlsx", kind="vor",
+                document_id=first.document_id,
             )
             self.assertEqual(second.document_id, first.document_id)
             self.assertNotEqual(second.id, first.id)
@@ -158,15 +167,17 @@ class RepositoryTests(unittest.TestCase):
             self.assertEqual(second.version_no, first.version_no + 1)
             self.assertEqual(len(second.sha256), 64)
 
-    def test_same_bytes_share_blob_across_documents(self):
+    def test_same_bytes_independent_documents_share_blob(self):
         with tempfile.TemporaryDirectory(prefix="smeta-blobs-") as tmp:
             repo = self._open(FileBlobStore(tmp))
             project = repo.create_project("ИГДИ")
             first = repo.add_document_version(
-                project.id, b"same-bytes", filename="a/vor.xlsx", kind="vor"
+                project.id, b"same-bytes", filename="a/vor.xlsx", kind="vor",
+                new_document=True,
             )
             second = repo.add_document_version(
-                project.id, b"same-bytes", filename="b/vor.xlsx", kind="vor"
+                project.id, b"same-bytes", filename="b/vor.xlsx", kind="vor",
+                new_document=True,
             )
             self.assertNotEqual(first.document_id, second.document_id)
             self.assertEqual(first.sha256, second.sha256)
@@ -181,6 +192,9 @@ class MigrationTests(unittest.TestCase):
         "runs",
         "position_results",
         "run_artifacts",
+        "vor_bindings",
+        "vor_binding_pdfs",
+        "run_pdf_versions",
     }
 
     def test_upgrade_head_creates_all_tables(self):
@@ -328,10 +342,6 @@ class AuditPersistenceTests(unittest.TestCase):
             self.assertEqual(
                 loaded["results"][0]["status"],
                 outcome["results"]["vor.csv"]["df"]["Статус аудита"].iloc[0],
-            )
-            self.assertEqual(
-                repo.load_run_report(runs[0].id, "excel"),
-                outcome["results"]["vor.csv"]["excel_bytes"],
             )
             self.assertEqual(
                 repo.load_run_report(runs[0].id, "word"),

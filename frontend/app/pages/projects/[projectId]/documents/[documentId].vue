@@ -1,0 +1,1374 @@
+<script setup lang="ts">
+import type { PreflightResponse, RunDto } from '~/generated/types.gen'
+
+const backend = useBackend()
+const route = useRoute()
+const router = useRouter()
+definePageMeta({
+  key: (route) => `${route.params.projectId}:${route.params.documentId}`,
+})
+let active = true
+let documentEpoch = 0
+let bindingEpoch = 0
+let historyEpoch = 0
+
+type Backend = typeof backend
+type DocumentDetail = Awaited<ReturnType<Backend['document']>>
+type RichVersion = DocumentDetail['versions'][number]
+type Binding = Awaited<ReturnType<Backend['bindings']>>
+
+interface PdfRow {
+  id: string
+  document_id: string
+  filename: string
+  number: number
+}
+
+const projectId = computed(() => String(route.params.projectId || ''))
+const documentId = computed(() => String(route.params.documentId || ''))
+const requestedVersion = computed(() =>
+  typeof route.query.version === 'string' ? route.query.version : '',
+)
+
+const projectName = ref('')
+const projectArchived = ref(false)
+const document = ref<DocumentDetail | null>(null)
+const busy = ref(true)
+const error = ref('')
+const notice = ref('')
+
+const editingTitle = ref(false)
+const titleDraft = ref('')
+const titleBusy = ref(false)
+
+const revisionInput = ref<HTMLInputElement | null>(null)
+const uploadBusy = ref(false)
+
+const pdfCatalog = ref<PdfRow[]>([])
+const pdfCurrentMap = ref<Map<string, string>>(new Map())
+const binding = ref<Binding | null>(null)
+const selectedPdfs = ref<string[]>([])
+const linkBusy = ref(false)
+const bindingsLoaded = ref(false)
+
+const preflight = ref<PreflightResponse | null>(null)
+const preflightBusy = ref(false)
+const preflightError = ref('')
+const acknowledged = ref(false)
+const starting = ref(false)
+const startedRunId = ref('')
+let preflightEpoch = 0
+
+const metadataBusy = ref(false)
+const metadataDraft = ref<Record<string, string>>({})
+const editingMetadata = ref(false)
+function openMetadataEditor() {
+  const revision = selectedVersion.value
+  if (revision)
+    metadataDraft.value = Object.fromEntries(
+      metadataEntries(revision).map((row) => [row.key, String(row.value)]),
+    )
+  editingMetadata.value = true
+}
+
+const pendingDelete = ref<RichVersion | null>(null)
+const deleteBusy = ref(false)
+const deleteOpen = ref(false)
+const archiveBusy = ref(false)
+const archiveOpen = ref(false)
+const historyOffset = ref(0)
+const historyRuns = ref<RunDto[]>([])
+const historyBusy = ref(false)
+const historyError = ref('')
+const historyHasMore = ref(false)
+const historyLimit = 50
+const locksMutations = computed(() => projectArchived.value || document.value?.archived)
+const kindLabel = computed(() => (document.value?.kind === 'pdf' ? 'ПД' : 'ВОР'))
+const sortedVersions = computed<RichVersion[]>(() => document.value?.versions ?? [])
+const isVor = computed(() => document.value?.kind === 'vor')
+const isPdf = computed(() => document.value?.kind === 'pdf')
+const selectedVersion = computed<RichVersion | null>(() => {
+  if (!sortedVersions.value.length) return null
+  const wanted = requestedVersion.value || document.value?.current_version_id || ''
+  return (
+    sortedVersions.value.find((v) => v.id === wanted) ||
+    sortedVersions.value.find((v) => v.id === document.value?.current_version_id) ||
+    sortedVersions.value[0] ||
+    null
+  )
+})
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} Б`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`
+}
+function formatDate(value: string | null | undefined) {
+  return value
+    ? new Date(value).toLocaleString('ru-RU', {
+        day: 'numeric',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : '—'
+}
+
+function currentRevisionId() {
+  const wanted = requestedVersion.value || document.value?.current_version_id || ''
+  return (
+    sortedVersions.value.find((v) => v.id === wanted)?.id ||
+    document.value?.current_version_id ||
+    sortedVersions.value[0]?.id ||
+    ''
+  )
+}
+
+function metadataEntries(version: RichVersion) {
+  const meta = version.metadata
+  const overrides = version.metadata_overrides || {}
+  return [
+    {
+      key: 'construction_title',
+      label: 'Объект строительства',
+      extracted: meta.construction_title,
+    },
+    { key: 'raw_title', label: 'Название из файла', extracted: meta.raw_title },
+    { key: 'document_code', label: 'Шифр документа', extracted: meta.document_code },
+    { key: 'pd_reference', label: 'Ссылка на ПД', extracted: meta.pd_reference },
+  ].map((row) => ({ ...row, value: overrides[row.key] ?? row.extracted ?? '' }))
+}
+
+function metadataProvenance(version: RichVersion, key: string) {
+  const source = version.metadata.sources?.[key]
+  if (!source) return 'Источник не зафиксирован'
+  const parts = [source.sheet, source.cell].filter(Boolean).join(' ')
+  return parts ? `Источник: ${parts}` : 'Источник не зафиксирован'
+}
+
+function resetPreflight() {
+  preflightEpoch++
+  preflightBusy.value = false
+  preflight.value = null
+  preflightError.value = ''
+  acknowledged.value = false
+  startedRunId.value = ''
+}
+
+async function loadDocument() {
+  const currentEpoch = ++documentEpoch
+  const ownerId = projectId.value
+  const identity = documentId.value
+  busy.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    await backend.connect()
+    const [project, detail] = await Promise.all([
+      backend.project(ownerId),
+      backend.document(identity),
+    ])
+    if (!active || currentEpoch !== documentEpoch) return
+    if (project.id !== detail.project_id) throw Error('Документ принадлежит другому проекту.')
+    projectName.value = project.name
+    projectArchived.value = project.archived
+    document.value = detail
+    titleDraft.value = detail.title
+    if (detail.kind === 'vor') {
+      await Promise.all([loadBinding(currentRevisionId()), refreshPdfCatalog()])
+      if (!active || currentEpoch !== documentEpoch) return
+    } else {
+      binding.value = null
+      selectedPdfs.value = []
+      bindingsLoaded.value = true
+    }
+    resetPreflight()
+    editingMetadata.value = false
+    historyOffset.value = 0
+    await loadHistory()
+  } catch (e) {
+    if (active && currentEpoch === documentEpoch) error.value = readableError(e)
+  } finally {
+    if (active && currentEpoch === documentEpoch) busy.value = false
+  }
+}
+
+async function loadBinding(versionId: string) {
+  const currentEpoch = ++bindingEpoch
+  bindingsLoaded.value = false
+  try {
+    if (!versionId) {
+      binding.value = null
+      selectedPdfs.value = []
+      return
+    }
+    const value = await backend.bindings(versionId)
+    if (!active || currentEpoch !== bindingEpoch || currentRevisionId() !== versionId) return
+    binding.value = value
+    // Используем ровно сохранённые PDF-версии; осознанный выбор старых
+    // ревизий разрешён, текущие маркеры не переключаем.
+    selectedPdfs.value = [...value.pdf_version_ids]
+  } catch (e) {
+    if (!active || currentEpoch !== bindingEpoch) return
+    binding.value = null
+    selectedPdfs.value = []
+    preflightError.value = readableError(e)
+  } finally {
+    if (active && currentEpoch === bindingEpoch) bindingsLoaded.value = true
+  }
+}
+
+async function refreshPdfCatalog() {
+  try {
+    const entries = await backend.catalog(projectId.value)
+    const pdfs = entries.filter((doc) => doc.kind === 'pdf' && !doc.archived)
+    pdfCatalog.value = pdfs.flatMap((doc) =>
+      doc.versions.map((v) => ({
+        id: v.id,
+        document_id: v.document_id,
+        filename: v.filename,
+        number: v.number,
+      })),
+    )
+    pdfCurrentMap.value = new Map(
+      pdfs
+        .filter((doc) => doc.current_version_id)
+        .map((doc) => [doc.id, doc.current_version_id as string]),
+    )
+  } catch (e) {
+    preflightError.value = readableError(e)
+  }
+}
+
+function changeHistoryPage(delta: number) {
+  historyOffset.value = Math.max(0, historyOffset.value + delta)
+  void loadHistory()
+}
+
+async function loadHistory() {
+  const revision = selectedVersion.value
+  const currentEpoch = ++historyEpoch
+  historyRuns.value = []
+  historyError.value = ''
+  if (!revision || !isVor.value) return
+  historyBusy.value = true
+  try {
+    const values = await backend.runs(projectId.value, historyOffset.value)
+    if (!active || currentEpoch !== historyEpoch || selectedVersion.value?.id !== revision.id)
+      return
+    historyHasMore.value = values.length === historyLimit
+    historyRuns.value = values.filter((run) => run.vor_version_id === revision.id)
+  } catch (e) {
+    if (active && currentEpoch === historyEpoch) historyError.value = readableError(e)
+  } finally {
+    if (active && currentEpoch === historyEpoch) historyBusy.value = false
+  }
+}
+
+function selectVersion(id: string) {
+  resetPreflight()
+  editingMetadata.value = false
+  historyOffset.value = 0
+  router.replace({ query: { ...route.query, version: id } })
+}
+
+async function saveTitle() {
+  if (!document.value || titleBusy.value) return
+  const next = titleDraft.value.trim()
+  if (!next) {
+    error.value = 'Название документа не может быть пустым.'
+    return
+  }
+  titleBusy.value = true
+  try {
+    document.value = await backend.updateDocument(document.value.id, { title: next })
+    titleDraft.value = document.value.title
+    editingTitle.value = false
+    notice.value = 'Название сохранено.'
+  } catch (e) {
+    error.value = readableError(e)
+  } finally {
+    titleBusy.value = false
+  }
+}
+
+async function setCurrent(id: string) {
+  if (!document.value || locksMutations.value) return
+  resetPreflight()
+  try {
+    document.value = await backend.updateDocument(document.value.id, { current_version_id: id })
+    notice.value = isPdf.value
+      ? 'Действующая редакция ПД обновлена. Сохранённые привязки не переключены.'
+      : 'Текущая редакция ВОР обновлена.'
+  } catch (e) {
+    error.value = readableError(e)
+  }
+}
+
+async function saveMetadata() {
+  const revision = selectedVersion.value
+  if (!revision || metadataBusy.value || locksMutations.value) return
+  metadataBusy.value = true
+  error.value = ''
+  try {
+    const allowed = ['construction_title', 'raw_title', 'document_code', 'pd_reference']
+    const fields: Record<string, string> = {}
+    for (const key of allowed) {
+      fields[key] = (metadataDraft.value[key] ?? '').trim()
+    }
+    await backend.updateMetadata(revision.id, fields)
+    editingMetadata.value = false
+    await loadDocument()
+    notice.value = 'Метаданные сохранены. Извлечённые значения не изменены.'
+  } catch (e) {
+    error.value = readableError(e)
+  } finally {
+    metadataBusy.value = false
+  }
+}
+
+async function onRevisionPicked(event: Event) {
+  const input = event.target as HTMLInputElement | null
+  const file = input?.files?.[0]
+  if (input) input.value = ''
+  if (!file || !document.value || uploadBusy.value || locksMutations.value) return
+  uploadBusy.value = true
+  error.value = ''
+  try {
+    const form = new FormData()
+    form.append('project_id', projectId.value)
+    form.append('kind', document.value.kind)
+    form.append('document_id', document.value.id)
+    form.append('file', file)
+    const uploaded = await backend.upload(form)
+    if (!active) return
+    await loadDocument()
+    if (uploaded.version_id) {
+      await router.replace({ query: { ...route.query, version: uploaded.version_id } })
+      if (isVor.value) await loadBinding(uploaded.version_id)
+      await loadHistory()
+    }
+    resetPreflight()
+    notice.value = 'Новая редакция загружена.'
+  } catch (e) {
+    error.value = readableError(e)
+  } finally {
+    uploadBusy.value = false
+  }
+}
+
+function askDelete(version: RichVersion) {
+  pendingDelete.value = version
+  deleteOpen.value = true
+}
+
+async function confirmDelete() {
+  const target = pendingDelete.value
+  if (!target || deleteBusy.value || locksMutations.value) return
+  deleteBusy.value = true
+  try {
+    const outcome = await backend.removeVersion(target.id)
+    if (!outcome.deleted) throw Error('Ревизия не удалена.')
+    deleteOpen.value = false
+    pendingDelete.value = null
+    notice.value = `Редакция ${target.number} удалена. Файлы-дубликаты по хешу сохранены.`
+    await loadDocument()
+  } catch (e) {
+    const message = readableError(e)
+    error.value = /используется|409|run|binding|snapshot/i.test(message)
+      ? `Редакция используется в запусках или привязках и не может быть удалена: ${message}`
+      : message
+  } finally {
+    deleteBusy.value = false
+  }
+}
+
+async function toggleArchive(next: boolean) {
+  if (!document.value || archiveBusy.value || projectArchived.value) return
+  archiveBusy.value = true
+  try {
+    document.value = await backend.updateDocument(document.value.id, { archived: next })
+    archiveOpen.value = false
+    notice.value = next ? 'Документ архивирован.' : 'Документ восстановлен из архива.'
+  } catch (e) {
+    error.value = readableError(e)
+  } finally {
+    archiveBusy.value = false
+  }
+}
+
+function togglePdf(id: string) {
+  if (linkBusy.value) return
+  resetPreflight()
+  selectedPdfs.value = selectedPdfs.value.includes(id)
+    ? selectedPdfs.value.filter((value) => value !== id)
+    : [...selectedPdfs.value, id]
+}
+
+async function saveBinding(confirmed: boolean) {
+  const revision = selectedVersion.value
+  if (!revision || !isVor.value || linkBusy.value || locksMutations.value) return null
+  if (!selectedPdfs.value.length) {
+    preflightError.value = 'Выберите хотя бы одну PDF-редакцию для привязки.'
+    return null
+  }
+  const generation = preflightEpoch
+  linkBusy.value = true
+  preflightError.value = ''
+  try {
+    const value = await backend.saveBindings(revision.id, selectedPdfs.value, confirmed)
+    if (!active || generation !== preflightEpoch || selectedVersion.value?.id !== revision.id)
+      return null
+    binding.value = value
+    notice.value = confirmed
+      ? 'Привязка сохранена и подтверждена.'
+      : 'Привязка сохранена без подтверждения.'
+    return binding.value
+  } catch (e) {
+    preflightError.value = readableError(e)
+    return null
+  } finally {
+    linkBusy.value = false
+  }
+}
+
+async function checkAndStart() {
+  const revision = selectedVersion.value
+  if (!revision || !isVor.value || preflightBusy.value || starting.value) return
+  if (!selectedPdfs.value.length) {
+    preflightError.value = 'Выберите хотя бы одну PDF-редакцию для проверки.'
+    return
+  }
+  // Повторный клик после подтверждения критических ошибок запускает проверку.
+  if (preflight.value && (!preflight.value.has_critical_error || acknowledged.value)) {
+    await startAudit()
+    return
+  }
+  const current = ++preflightEpoch
+  preflightBusy.value = true
+  preflightError.value = ''
+  try {
+    const saved = await saveBinding(true)
+    if (!saved) return
+    if (current !== preflightEpoch) return
+    const value = await backend.preflight({
+      project_id: projectId.value,
+      vor_version_id: revision.id,
+      pdf_version_ids: selectedPdfs.value,
+    })
+    if (current !== preflightEpoch) return
+    preflight.value = value
+    acknowledged.value = false
+    if (!value.has_critical_error) await startAudit()
+  } catch (e) {
+    if (current !== preflightEpoch) return
+    preflightError.value = readableError(e)
+    preflight.value = null
+  } finally {
+    if (current === preflightEpoch) preflightBusy.value = false
+  }
+}
+
+async function startAudit() {
+  const revision = selectedVersion.value
+  if (
+    !revision ||
+    !isVor.value ||
+    starting.value ||
+    locksMutations.value ||
+    !preflight.value ||
+    (preflight.value.has_critical_error && !acknowledged.value)
+  )
+    return
+  if (startedRunId.value) {
+    await navigateTo(`/audits/${startedRunId.value}`)
+    return
+  }
+  starting.value = true
+  preflightError.value = ''
+  try {
+    const created = await backend.start({
+      project_id: projectId.value,
+      vor_version_id: revision.id,
+      pdf_version_ids: selectedPdfs.value,
+    })
+    if (!active) return
+    startedRunId.value = created.run_id
+    await navigateTo(`/audits/${created.run_id}`)
+  } catch (e) {
+    preflightError.value = readableError(e)
+  } finally {
+    starting.value = false
+  }
+}
+
+function downloadRevision(version: RichVersion | PdfRow) {
+  const url = `${backend.contentUrl(version.id)}?download=true`
+  backend.download(url, version.filename).catch((e: unknown) => (error.value = readableError(e)))
+}
+
+watch(selectedPdfs, () => resetPreflight(), { deep: true })
+watch(requestedVersion, () => {
+  resetPreflight()
+  editingMetadata.value = false
+  if (isVor.value) void loadBinding(currentRevisionId())
+  historyOffset.value = 0
+  void loadHistory()
+})
+
+onMounted(() => {
+  void loadDocument()
+})
+onBeforeUnmount(() => {
+  active = false
+  documentEpoch++
+  bindingEpoch++
+  historyEpoch++
+  preflightEpoch++
+})
+</script>
+
+<template>
+  <div>
+    <WorkspaceHeader />
+    <main id="main-content" tabindex="-1" class="shell document-detail">
+      <nav aria-label="Хлебные крошки" class="toolbar">
+        <UButton
+          variant="link"
+          :to="`/projects/${projectId}`"
+          aria-label="Назад к документам проекта"
+        >
+          ← К проекту
+        </UButton>
+        <span v-if="projectArchived" class="muted">Проект архивирован: изменения недоступны</span>
+      </nav>
+
+      <div class="page-heading">
+        <div class="title-block">
+          <p class="muted">Документ · {{ kindLabel }} · {{ projectName }}</p>
+          <h1 class="title-text" :title="document?.title || 'Документ'">
+            {{ busy ? 'Загружаем…' : document?.title || 'Документ' }}
+          </h1>
+          <p v-if="document" class="muted title-meta">
+            Редакций: {{ sortedVersions.length }}
+            <span v-if="document.pd_updated">· ПД обновлён после последнего запуска</span>
+            <span v-if="document.last_run">
+              · Последний запуск {{ formatDate(document.last_run.created_at) }}
+            </span>
+          </p>
+        </div>
+        <div class="heading-actions">
+          <UButton
+            v-if="!editingTitle"
+            variant="outline"
+            :disabled="busy || !document || !!locksMutations"
+            aria-label="Переименовать документ"
+            @click="editingTitle = true"
+          >
+            Переименовать
+          </UButton>
+          <UButton
+            v-if="document && !document.archived"
+            variant="outline"
+            :disabled="busy || projectArchived"
+            aria-label="Архивировать документ"
+            @click="archiveOpen = true"
+          >
+            Архивировать
+          </UButton>
+          <UButton
+            v-if="document?.archived"
+            color="primary"
+            :disabled="busy || projectArchived"
+            :loading="archiveBusy"
+            aria-label="Восстановить документ из архива"
+            @click="toggleArchive(false)"
+          >
+            Восстановить
+          </UButton>
+        </div>
+      </div>
+
+      <UAlert
+        v-if="error"
+        color="error"
+        variant="soft"
+        title="Не удалось выполнить действие"
+        :description="error"
+        class="document-alert"
+        role="alert"
+      >
+        <template #actions>
+          <UButton color="error" variant="soft" size="sm" @click="loadDocument()"
+            >Повторить</UButton
+          >
+        </template>
+      </UAlert>
+      <UAlert
+        v-if="notice"
+        color="success"
+        variant="soft"
+        :title="notice"
+        class="document-alert"
+        role="status"
+      />
+
+      <div v-if="editingTitle" class="panel title-editor">
+        <UInput
+          v-model="titleDraft"
+          aria-label="Название документа"
+          placeholder="Название документа"
+          class="title-input"
+        />
+        <div class="toolbar">
+          <UButton
+            color="primary"
+            :loading="titleBusy"
+            :disabled="titleBusy"
+            aria-label="Сохранить название документа"
+            @click="saveTitle()"
+          >
+            Сохранить
+          </UButton>
+          <UButton
+            variant="ghost"
+            :disabled="titleBusy"
+            aria-label="Отменить переименование"
+            @click="editingTitle = false"
+          >
+            Отмена
+          </UButton>
+        </div>
+      </div>
+
+      <template v-if="document && selectedVersion">
+        <section class="panel revision-panel" aria-label="Выбор редакции">
+          <div class="toolbar spread revision-bar">
+            <div class="revision-select">
+              <label class="muted" for="revision-select">Редакция документа</label>
+              <USelect
+                id="revision-select"
+                :model-value="selectedVersion.id"
+                :items="
+                  sortedVersions.map((v) => ({
+                    label: `${v.filename}, редакция ${v.number}${v.id === document?.current_version_id ? ' · действующая' : ''}`,
+                    value: v.id,
+                  }))
+                "
+                aria-label="Редакция документа"
+                @update:model-value="selectVersion(String($event))"
+              />
+            </div>
+            <div class="toolbar">
+              <input
+                ref="revisionInput"
+                type="file"
+                :accept="isVor ? '.xlsx,.csv' : '.pdf'"
+                class="revision-file"
+                :aria-label="`Файл новой редакции ${kindLabel}`"
+                @change="onRevisionPicked($event)"
+              />
+              <UButton
+                variant="outline"
+                :loading="uploadBusy"
+                :disabled="uploadBusy || !!locksMutations"
+                aria-label="Новая редакция"
+                @click="revisionInput?.click()"
+              >
+                Новая редакция
+              </UButton>
+              <UButton
+                variant="outline"
+                :aria-label="`Скачать ${selectedVersion.filename}, редакция ${selectedVersion.number}`"
+                @click="downloadRevision(selectedVersion)"
+              >
+                Скачать
+              </UButton>
+              <DocumentFormatCheck v-if="isVor" :version="selectedVersion" />
+            </div>
+          </div>
+          <p class="muted source-name" :title="selectedVersion.filename">
+            Исходный файл: {{ selectedVersion.filename }}, редакция {{ selectedVersion.number }} ·
+            {{ formatBytes(selectedVersion.size) }} ·
+            {{ formatDate(selectedVersion.created_at) }}
+            <span v-if="selectedVersion.id === document.current_version_id">· действующая</span>
+          </p>
+          <div class="toolbar">
+            <UButton
+              v-if="selectedVersion.id !== document.current_version_id"
+              variant="outline"
+              :disabled="!!locksMutations"
+              :aria-label="`Сделать действующей редакцию ${selectedVersion.number}`"
+              @click="setCurrent(selectedVersion.id)"
+            >
+              Сделать действующей
+            </UButton>
+            <span v-else class="muted" role="status">Действующая редакция</span>
+          </div>
+        </section>
+
+        <section class="panel" aria-label="Реквизиты редакции">
+          <div class="toolbar spread">
+            <div>
+              <h2>Реквизиты</h2>
+              <p class="muted">Извлечённые значения сохраняются; правки лежат поверх извлечения.</p>
+            </div>
+            <UButton
+              v-if="!editingMetadata"
+              variant="outline"
+              :disabled="!!locksMutations"
+              aria-label="Уточнить реквизиты"
+              @click="openMetadataEditor()"
+            >
+              Уточнить реквизиты
+            </UButton>
+          </div>
+          <dl v-if="!editingMetadata" class="metadata-read">
+            <div
+              v-for="row in metadataEntries(selectedVersion)"
+              :key="row.key"
+              class="metadata-line"
+            >
+              <dt>{{ row.label }}</dt>
+              <dd class="metadata-value" :title="String(row.value || '')">
+                {{ row.value || '—' }}
+              </dd>
+              <dd
+                class="muted metadata-source"
+                :title="metadataProvenance(selectedVersion, row.key)"
+              >
+                {{ metadataProvenance(selectedVersion, row.key) }}
+              </dd>
+            </div>
+          </dl>
+          <template v-else>
+            <div
+              v-for="row in metadataEntries(selectedVersion)"
+              :key="row.key"
+              class="metadata-row"
+            >
+              <div class="metadata-head">
+                <label :for="`metadata-${row.key}`">{{ row.label }}</label>
+                <span
+                  class="muted metadata-source"
+                  :title="metadataProvenance(selectedVersion, row.key)"
+                >
+                  {{ metadataProvenance(selectedVersion, row.key) }}
+                </span>
+              </div>
+              <UInput
+                :id="`metadata-${row.key}`"
+                v-model="metadataDraft[row.key]"
+                :placeholder="row.extracted || '—'"
+                :aria-label="`${row.label}, извлечено: ${row.extracted || 'пусто'}`"
+                class="metadata-input"
+              />
+              <p class="muted metadata-raw" :title="String(row.extracted || '')">
+                Извлечено: {{ row.extracted || '—' }}
+              </p>
+            </div>
+            <div class="toolbar">
+              <UButton
+                color="primary"
+                :loading="metadataBusy"
+                :disabled="metadataBusy || !!locksMutations"
+                aria-label="Сохранить метаданные редакции"
+                @click="saveMetadata()"
+              >
+                Сохранить метаданные
+              </UButton>
+              <UButton
+                variant="ghost"
+                :disabled="metadataBusy"
+                aria-label="Отменить уточнение реквизитов"
+                @click="editingMetadata = false"
+              >
+                Отмена
+              </UButton>
+            </div>
+          </template>
+        </section>
+
+        <section v-if="isVor" class="panel" aria-label="Привязка проектных PDF">
+          <h2>Привязки ПД</h2>
+          <p class="muted">
+            Точные сохранённые PDF-редакции. Подтверждение явное; автосмены привязок нет.
+          </p>
+          <p v-if="!bindingsLoaded" class="empty" role="status">Загружаем привязки…</p>
+          <template v-else>
+            <p v-if="binding" class="muted">
+              Сохранено: {{ binding.pdf_version_ids.length }} PDF ·
+              {{ binding.confirmed ? 'подтверждена' : 'не подтверждена' }}
+            </p>
+            <ul class="binding-list" aria-label="Доступные PDF-редакции">
+              <li v-for="pdf in pdfCatalog" :key="pdf.id" class="binding-row">
+                <label class="binding-label">
+                  <input
+                    type="checkbox"
+                    :checked="selectedPdfs.includes(pdf.id)"
+                    :disabled="linkBusy || !!locksMutations"
+                    :aria-label="`${pdf.filename}, редакция ${pdf.number}`"
+                    @change="togglePdf(pdf.id)"
+                  />
+                  <span class="binding-name" :title="`${pdf.filename}, редакция ${pdf.number}`">
+                    {{ pdf.filename }}, редакция {{ pdf.number }}
+                  </span>
+                  <span v-if="binding?.pdf_version_ids.includes(pdf.id)" class="muted">
+                    · сохранена
+                  </span>
+                  <UBadge
+                    v-if="pdf.id === pdfCurrentMap.get(pdf.document_id)"
+                    color="primary"
+                    variant="soft"
+                    label="Действующая"
+                  />
+                </label>
+              </li>
+            </ul>
+            <p v-if="!pdfCatalog.length" class="empty" role="status">
+              В проекте пока нет проектных PDF.
+            </p>
+            <div class="toolbar">
+              <UButton
+                variant="outline"
+                :loading="linkBusy"
+                :disabled="linkBusy || !!locksMutations"
+                aria-label="Сохранить привязку без подтверждения"
+                @click="saveBinding(false)"
+              >
+                Сохранить
+              </UButton>
+              <UButton
+                variant="outline"
+                :loading="linkBusy"
+                :disabled="linkBusy || !!locksMutations"
+                aria-label="Сохранить и подтвердить привязку"
+                @click="saveBinding(true)"
+              >
+                Сохранить и подтвердить
+              </UButton>
+            </div>
+
+            <div class="preflight-block">
+              <h3>Проверка и запуск</h3>
+              <div class="toolbar">
+                <UButton
+                  color="primary"
+                  :loading="preflightBusy || starting"
+                  :disabled="preflightBusy || starting || !!locksMutations"
+                  aria-label="Проверить"
+                  @click="checkAndStart()"
+                >
+                  Проверить
+                </UButton>
+              </div>
+              <p v-if="preflightError" class="error-box" role="alert">{{ preflightError }}</p>
+              <div v-if="preflight" class="preflight-result">
+                <UBadge
+                  :color="preflight.has_critical_error ? 'error' : 'success'"
+                  variant="soft"
+                  :label="
+                    preflight.has_critical_error
+                      ? 'Есть критические ошибки'
+                      : 'Критических ошибок нет'
+                  "
+                />
+                <div class="table-wrap">
+                  <table class="results">
+                    <thead>
+                      <tr>
+                        <th scope="col">ВОР</th>
+                        <th scope="col">PDF</th>
+                        <th scope="col">Ссылки</th>
+                        <th scope="col">Статус</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="row in preflight.rows" :key="`${row.vor}-${row.pdf}-${row.refs}`">
+                        <td class="cell-wrap">{{ row.vor }}</td>
+                        <td class="cell-wrap">{{ row.pdf }}</td>
+                        <td class="cell-wrap">{{ row.refs }}</td>
+                        <td>{{ row.status }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <label v-if="preflight.has_critical_error" class="ack-row">
+                  <input
+                    v-model="acknowledged"
+                    type="checkbox"
+                    aria-label="Подтверждаю запуск несмотря на критические ошибки привязки"
+                  />
+                  <span>Запустить несмотря на критические ошибки, затем нажмите «Проверить»</span>
+                </label>
+              </div>
+            </div>
+          </template>
+        </section>
+
+        <section v-else class="panel" aria-label="Редакции ПД">
+          <h2>Редакции ПД</h2>
+          <p class="muted">
+            Действующая редакция выделяется явно. Смена действующей не меняет сохранённые привязки.
+          </p>
+          <ul class="revision-list" aria-label="Все редакции ПД">
+            <li
+              v-for="version in sortedVersions"
+              :key="version.id"
+              class="revision-row"
+              :class="{ 'revision-row-current': version.id === document.current_version_id }"
+            >
+              <div class="revision-main">
+                <span
+                  class="revision-name"
+                  :title="`${version.filename}, редакция ${version.number}`"
+                >
+                  {{ version.filename }}, редакция {{ version.number }}
+                </span>
+                <UBadge
+                  v-if="version.id === document.current_version_id"
+                  color="primary"
+                  variant="soft"
+                  label="Действующая"
+                />
+                <UBadge
+                  v-if="version.id === selectedVersion.id"
+                  color="neutral"
+                  variant="soft"
+                  label="Выбрана"
+                />
+              </div>
+              <div class="toolbar">
+                <UButton
+                  variant="link"
+                  :aria-label="`Выбрать редакцию ${version.number}`"
+                  @click="selectVersion(version.id)"
+                >
+                  Выбрать
+                </UButton>
+                <UButton
+                  v-if="version.id !== document.current_version_id"
+                  variant="link"
+                  :disabled="!!locksMutations"
+                  :aria-label="`Сделать действующей редакцию ${version.number}`"
+                  @click="setCurrent(version.id)"
+                >
+                  Сделать действующей
+                </UButton>
+                <UButton
+                  variant="link"
+                  :aria-label="`Скачать ${version.filename}, редакция ${version.number}`"
+                  @click="downloadRevision(version)"
+                >
+                  Скачать
+                </UButton>
+                <UButton
+                  variant="link"
+                  color="error"
+                  :disabled="!!locksMutations"
+                  :aria-label="`Удалить редакцию ${version.number}`"
+                  @click="askDelete(version)"
+                >
+                  Удалить
+                </UButton>
+              </div>
+            </li>
+          </ul>
+        </section>
+
+        <section v-if="isVor" class="panel" aria-label="История редакций ВОР">
+          <h2>История редакций</h2>
+          <ul class="revision-list" aria-label="Все редакции ведомости">
+            <li
+              v-for="version in sortedVersions"
+              :key="version.id"
+              class="revision-row"
+              :class="{ 'revision-row-current': version.id === document.current_version_id }"
+            >
+              <div class="revision-main">
+                <span
+                  class="revision-name"
+                  :title="`${version.filename}, редакция ${version.number}`"
+                >
+                  {{ version.filename }}, редакция {{ version.number }} ·
+                  {{ formatDate(version.created_at) }}
+                </span>
+                <UBadge
+                  v-if="version.id === document.current_version_id"
+                  color="primary"
+                  variant="soft"
+                  label="Действующая"
+                />
+              </div>
+              <div class="toolbar">
+                <UButton
+                  variant="link"
+                  :aria-label="`Выбрать редакцию ${version.number}`"
+                  @click="selectVersion(version.id)"
+                >
+                  Выбрать
+                </UButton>
+                <UButton
+                  variant="link"
+                  :aria-label="`Скачать ${version.filename}, редакция ${version.number}`"
+                  @click="downloadRevision(version)"
+                >
+                  Скачать
+                </UButton>
+                <UButton
+                  variant="link"
+                  color="error"
+                  :disabled="!!locksMutations"
+                  :aria-label="`Удалить редакцию ${version.number}`"
+                  @click="askDelete(version)"
+                >
+                  Удалить
+                </UButton>
+              </div>
+            </li>
+          </ul>
+        </section>
+
+        <section v-if="isVor" class="panel" aria-label="Проверки выбранной редакции">
+          <h2>Проверки редакции</h2>
+          <p class="muted">Неизменяемые запуски для редакции {{ selectedVersion.number }}.</p>
+          <p v-if="historyBusy" class="empty" role="status">Загружаем запуски…</p>
+          <p v-else-if="historyError" class="error-box" role="alert">
+            {{ historyError }}
+            <UButton variant="link" aria-label="Повторить загрузку запусков" @click="loadHistory()">
+              Повторить
+            </UButton>
+          </p>
+          <p v-else-if="!historyRuns.length" class="empty" role="status">
+            {{
+              historyOffset || historyHasMore
+                ? 'На этой странице истории запусков этой редакции нет.'
+                : 'Для этой редакции запусков пока нет.'
+            }}
+          </p>
+          <div v-else class="table-wrap">
+            <table class="results">
+              <thead>
+                <tr>
+                  <th scope="col">Запуск</th>
+                  <th scope="col">Статус</th>
+                  <th scope="col">Позиций</th>
+                  <th scope="col">Действие</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="run in historyRuns" :key="run.run_id">
+                  <td class="cell-wrap" :title="run.vor_filename">
+                    {{ run.vor_filename }} · {{ formatDate(run.created_at) }}
+                  </td>
+                  <td>
+                    <UBadge
+                      :color="
+                        run.status === 'done'
+                          ? 'success'
+                          : run.status === 'failed'
+                            ? 'error'
+                            : 'warning'
+                      "
+                      variant="soft"
+                      :label="run.status"
+                    />
+                  </td>
+                  <td class="numbers">{{ run.done + run.failed }} / {{ run.total ?? '…' }}</td>
+                  <td>
+                    <UButton
+                      variant="link"
+                      :to="`/audits/${run.run_id}`"
+                      :aria-label="`Открыть запуск ${run.vor_filename}`"
+                    >
+                      Открыть
+                    </UButton>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-if="historyOffset || historyHasMore" class="toolbar pagination">
+            <UButton
+              :disabled="historyOffset === 0"
+              aria-label="Предыдущие запуски"
+              @click="changeHistoryPage(-historyLimit)"
+            >
+              Назад
+            </UButton>
+            <UButton
+              :disabled="historyBusy || !historyHasMore"
+              aria-label="Следующие запуски"
+              @click="changeHistoryPage(historyLimit)"
+            >
+              Далее
+            </UButton>
+          </div>
+        </section>
+
+        <section v-else class="panel" aria-label="Проверки документа ПД">
+          <h2>Проверки</h2>
+          <p v-if="document.last_run" class="muted">
+            Последний запуск проекта:
+            <UButton
+              variant="link"
+              :to="`/audits/${document.last_run.run_id}`"
+              aria-label="Открыть последний запуск проекта"
+            >
+              Открыть
+            </UButton>
+          </p>
+          <p v-else class="empty" role="status">Запусков с этим документом пока нет.</p>
+        </section>
+      </template>
+
+      <div v-else-if="!busy && !error" class="panel empty" role="status">
+        Документ пуст: загрузите первую редакцию кнопкой «Новая редакция» из проекта.
+      </div>
+    </main>
+
+    <UModal
+      v-model:open="deleteOpen"
+      title="Удалить редакцию?"
+      description="Удаление возможно только для неиспользуемых редакций"
+    >
+      <template #body>
+        <p v-if="pendingDelete" class="delete-name" :title="pendingDelete.filename">
+          {{ pendingDelete.filename }}, редакция {{ pendingDelete.number }}
+        </p>
+        <p class="muted">Редакции, использованные в запусках или привязках, удалить нельзя.</p>
+      </template>
+      <template #footer>
+        <div class="toolbar">
+          <UButton
+            color="error"
+            :loading="deleteBusy"
+            :disabled="deleteBusy"
+            aria-label="Подтвердить удаление редакции"
+            @click="confirmDelete()"
+          >
+            Удалить
+          </UButton>
+          <UButton
+            variant="ghost"
+            :disabled="deleteBusy"
+            aria-label="Отменить удаление редакции"
+            @click="deleteOpen = false"
+          >
+            Отмена
+          </UButton>
+        </div>
+      </template>
+    </UModal>
+
+    <UModal
+      v-model:open="archiveOpen"
+      title="Архивировать документ?"
+      description="Архив скрывает документ из активного каталога"
+    >
+      <template #body>
+        <p class="delete-name" :title="document?.title || ''">{{ document?.title }}</p>
+      </template>
+      <template #footer>
+        <div class="toolbar">
+          <UButton
+            color="error"
+            :loading="archiveBusy"
+            :disabled="archiveBusy"
+            aria-label="Подтвердить архивирование документа"
+            @click="toggleArchive(true)"
+          >
+            Архивировать
+          </UButton>
+          <UButton
+            variant="ghost"
+            :disabled="archiveBusy"
+            aria-label="Отменить архивирование документа"
+            @click="archiveOpen = false"
+          >
+            Отмена
+          </UButton>
+        </div>
+      </template>
+    </UModal>
+  </div>
+</template>
+
+<style scoped>
+.document-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 48px;
+}
+.document-detail > .panel {
+  padding: 24px;
+  font-size: 14px;
+}
+.document-detail h2 {
+  font-size: 16px;
+  font-weight: 600;
+}
+.title-block {
+  min-width: 0;
+}
+.title-text {
+  overflow-wrap: anywhere;
+}
+.title-meta {
+  overflow-wrap: anywhere;
+}
+.heading-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.document-alert {
+  margin: 0;
+}
+.title-editor,
+.revision-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.title-input {
+  width: 100%;
+}
+.revision-bar {
+  align-items: end;
+}
+.revision-select {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.revision-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+.source-name {
+  overflow-wrap: anywhere;
+}
+.metadata-read {
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.metadata-line {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(0, 2fr) minmax(160px, 1fr);
+  align-items: baseline;
+  gap: 4px 12px;
+  padding-block: 8px;
+  border-top: 1px solid var(--ui-border);
+}
+.metadata-line dt {
+  font-weight: 600;
+}
+.metadata-line dd {
+  margin: 0;
+}
+.metadata-value {
+  overflow-wrap: anywhere;
+}
+.metadata-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-block: 10px;
+  border-top: 1px solid var(--ui-border);
+}
+.metadata-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.metadata-source,
+.metadata-raw {
+  overflow-wrap: anywhere;
+}
+.metadata-input {
+  width: 100%;
+}
+.binding-list,
+.revision-list {
+  list-style: none;
+  margin: 12px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.binding-row,
+.revision-row {
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+.revision-row-current {
+  border-color: var(--ui-primary);
+}
+.binding-label {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+.binding-name,
+.revision-name,
+.delete-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.revision-main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+.preflight-block {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.preflight-result {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.table-wrap {
+  overflow-x: auto;
+}
+.cell-wrap {
+  overflow-wrap: anywhere;
+  min-width: 140px;
+}
+.ack-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.pagination {
+  margin-top: 12px;
+}
+@media (max-width: 640px) {
+  .document-detail > .panel {
+    padding: 16px;
+  }
+  .metadata-line {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

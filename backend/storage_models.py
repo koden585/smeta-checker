@@ -4,6 +4,14 @@ Projects own documents; documents own content versions; runs reference one VOR
 version and append position results. Nothing is ever overwritten: reruns create
 new runs, re-uploads create new versions. Bytes live in the blob store; only
 ``blob_key``/``sha256``/``size`` are stored here.
+
+Lifecycle (project/document identity): a document is an opaque UUID identity;
+every version carries its own source filename, extracted metadata and editable
+overrides. The unique ``(project, kind, filename)`` identity was removed in
+the lifecycle migration: same bytes in different logical documents are
+permitted, same bytes in one document still dedupe to one version. Run PDF
+pins are relational rows (``run_pdf_versions``); VOR->PDF bindings are stored
+per VOR version with a confirmation flag, never inferred.
 """
 
 from __future__ import annotations
@@ -13,8 +21,10 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Integer,
     String,
     Text,
@@ -36,6 +46,9 @@ class Project(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     name: Mapped[str] = mapped_column(String(256))
+    archived: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -51,12 +64,25 @@ class Document(Base):
         UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE")
     )
     kind: Mapped[str] = mapped_column(String(32))
-    filename: Mapped[str] = mapped_column(String(1024))
+    title: Mapped[str] = mapped_column(Text, default="", server_default="")
+    archived: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    current_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
-    __table_args__ = (UniqueConstraint("project_id", "kind", "filename"),)
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["current_version_id", "id"],
+            ["document_versions.id", "document_versions.document_id"],
+            ondelete="RESTRICT",
+            name="fk_documents_current_version",
+        ),
+    )
 
 
 class DocumentVersion(Base):
@@ -68,10 +94,17 @@ class DocumentVersion(Base):
     document_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE")
     )
+    filename: Mapped[str] = mapped_column(String(1024))
     version_no: Mapped[int] = mapped_column(Integer)
     sha256: Mapped[str] = mapped_column(String(64))
     blob_key: Mapped[str] = mapped_column(Text)
     size: Mapped[int] = mapped_column(Integer)
+    metadata_: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, default=dict, server_default="{}"
+    )
+    metadata_overrides: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -79,6 +112,58 @@ class DocumentVersion(Base):
     __table_args__ = (
         UniqueConstraint("document_id", "version_no"),
         UniqueConstraint("document_id", "sha256"),
+        UniqueConstraint("id", "document_id"),
+    )
+
+
+class RunPdfVersion(Base):
+    """Relational snapshot: exact versions pinned by a run.
+
+    ``source_key`` is the pool key used at creation (cleaned source filename);
+    JSON ``config.pdf_versions`` remains the worker input, this table is the
+    immutable relational pin. Unique source key within a run.
+    """
+
+    __tablename__ = "run_pdf_versions"
+
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("runs.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    source_key: Mapped[str] = mapped_column(String(1024), primary_key=True)
+    version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("document_versions.id", ondelete="RESTRICT")
+    )
+
+    __table_args__ = (UniqueConstraint("run_id", "version_id"),)
+
+
+class VorBinding(Base):
+    """Per-VOR-version PDF selection. Rows are created unconfirmed and only
+    become ``confirmed`` through an explicit PUT; nothing is ever inferred."""
+
+    __tablename__ = "vor_bindings"
+
+    vor_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("document_versions.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    confirmed: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
+
+class VorBindingPdf(Base):
+    __tablename__ = "vor_binding_pdfs"
+
+    vor_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("vor_bindings.vor_version_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    pdf_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("document_versions.id", ondelete="RESTRICT"),
+        primary_key=True,
     )
 
 
@@ -137,7 +222,7 @@ class PositionJob(Base):
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

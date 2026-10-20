@@ -106,6 +106,7 @@ def main():
             sha256=ref.sha256,
             blob_key=ref.blob_key,
             size=ref.size,
+            filename=ref.filename,
         )
     context = ApiContext(settings=settings, repository=repository, blob_store=blobs)
     run_tasks_job(

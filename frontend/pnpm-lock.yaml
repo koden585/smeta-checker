@@ -30,6 +30,9 @@ importers:
       '@hey-api/openapi-ts':
         specifier: 0.99.0
         version: 0.99.0(magicast@0.5.5)(typescript@5.9.3)
+      '@iconify-json/lucide':
+        specifier: 1.2.146
+        version: 1.2.146
       '@nuxt/test-utils':
         specifier: 4.3.4
         version: 4.3.4(54284b05fba953bee8749124b69dd22a)
@@ -586,6 +589,9 @@ packages:
 
   '@hey-api/types@0.1.4':
     resolution: {integrity: sha512-thWfawrDIP7wSI9ioT13I5soaaqB5vAPIiZmgD8PbeEVKNrkonc0N/Sjj97ezl7oQgusZmaNphGdMKipPO6IBg==}
+
+  '@iconify-json/lucide@1.2.146':
+    resolution: {integrity: sha512-T7qetsZJ682CCVT2X8C5uYEF6G/mtSoPl8F87wvu1LbfeVt4RxdP03NtaAs4RrrAXbWHBLjKrb8cmMtDucoI5g==}
 
   '@iconify/collections@1.0.753':
     resolution: {integrity: sha512-T2HWDRascNuUhtYoRn5EoRDz9AMLpYECpA3ML3MXaqHVPsYLPuWuU1NDTDCFVb61PgXNqmUWGigKkBnpwbqi+w==}
@@ -5193,6 +5199,10 @@ snapshots:
       '@hey-api/types': 0.1.4
 
   '@hey-api/types@0.1.4': {}
+
+  '@iconify-json/lucide@1.2.146':
+    dependencies:
+      '@iconify/types': 2.0.0
 
   '@iconify/collections@1.0.753':
     dependencies:

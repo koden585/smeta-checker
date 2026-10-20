@@ -2,7 +2,7 @@
 
 import { type Client, type ClientMeta, formDataBodySerializer, type Options as Options2, type RequestResult, type TDataShape } from './client';
 import { client } from './client.gen';
-import type { ContentApiV1DocumentsVersionIdContentGetData, ContentApiV1DocumentsVersionIdContentGetErrors, ContentApiV1DocumentsVersionIdContentGetResponses, CreateAuditApiV1AuditsPostData, CreateAuditApiV1AuditsPostErrors, CreateAuditApiV1AuditsPostResponses, CreateProjectApiV1ProjectsPostData, CreateProjectApiV1ProjectsPostErrors, CreateProjectApiV1ProjectsPostResponses, DocumentsApiV1ProjectsProjectIdDocumentsGetData, DocumentsApiV1ProjectsProjectIdDocumentsGetErrors, DocumentsApiV1ProjectsProjectIdDocumentsGetResponses, DownloadAuditReportApiV1AuditsRunIdReportsKindGetData, DownloadAuditReportApiV1AuditsRunIdReportsKindGetErrors, DownloadAuditReportApiV1AuditsRunIdReportsKindGetResponses, FormattingApiV1DocumentsVersionIdFormatChecksPostData, FormattingApiV1DocumentsVersionIdFormatChecksPostErrors, FormattingApiV1DocumentsVersionIdFormatChecksPostResponses, GetAuditApiV1AuditsRunIdGetData, GetAuditApiV1AuditsRunIdGetErrors, GetAuditApiV1AuditsRunIdGetResponses, GetAuditResultsApiV1AuditsRunIdResultsGetData, GetAuditResultsApiV1AuditsRunIdResultsGetErrors, GetAuditResultsApiV1AuditsRunIdResultsGetResponses, HealthzHealthzGetData, HealthzHealthzGetResponses, HistoryApiV1ProjectsProjectIdAuditsGetData, HistoryApiV1ProjectsProjectIdAuditsGetErrors, HistoryApiV1ProjectsProjectIdAuditsGetResponses, PreflightDocumentsApiV1DocumentsPreflightPostData, PreflightDocumentsApiV1DocumentsPreflightPostErrors, PreflightDocumentsApiV1DocumentsPreflightPostResponses, ProgressApiV1AuditsRunIdProgressGetData, ProgressApiV1AuditsRunIdProgressGetErrors, ProgressApiV1AuditsRunIdProgressGetResponses, ProjectsApiV1ProjectsGetData, ProjectsApiV1ProjectsGetResponses, RowsApiV1AuditsRunIdRowsGetData, RowsApiV1AuditsRunIdRowsGetErrors, RowsApiV1AuditsRunIdRowsGetResponses, StructureApiV1DocumentsVersionIdStructureGetData, StructureApiV1DocumentsVersionIdStructureGetErrors, StructureApiV1DocumentsVersionIdStructureGetResponses, SummaryApiV1AuditsRunIdSummaryGetData, SummaryApiV1AuditsRunIdSummaryGetErrors, SummaryApiV1AuditsRunIdSummaryGetResponses, UploadDocumentApiV1DocumentsPostData, UploadDocumentApiV1DocumentsPostErrors, UploadDocumentApiV1DocumentsPostResponses, WorkspaceApiV1AuditsRunIdPositionsPositionIndexWorkspaceGetData, WorkspaceApiV1AuditsRunIdPositionsPositionIndexWorkspaceGetErrors, WorkspaceApiV1AuditsRunIdPositionsPositionIndexWorkspaceGetResponses } from './types.gen';
+import type { CatalogApiV1ProjectsProjectIdCatalogGetData, CatalogApiV1ProjectsProjectIdCatalogGetErrors, CatalogApiV1ProjectsProjectIdCatalogGetResponses, ContentApiV1DocumentsVersionIdContentGetData, ContentApiV1DocumentsVersionIdContentGetErrors, ContentApiV1DocumentsVersionIdContentGetResponses, CreateAuditApiV1AuditsPostData, CreateAuditApiV1AuditsPostErrors, CreateAuditApiV1AuditsPostResponses, CreateProjectApiV1ProjectsPostData, CreateProjectApiV1ProjectsPostErrors, CreateProjectApiV1ProjectsPostResponses, DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteData, DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteErrors, DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteResponses, DeleteProjectApiV1ProjectsProjectIdDeleteData, DeleteProjectApiV1ProjectsProjectIdDeleteErrors, DeleteProjectApiV1ProjectsProjectIdDeleteResponses, DeleteVersionApiV1DocumentsVersionIdVersionDeleteData, DeleteVersionApiV1DocumentsVersionIdVersionDeleteErrors, DeleteVersionApiV1DocumentsVersionIdVersionDeleteResponses, DocumentDetailApiV1DocumentsDocumentIdDetailGetData, DocumentDetailApiV1DocumentsDocumentIdDetailGetErrors, DocumentDetailApiV1DocumentsDocumentIdDetailGetResponses, DocumentsApiV1ProjectsProjectIdDocumentsGetData, DocumentsApiV1ProjectsProjectIdDocumentsGetErrors, DocumentsApiV1ProjectsProjectIdDocumentsGetResponses, DownloadAuditReportApiV1AuditsRunIdReportsKindGetData, DownloadAuditReportApiV1AuditsRunIdReportsKindGetErrors, DownloadAuditReportApiV1AuditsRunIdReportsKindGetResponses, FormattingApiV1DocumentsVersionIdFormatChecksPostData, FormattingApiV1DocumentsVersionIdFormatChecksPostErrors, FormattingApiV1DocumentsVersionIdFormatChecksPostResponses, GetAuditApiV1AuditsRunIdGetData, GetAuditApiV1AuditsRunIdGetErrors, GetAuditApiV1AuditsRunIdGetResponses, GetAuditResultsApiV1AuditsRunIdResultsGetData, GetAuditResultsApiV1AuditsRunIdResultsGetErrors, GetAuditResultsApiV1AuditsRunIdResultsGetResponses, GetBindingsApiV1DocumentsVorVersionIdBindingsGetData, GetBindingsApiV1DocumentsVorVersionIdBindingsGetErrors, GetBindingsApiV1DocumentsVorVersionIdBindingsGetResponses, GetProjectApiV1ProjectsProjectIdGetData, GetProjectApiV1ProjectsProjectIdGetErrors, GetProjectApiV1ProjectsProjectIdGetResponses, HealthzHealthzGetData, HealthzHealthzGetResponses, HistoryApiV1ProjectsProjectIdAuditsGetData, HistoryApiV1ProjectsProjectIdAuditsGetErrors, HistoryApiV1ProjectsProjectIdAuditsGetResponses, PreflightDocumentsApiV1DocumentsPreflightPostData, PreflightDocumentsApiV1DocumentsPreflightPostErrors, PreflightDocumentsApiV1DocumentsPreflightPostResponses, ProgressApiV1AuditsRunIdProgressGetData, ProgressApiV1AuditsRunIdProgressGetErrors, ProgressApiV1AuditsRunIdProgressGetResponses, ProjectsApiV1ProjectsGetData, ProjectsApiV1ProjectsGetErrors, ProjectsApiV1ProjectsGetResponses, PutBindingsApiV1DocumentsVorVersionIdBindingsPutData, PutBindingsApiV1DocumentsVorVersionIdBindingsPutErrors, PutBindingsApiV1DocumentsVorVersionIdBindingsPutResponses, RowsApiV1AuditsRunIdRowsGetData, RowsApiV1AuditsRunIdRowsGetErrors, RowsApiV1AuditsRunIdRowsGetResponses, StructureApiV1DocumentsVersionIdStructureGetData, StructureApiV1DocumentsVersionIdStructureGetErrors, StructureApiV1DocumentsVersionIdStructureGetResponses, SummaryApiV1AuditsRunIdSummaryGetData, SummaryApiV1AuditsRunIdSummaryGetErrors, SummaryApiV1AuditsRunIdSummaryGetResponses, UpdateDocumentApiV1DocumentsDocumentIdPatchData, UpdateDocumentApiV1DocumentsDocumentIdPatchErrors, UpdateDocumentApiV1DocumentsDocumentIdPatchResponses, UpdateProjectApiV1ProjectsProjectIdPatchData, UpdateProjectApiV1ProjectsProjectIdPatchErrors, UpdateProjectApiV1ProjectsProjectIdPatchResponses, UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchData, UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchErrors, UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchResponses, UploadDocumentApiV1DocumentsPostData, UploadDocumentApiV1DocumentsPostErrors, UploadDocumentApiV1DocumentsPostResponses, WorkspaceApiV1AuditsRunIdPositionsPositionIndexWorkspaceGetData, WorkspaceApiV1AuditsRunIdPositionsPositionIndexWorkspaceGetErrors, WorkspaceApiV1AuditsRunIdPositionsPositionIndexWorkspaceGetResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -91,6 +91,28 @@ export const preflightDocumentsApiV1DocumentsPreflightPost = <ThrowOnError exten
 });
 
 /**
+ * Update Document
+ */
+export const updateDocumentApiV1DocumentsDocumentIdPatch = <ThrowOnError extends boolean = false>(options: Options<UpdateDocumentApiV1DocumentsDocumentIdPatchData, ThrowOnError>): RequestResult<UpdateDocumentApiV1DocumentsDocumentIdPatchResponses, UpdateDocumentApiV1DocumentsDocumentIdPatchErrors, ThrowOnError> => (options.client ?? client).patch<UpdateDocumentApiV1DocumentsDocumentIdPatchResponses, UpdateDocumentApiV1DocumentsDocumentIdPatchErrors, ThrowOnError>({
+    url: '/api/v1/documents/{document_id}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Delete Document
+ */
+export const deleteDocumentApiV1DocumentsDocumentIdDetailDelete = <ThrowOnError extends boolean = false>(options: Options<DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteData, ThrowOnError>): RequestResult<DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteResponses, DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteErrors, ThrowOnError> => (options.client ?? client).delete<DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteResponses, DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteErrors, ThrowOnError>({ url: '/api/v1/documents/{document_id}/detail', ...options });
+
+/**
+ * Document Detail
+ */
+export const documentDetailApiV1DocumentsDocumentIdDetailGet = <ThrowOnError extends boolean = false>(options: Options<DocumentDetailApiV1DocumentsDocumentIdDetailGetData, ThrowOnError>): RequestResult<DocumentDetailApiV1DocumentsDocumentIdDetailGetResponses, DocumentDetailApiV1DocumentsDocumentIdDetailGetErrors, ThrowOnError> => (options.client ?? client).get<DocumentDetailApiV1DocumentsDocumentIdDetailGetResponses, DocumentDetailApiV1DocumentsDocumentIdDetailGetErrors, ThrowOnError>({ url: '/api/v1/documents/{document_id}/detail', ...options });
+
+/**
  * Content
  */
 export const contentApiV1DocumentsVersionIdContentGet = <ThrowOnError extends boolean = false>(options: Options<ContentApiV1DocumentsVersionIdContentGetData, ThrowOnError>): RequestResult<ContentApiV1DocumentsVersionIdContentGetResponses, ContentApiV1DocumentsVersionIdContentGetErrors, ThrowOnError> => (options.client ?? client).get<ContentApiV1DocumentsVersionIdContentGetResponses, ContentApiV1DocumentsVersionIdContentGetErrors, ThrowOnError>({ url: '/api/v1/documents/{version_id}/content', ...options });
@@ -101,14 +123,48 @@ export const contentApiV1DocumentsVersionIdContentGet = <ThrowOnError extends bo
 export const formattingApiV1DocumentsVersionIdFormatChecksPost = <ThrowOnError extends boolean = false>(options: Options<FormattingApiV1DocumentsVersionIdFormatChecksPostData, ThrowOnError>): RequestResult<FormattingApiV1DocumentsVersionIdFormatChecksPostResponses, FormattingApiV1DocumentsVersionIdFormatChecksPostErrors, ThrowOnError> => (options.client ?? client).post<FormattingApiV1DocumentsVersionIdFormatChecksPostResponses, FormattingApiV1DocumentsVersionIdFormatChecksPostErrors, ThrowOnError>({ url: '/api/v1/documents/{version_id}/format-checks', ...options });
 
 /**
+ * Update Version Metadata
+ */
+export const updateVersionMetadataApiV1DocumentsVersionIdMetadataPatch = <ThrowOnError extends boolean = false>(options: Options<UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchData, ThrowOnError>): RequestResult<UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchResponses, UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchErrors, ThrowOnError> => (options.client ?? client).patch<UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchResponses, UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchErrors, ThrowOnError>({
+    url: '/api/v1/documents/{version_id}/metadata',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
  * Structure
  */
 export const structureApiV1DocumentsVersionIdStructureGet = <ThrowOnError extends boolean = false>(options: Options<StructureApiV1DocumentsVersionIdStructureGetData, ThrowOnError>): RequestResult<StructureApiV1DocumentsVersionIdStructureGetResponses, StructureApiV1DocumentsVersionIdStructureGetErrors, ThrowOnError> => (options.client ?? client).get<StructureApiV1DocumentsVersionIdStructureGetResponses, StructureApiV1DocumentsVersionIdStructureGetErrors, ThrowOnError>({ url: '/api/v1/documents/{version_id}/structure', ...options });
 
 /**
+ * Delete Version
+ */
+export const deleteVersionApiV1DocumentsVersionIdVersionDelete = <ThrowOnError extends boolean = false>(options: Options<DeleteVersionApiV1DocumentsVersionIdVersionDeleteData, ThrowOnError>): RequestResult<DeleteVersionApiV1DocumentsVersionIdVersionDeleteResponses, DeleteVersionApiV1DocumentsVersionIdVersionDeleteErrors, ThrowOnError> => (options.client ?? client).delete<DeleteVersionApiV1DocumentsVersionIdVersionDeleteResponses, DeleteVersionApiV1DocumentsVersionIdVersionDeleteErrors, ThrowOnError>({ url: '/api/v1/documents/{version_id}/version', ...options });
+
+/**
+ * Get Bindings
+ */
+export const getBindingsApiV1DocumentsVorVersionIdBindingsGet = <ThrowOnError extends boolean = false>(options: Options<GetBindingsApiV1DocumentsVorVersionIdBindingsGetData, ThrowOnError>): RequestResult<GetBindingsApiV1DocumentsVorVersionIdBindingsGetResponses, GetBindingsApiV1DocumentsVorVersionIdBindingsGetErrors, ThrowOnError> => (options.client ?? client).get<GetBindingsApiV1DocumentsVorVersionIdBindingsGetResponses, GetBindingsApiV1DocumentsVorVersionIdBindingsGetErrors, ThrowOnError>({ url: '/api/v1/documents/{vor_version_id}/bindings', ...options });
+
+/**
+ * Put Bindings
+ */
+export const putBindingsApiV1DocumentsVorVersionIdBindingsPut = <ThrowOnError extends boolean = false>(options: Options<PutBindingsApiV1DocumentsVorVersionIdBindingsPutData, ThrowOnError>): RequestResult<PutBindingsApiV1DocumentsVorVersionIdBindingsPutResponses, PutBindingsApiV1DocumentsVorVersionIdBindingsPutErrors, ThrowOnError> => (options.client ?? client).put<PutBindingsApiV1DocumentsVorVersionIdBindingsPutResponses, PutBindingsApiV1DocumentsVorVersionIdBindingsPutErrors, ThrowOnError>({
+    url: '/api/v1/documents/{vor_version_id}/bindings',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
  * Projects
  */
-export const projectsApiV1ProjectsGet = <ThrowOnError extends boolean = false>(options?: Options<ProjectsApiV1ProjectsGetData, ThrowOnError>): RequestResult<ProjectsApiV1ProjectsGetResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ProjectsApiV1ProjectsGetResponses, unknown, ThrowOnError>({ url: '/api/v1/projects', ...options });
+export const projectsApiV1ProjectsGet = <ThrowOnError extends boolean = false>(options?: Options<ProjectsApiV1ProjectsGetData, ThrowOnError>): RequestResult<ProjectsApiV1ProjectsGetResponses, ProjectsApiV1ProjectsGetErrors, ThrowOnError> => (options?.client ?? client).get<ProjectsApiV1ProjectsGetResponses, ProjectsApiV1ProjectsGetErrors, ThrowOnError>({ url: '/api/v1/projects', ...options });
 
 /**
  * Create Project
@@ -123,9 +179,36 @@ export const createProjectApiV1ProjectsPost = <ThrowOnError extends boolean = fa
 });
 
 /**
+ * Delete Project
+ */
+export const deleteProjectApiV1ProjectsProjectIdDelete = <ThrowOnError extends boolean = false>(options: Options<DeleteProjectApiV1ProjectsProjectIdDeleteData, ThrowOnError>): RequestResult<DeleteProjectApiV1ProjectsProjectIdDeleteResponses, DeleteProjectApiV1ProjectsProjectIdDeleteErrors, ThrowOnError> => (options.client ?? client).delete<DeleteProjectApiV1ProjectsProjectIdDeleteResponses, DeleteProjectApiV1ProjectsProjectIdDeleteErrors, ThrowOnError>({ url: '/api/v1/projects/{project_id}', ...options });
+
+/**
+ * Get Project
+ */
+export const getProjectApiV1ProjectsProjectIdGet = <ThrowOnError extends boolean = false>(options: Options<GetProjectApiV1ProjectsProjectIdGetData, ThrowOnError>): RequestResult<GetProjectApiV1ProjectsProjectIdGetResponses, GetProjectApiV1ProjectsProjectIdGetErrors, ThrowOnError> => (options.client ?? client).get<GetProjectApiV1ProjectsProjectIdGetResponses, GetProjectApiV1ProjectsProjectIdGetErrors, ThrowOnError>({ url: '/api/v1/projects/{project_id}', ...options });
+
+/**
+ * Update Project
+ */
+export const updateProjectApiV1ProjectsProjectIdPatch = <ThrowOnError extends boolean = false>(options: Options<UpdateProjectApiV1ProjectsProjectIdPatchData, ThrowOnError>): RequestResult<UpdateProjectApiV1ProjectsProjectIdPatchResponses, UpdateProjectApiV1ProjectsProjectIdPatchErrors, ThrowOnError> => (options.client ?? client).patch<UpdateProjectApiV1ProjectsProjectIdPatchResponses, UpdateProjectApiV1ProjectsProjectIdPatchErrors, ThrowOnError>({
+    url: '/api/v1/projects/{project_id}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
  * History
  */
 export const historyApiV1ProjectsProjectIdAuditsGet = <ThrowOnError extends boolean = false>(options: Options<HistoryApiV1ProjectsProjectIdAuditsGetData, ThrowOnError>): RequestResult<HistoryApiV1ProjectsProjectIdAuditsGetResponses, HistoryApiV1ProjectsProjectIdAuditsGetErrors, ThrowOnError> => (options.client ?? client).get<HistoryApiV1ProjectsProjectIdAuditsGetResponses, HistoryApiV1ProjectsProjectIdAuditsGetErrors, ThrowOnError>({ url: '/api/v1/projects/{project_id}/audits', ...options });
+
+/**
+ * Catalog
+ */
+export const catalogApiV1ProjectsProjectIdCatalogGet = <ThrowOnError extends boolean = false>(options: Options<CatalogApiV1ProjectsProjectIdCatalogGetData, ThrowOnError>): RequestResult<CatalogApiV1ProjectsProjectIdCatalogGetResponses, CatalogApiV1ProjectsProjectIdCatalogGetErrors, ThrowOnError> => (options.client ?? client).get<CatalogApiV1ProjectsProjectIdCatalogGetResponses, CatalogApiV1ProjectsProjectIdCatalogGetErrors, ThrowOnError>({ url: '/api/v1/projects/{project_id}/catalog', ...options });
 
 /**
  * Documents

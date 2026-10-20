@@ -22,7 +22,7 @@ from audit_core import (
 )
 from audit_llm import audit_position_hybrid
 from audit_models import AuditResult, expected_scope_hint, position_source_dict, claim_status
-from audit_reports import build_user_report, generate_excel_report, generate_word_report
+from audit_reports import build_user_report, generate_word_report
 from audit_snapshot import decode_snapshot, encode_snapshot
 from audit_tracing import TracingRun
 from pdf_binding import resolve_pdf_name, resolve_position_pdfs
@@ -418,7 +418,7 @@ def _failure_items(exc, task):
 
 
 def build_run_artifacts(df_works, meta, tasks, tracking, results):
-    """Build df/excel/word from finished position data; shared by run_audit and tasks.
+    """Build df/word from finished position data; shared by run_audit and tasks.
 
     Column detection, stale-result cleanup, renames and the report-task
     projection are byte-identical to the historical inline block: Celery
@@ -533,7 +533,6 @@ def build_run_artifacts(df_works, meta, tasks, tracking, results):
     return {
         "df": df_final,
         "user_report": user_report,
-        "excel_bytes": generate_excel_report(user_report),
         "word_bytes": generate_word_report(user_report, meta),
     }
 
@@ -562,12 +561,12 @@ def run_audit(
 ):
     """Audit selected VORs headless.
 
-    Returns ``{"results": {v_name: {"df", "meta", "tracking", "excel_bytes",
+    Returns ``{"results": {v_name: {"df", "meta", "tracking",
     "word_bytes"}}, "issues": [...]}``. Owns PDF text sources (closed on exit);
     the caller owns ``pdf_pool`` documents and ``trace_run``.
 
     ``store`` (``storage_db.Repository``) persists each VOR as a new run with
-    position results and Excel/Word artifacts; reruns append new runs.
+    position results and the Word artifact; reruns append new runs.
     ``run_id`` reuses one API-created ``runs`` row instead: the payload lands
     in that row via ``save_vor_run_payload`` (same shape as above) and the row
     is finished ``done``. ``pdf_versions`` maps pool keys to stored version
@@ -871,7 +870,6 @@ def run_audit(
                 df_works, meta, tasks, row_page_tracking, results_list
             )
             df_final = artifacts["df"]
-            excel_bytes = artifacts["excel_bytes"]
             word_bytes = artifacts["word_bytes"]
 
             stored_id = None
@@ -881,7 +879,6 @@ def run_audit(
                     tasks=tasks,
                     tracking=row_page_tracking,
                     results=results_list,
-                    excel_bytes=bytes(excel_bytes),
                     word_bytes=bytes(word_bytes),
                     pdf_versions=dict(pdf_versions or {}),
                 )
@@ -895,7 +892,6 @@ def run_audit(
                     tasks=tasks,
                     tracking=row_page_tracking,
                     results=results_list,
-                    excel_bytes=excel_bytes,
                     word_bytes=word_bytes,
                     model_name=model_name,
                     project_name=project_name,
@@ -907,7 +903,6 @@ def run_audit(
                 "df": df_final,
                 "meta": meta,
                 "tracking": row_page_tracking,
-                "excel_bytes": excel_bytes,
                 "word_bytes": word_bytes,
             }
             if stored_id is not None:

@@ -325,13 +325,17 @@ def _read_version_bytes(
         sha256=ref.sha256,
         blob_key=ref.blob_key,
         size=ref.size,
+        filename=ref.filename,
+        metadata=dict(ref.metadata or {}),
+        metadata_overrides=dict(ref.metadata_overrides or {}),
     )
     return data, row, ref.filename, ref.kind
 
 
 def _upload_document(
-    context: ApiContext, project: str, kind: str, upload: UploadFile, data: bytes,
-    project_id: UUID | None = None,
+    context: ApiContext, project_id: UUID, kind: str, upload: UploadFile, data: bytes,
+    document_id: UUID | None = None,
+    new_document: bool = False,
 ) -> DocumentUploadResponse:
     filename = _safe_filename(upload.filename or "")
     _check_upload_limits(context, data)
@@ -377,12 +381,18 @@ def _upload_document(
                 "invalid_pdf",
                 f"Не удалось прочитать PDF: {type(exc).__name__}: {str(exc)[:200]}",
             ) from exc
-    stored_project = (context.repository.load_project(project_id) if project_id else
-                      context.repository.get_or_create_project(project))
+    if document_id is not None and new_document:
+        raise ApiError(400, "document_ambiguous",
+                       "Укажите либо document_id, либо new_document.")
     try:
         version = context.repository.add_document_version(
-            stored_project.id, bytes(data), filename=filename, kind=kind
+            project_id, bytes(data), filename=filename, kind=kind,
+            document_id=document_id, new_document=new_document,
         )
+    except KeyError as exc:
+        raise ApiError(404, "document_not_found", "Документ не найден") from exc
+    except ValueError as exc:
+        raise ApiError(400, "document_invalid", str(exc)) from exc
     except Exception as exc:
         raise ApiError(
             500, "storage_error", f"Не удалось сохранить документ: {exc}"
@@ -466,6 +476,21 @@ def _check_project_versions(context: ApiContext, project_id: UUID, version_ids: 
             raise ApiError(404, "version_not_found", "Версия документа не найдена") from exc
         if owner != project_id:
             raise ApiError(400, "project_version_mismatch", "Версия документа принадлежит другому проекту")
+
+
+def _check_active_versions(context: ApiContext, project_id: UUID,
+                           version_ids: list[UUID]):
+    for version_id in version_ids:
+        ref = context.repository.load_version(version_id)
+        document = context.repository.load_document(ref.document_id)
+        if bool(document.get("archived")):
+            raise ApiError(400, "version_archived", "Версия принадлежит архиву")
+    try:
+        project = context.repository.load_project(project_id)
+    except KeyError as exc:
+        raise ApiError(404, "project_not_found", "Проект не найден") from exc
+    if bool(project.archived):
+        raise ApiError(400, "project_archived", "Проект архивирован")
 
 
 def _check_pdf_names(context: ApiContext, version_ids: list[UUID]):
@@ -673,22 +698,24 @@ def create_app(context: ApiContext | None = None) -> FastAPI:
     @app.post("/api/v1/documents", response_model=DocumentUploadResponse)
     async def upload_document(
         request: Request,
-        project: str = Form(min_length=1, max_length=256),
         kind: str = Form(pattern="^(vor|pdf)$"),
         file: UploadFile = File(...),
-        project_id: str | None = Form(None),
+        project_id: str = Form(...),
+        document_id: str | None = Form(None),
+        new_document: bool = Form(False),
         context: ApiContext = Depends(get_context),
     ) -> DocumentUploadResponse:
         _require_api_token(context, request)
         _require_configured(context)
         data = await file.read(context.settings.max_upload_bytes + 1)
-        owner_id = _parse_uuid(project_id, field="project_id") if project_id else None
-        if owner_id:
-            try:
-                context.repository.load_project(owner_id)
-            except KeyError as exc:
-                raise ApiError(404, "project_not_found", "Проект не найден") from exc
-        response = _upload_document(context, project.strip(), kind, file, data, owner_id)
+        owner_id = _parse_uuid(project_id, field="project_id")
+        try:
+            context.repository.load_project(owner_id)
+        except KeyError as exc:
+            raise ApiError(404, "project_not_found", "Проект не найден") from exc
+        target_id = _parse_uuid(document_id, field="document_id") if document_id else None
+        response = _upload_document(context, owner_id, kind, file, data,
+                                    target_id, new_document)
         logger.info(
             "document uploaded",
             extra={
@@ -714,6 +741,7 @@ def create_app(context: ApiContext | None = None) -> FastAPI:
         ]
         owner = _project_for_payload(context, payload)
         _check_project_versions(context, owner.id, [vor_id, *pdf_ids])
+        _check_active_versions(context, owner.id, [vor_id, *pdf_ids])
         _check_pdf_names(context, pdf_ids)
         return _preflight_for_versions(context, vor_id, pdf_ids)
 
@@ -737,6 +765,7 @@ def create_app(context: ApiContext | None = None) -> FastAPI:
         ]
         _check_project_versions(context, stored_project.id, [vor_id, *pdf_ids])
         _check_pdf_names(context, pdf_ids)
+        _check_active_versions(context, stored_project.id, [vor_id, *pdf_ids])
         allowed = max(1, int(context.settings.max_uploads_per_request or 1))
         if len(pdf_ids) + 1 > allowed:
             raise ApiError(
@@ -756,6 +785,9 @@ def create_app(context: ApiContext | None = None) -> FastAPI:
             key = _clean_pool_key(filename)
             if not key:
                 raise ApiError(400, "filename_required", "Имя PDF обязательно.")
+            if key in pdf_files:
+                raise ApiError(400, "duplicate_pdf_name",
+                               "Выберите одну версию каждого PDF; имена PDF должны различаться")
             pdf_files[key] = bytes(data)
             pdf_versions[key] = row
         preflight = _preflight_for_versions(context, vor_id, pdf_ids)
@@ -772,7 +804,14 @@ def create_app(context: ApiContext | None = None) -> FastAPI:
             "position_inputs": [p.model_dump(mode="json") for p in positions],
         }
         try:
-            run = context.repository.create_run(stored_project.id, vor_id, config)
+            run = context.repository.create_run(
+                stored_project.id, vor_id, config,
+                pdf_pins={key: row.id for key, row in pdf_versions.items()},
+            )
+        except KeyError as exc:
+            raise ApiError(404, "version_not_found", "Версия не найдена") from exc
+        except ValueError as exc:
+            raise ApiError(400, "run_invalid", str(exc)) from exc
         except Exception as exc:
             raise ApiError(
                 500, "storage_error", f"Не удалось создать запуск: {exc}"
@@ -868,8 +907,8 @@ def create_app(context: ApiContext | None = None) -> FastAPI:
     ) -> Response:
         _require_api_token(context, request)
         _require_configured(context)
-        if kind not in {"excel", "word"}:
-            raise ApiError(400, "unknown_report", "Отчёт бывает только excel или word.")
+        if kind != "word":
+            raise ApiError(400, "unknown_report", "Отчёт бывает только word.")
         record = _load_run_record(context, _parse_uuid(run_id, field="run_id"))
         if str(record.get("status")) not in POSITION_DONE_STATUSES:
             raise ApiError(409, "audit_not_finished", "Аудит ещё выполняется.")
@@ -881,17 +920,11 @@ def create_app(context: ApiContext | None = None) -> FastAPI:
             raise ApiError(
                 500, "blob_missing", "Байты отчёта отсутствуют в хранилище."
             ) from exc
-        suffix = "xlsx" if kind == "excel" else "docx"
-        media = (
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            if kind == "excel"
-            else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
         return Response(
             content=bytes(payload),
-            media_type=media,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             headers={
-                "Content-Disposition": f"attachment; filename=audit-{record['id']}.{suffix}"
+                "Content-Disposition": f"attachment; filename=audit-{record['id']}.docx"
             },
         )
 
