@@ -256,7 +256,7 @@ def _quote_boxes(page, quote):
     unique fragment, numeric cells by row intersection. Plain-text quotes
     keep the previous exact behaviour.
     """
-    import fitz
+    import pymupdf
 
     normalized = " ".join(page.get_text().casefold().split())
     if "<td" not in quote and "<th" not in quote:
@@ -291,10 +291,10 @@ def _quote_boxes(page, quote):
     candidates = page.search_for(longest)
     rows = []
     for candidate in candidates:
-        band = fitz.Rect(0, candidate.y0 - candidate.height,
+        band = pymupdf.Rect(0, candidate.y0 - candidate.height,
                          page.rect.width, candidate.y1 + candidate.height)
         row_words = [word for word in words
-                     if band.intersects(fitz.Rect(word[:4]))]
+                     if band.intersects(pymupdf.Rect(word[:4]))]
         row_text = " ".join(word[4] for word in row_words)
         if any(number in row_text for number in numbers):
             rows.extend(box for box in page.search_for(longest)
@@ -321,7 +321,7 @@ def _unique_subphrase(normalized, phrase):
 
 
 def source_evidence(context, record, index, position):
-    import fitz
+    import pymupdf
 
     stored = next(
         x["result"] for x in record["indexed_results"] if x["position_index"] == index
@@ -339,7 +339,7 @@ def source_evidence(context, record, index, position):
         if context.repository.version_project_id(version.id) != record["project_id"]:
             continue
         page_number, quote = evidence["page"], str(evidence.get("quote") or "")
-        with fitz.open(
+        with pymupdf.open(
             stream=context.blob_store.get(version.blob_key), filetype="pdf"
         ) as pdf:
             if not 1 <= page_number <= len(pdf):
@@ -347,7 +347,7 @@ def source_evidence(context, record, index, position):
             page = pdf[page_number - 1]
             boxes = _quote_boxes(page, quote)
             # Repeated or long/multiline ambiguous hits do not become an accepted highlight.
-            union = fitz.Rect(boxes[0]) if boxes else None
+            union = pymupdf.Rect(boxes[0]) if boxes else None
             for box in boxes[1:]:
                 union |= box
             if union and union.height > page.rect.height * 0.2:

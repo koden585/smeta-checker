@@ -241,11 +241,11 @@ class MigrationTests(unittest.TestCase):
 
 class AuditPersistenceTests(unittest.TestCase):
     def _fake_vor(self, folder):
-        import fitz
+        import pymupdf
 
-        with fitz.open() as pdf:
+        with pymupdf.open() as pdf:
             page = pdf.new_page()
-            page.insert_textbox(fitz.Rect(50, 50, 500, 600), "Copper cable 45 m. " * 40)
+            page.insert_textbox(pymupdf.Rect(50, 50, 500, 600), "Copper cable 45 m. " * 40)
             pdf.save(folder / "project.pdf")
         header = [
             "№ п.п.",
@@ -262,11 +262,11 @@ class AuditPersistenceTests(unittest.TestCase):
         )
 
     def _run(self, folder, repo, client_factory):
-        import fitz
+        import pymupdf
 
         from audit_service import run_audit
 
-        pool = {"project.pdf": fitz.open(folder / "project.pdf")}
+        pool = {"project.pdf": pymupdf.open(folder / "project.pdf")}
         try:
             return run_audit(
                 {"vor.csv": str(folder / "vor.csv")},
@@ -388,7 +388,7 @@ class AuditPersistenceTests(unittest.TestCase):
             repo.create_project("ИГДИ")
             expected = hashlib.sha256((folder / "project.pdf").read_bytes()).hexdigest()
 
-            import fitz
+            import pymupdf
 
             with patch("audit_tracing._configured_client", return_value=None):
                 with patch(
@@ -406,7 +406,7 @@ class AuditPersistenceTests(unittest.TestCase):
                         "discrepancy_details": "stub",
                     },
                 ):
-                    pool = {"project.pdf": fitz.open(folder / "project.pdf")}
+                    pool = {"project.pdf": pymupdf.open(folder / "project.pdf")}
                     try:
                         run_audit(
                             {"vor.csv": str(folder / "vor.csv")},

@@ -108,11 +108,11 @@ class PositionJobTests(unittest.TestCase):
 
 
 def _fake_pdf_bytes():
-    import fitz
+    import pymupdf
 
-    with fitz.open() as pdf:
+    with pymupdf.open() as pdf:
         page = pdf.new_page()
-        page.insert_textbox(fitz.Rect(50, 50, 500, 600), "Copper cable 45 m. " * 40)
+        page.insert_textbox(pymupdf.Rect(50, 50, 500, 600), "Copper cable 45 m. " * 40)
         return bytes(pdf.tobytes())
 
 

@@ -642,9 +642,13 @@ class PDFTextSource:
         rows: list[str] = []
         locators: list[dict] = []
         try:
-            finder = self._doc[idx].find_tables()
+            # 2.0: table.header renders a pixmap via a page weakref;
+            # hold the page or the header access dies with ReferenceError.
+            table_page = self._doc[idx]
+            finder = table_page.find_tables()
         except Exception:
             finder = None
+            table_page = None
         tables = getattr(finder, "tables", None) or []
         table_no = 0
         for table in tables:

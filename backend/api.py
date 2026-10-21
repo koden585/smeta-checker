@@ -370,9 +370,9 @@ def _upload_document(
     else:
         _check_pdf_magic(data)
         try:
-            import fitz
+            import pymupdf
 
-            with fitz.open(stream=bytes(data), filetype="pdf") as doc:
+            with pymupdf.open(stream=bytes(data), filetype="pdf") as doc:
                 if doc.page_count < 1:
                     raise ApiError(400, "empty_pdf", "PDF не содержит страниц.")
         except ApiError:
