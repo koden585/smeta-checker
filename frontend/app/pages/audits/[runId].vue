@@ -10,7 +10,7 @@ const route = useRoute(),
   results = ref<RowsDto | null>(null),
   error = ref(''),
   busy = ref(true),
-  focus = ref('all'),
+  focus = ref('fix'),
   query = ref(''),
   offset = ref(0)
 const position = computed(() =>
@@ -21,9 +21,12 @@ const position = computed(() =>
 const queues = [
   { id: 'fix', label: 'Исправить' },
   { id: 'review', label: 'Проверить вручную' },
-  { id: 'missing', label: 'Проверка не выполнена' },
   { id: 'all', label: 'Все позиции' },
 ]
+const vorDocument = computed(
+  () => summary.value?.documents.find((d) => d.id === summary.value?.run.vor_version_id) || null,
+)
+const vorTitle = computed(() => vorDocument.value?.title || run.value?.vor_filename || '')
 function queueCount(id: string) {
   if (!summary.value) return 0
   if (id === 'all')
@@ -48,6 +51,7 @@ let active = true,
   timer: ReturnType<typeof setTimeout> | undefined,
   searchTimer: ReturnType<typeof setTimeout> | undefined,
   epoch = 0
+const fixButton = ref<HTMLButtonElement | null>(null)
 async function loadRows() {
   const current = ++epoch
   busy.value = true
@@ -81,6 +85,7 @@ async function poll() {
     }
     summary.value = await backend.summary(runId.value)
     await loadRows()
+    fixButton.value?.focus({ preventScroll: true })
   } catch (e) {
     if (active) {
       error.value = readableError(e) + '. Повторяем подключение…'
@@ -148,8 +153,11 @@ onBeforeUnmount(() => {
       </nav>
       <div class="page-heading">
         <div>
-          <h1>{{ summary?.project.name || 'Проверка документов' }}</h1>
-          <p class="muted">{{ run?.vor_filename }} · {{ runLabel(run?.status || '') }}</p>
+          <h1>{{ vorTitle || summary?.project.name || 'Проверка документов' }}</h1>
+          <p class="muted">
+            {{ summary?.project.name }} · {{ run?.vor_filename }} ·
+            {{ runLabel(run?.status || '') }}
+          </p>
         </div>
         <div class="heading-actions">
           <UButton v-if="summary" variant="outline" icon="i-lucide-download" @click="download()">
@@ -212,6 +220,11 @@ onBeforeUnmount(() => {
             <button
               v-for="item in queues"
               :key="item.id"
+              :ref="
+                (el) => {
+                  if (item.id === 'fix') fixButton = el as HTMLButtonElement | null
+                }
+              "
               type="button"
               class="filter"
               :aria-pressed="focus === item.id"
@@ -294,7 +307,7 @@ onBeforeUnmount(() => {
       </template>
       <AuditWorkspace
         v-if="position !== null && summary"
-        :key="runId + ':' + position"
+        :key="runId"
         :run-id="runId"
         :position-index="position"
         :position-count="summary.run.total ?? 0"

@@ -100,39 +100,33 @@ export type AuditStatusResponse = {
 };
 
 /**
- * BindingDTO
+ * Body_format_report_upload_api_v1_format_report_post
  */
-export type BindingDto = {
+export type BodyFormatReportUploadApiV1FormatReportPost = {
     /**
-     * Candidates
+     * File
      */
-    candidates: Array<string>;
-    /**
-     * Confirmed
-     */
-    confirmed: boolean;
-    /**
-     * Pdf Version Ids
-     */
-    pdf_version_ids: Array<string>;
-    /**
-     * Vor Version Id
-     */
-    vor_version_id: string;
+    file: Blob | File;
 };
 
 /**
- * BindingPut
+ * Body_format_word_upload_api_v1_format_word_post
  */
-export type BindingPut = {
+export type BodyFormatWordUploadApiV1FormatWordPost = {
     /**
-     * Confirmed
+     * File
      */
-    confirmed?: boolean;
+    file: Blob | File;
+};
+
+/**
+ * Body_formatting_upload_api_v1_format_checks_post
+ */
+export type BodyFormattingUploadApiV1FormatChecksPost = {
     /**
-     * Pdf Version Ids
+     * File
      */
-    pdf_version_ids?: Array<string>;
+    file: Blob | File;
 };
 
 /**
@@ -381,13 +375,29 @@ export type ExcelRowDto = {
  */
 export type FormatDto = {
     /**
+     * Error Count
+     */
+    error_count?: number;
+    /**
      * Issues
      */
     issues: Array<FormatIssueDto>;
     /**
+     * Sheet
+     */
+    sheet?: string;
+    /**
+     * Sheets
+     */
+    sheets?: Array<string>;
+    /**
      * Version Id
      */
     version_id: string;
+    /**
+     * Warning Count
+     */
+    warning_count?: number;
 };
 
 /**
@@ -410,6 +420,18 @@ export type FormatIssueDto = {
      * Expected
      */
     expected: string;
+    /**
+     * Group
+     */
+    group?: string;
+    /**
+     * Group Hint
+     */
+    group_hint?: string;
+    /**
+     * Group Title
+     */
+    group_title?: string;
     /**
      * Status
      */
@@ -1006,6 +1028,12 @@ export type VersionDto = {
      */
     filename: string;
     /**
+     * Format Status
+     */
+    format_status?: {
+        [key: string]: unknown;
+    };
+    /**
      * Id
      */
     id: string;
@@ -1036,6 +1064,10 @@ export type VersionDto = {
      * Size
      */
     size: number;
+    /**
+     * Title
+     */
+    title?: string;
 };
 
 /**
@@ -1084,6 +1116,10 @@ export type VorPosition = {
      * Comment
      */
     comment?: string;
+    /**
+     * Designation Refs
+     */
+    designation_refs?: Array<string>;
     /**
      * Document Id
      */
@@ -1641,6 +1677,72 @@ export type FormattingApiV1DocumentsVersionIdFormatChecksPostResponses = {
 
 export type FormattingApiV1DocumentsVersionIdFormatChecksPostResponse = FormattingApiV1DocumentsVersionIdFormatChecksPostResponses[keyof FormattingApiV1DocumentsVersionIdFormatChecksPostResponses];
 
+export type FormatReportApiV1DocumentsVersionIdFormatReportGetData = {
+    body?: never;
+    path: {
+        /**
+         * Version Id
+         */
+        version_id: string;
+    };
+    query?: {
+        /**
+         * Sheet
+         */
+        sheet?: string | null;
+    };
+    url: '/api/v1/documents/{version_id}/format-report';
+};
+
+export type FormatReportApiV1DocumentsVersionIdFormatReportGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type FormatReportApiV1DocumentsVersionIdFormatReportGetError = FormatReportApiV1DocumentsVersionIdFormatReportGetErrors[keyof FormatReportApiV1DocumentsVersionIdFormatReportGetErrors];
+
+export type FormatReportApiV1DocumentsVersionIdFormatReportGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type FormatWordApiV1DocumentsVersionIdFormatWordGetData = {
+    body?: never;
+    path: {
+        /**
+         * Version Id
+         */
+        version_id: string;
+    };
+    query?: {
+        /**
+         * Sheet
+         */
+        sheet?: string | null;
+    };
+    url: '/api/v1/documents/{version_id}/format-word';
+};
+
+export type FormatWordApiV1DocumentsVersionIdFormatWordGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type FormatWordApiV1DocumentsVersionIdFormatWordGetError = FormatWordApiV1DocumentsVersionIdFormatWordGetErrors[keyof FormatWordApiV1DocumentsVersionIdFormatWordGetErrors];
+
+export type FormatWordApiV1DocumentsVersionIdFormatWordGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
 export type UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchData = {
     body: VersionMetadataPatch;
     path: {
@@ -1731,65 +1833,91 @@ export type DeleteVersionApiV1DocumentsVersionIdVersionDeleteResponses = {
 
 export type DeleteVersionApiV1DocumentsVersionIdVersionDeleteResponse = DeleteVersionApiV1DocumentsVersionIdVersionDeleteResponses[keyof DeleteVersionApiV1DocumentsVersionIdVersionDeleteResponses];
 
-export type GetBindingsApiV1DocumentsVorVersionIdBindingsGetData = {
-    body?: never;
-    path: {
+export type FormattingUploadApiV1FormatChecksPostData = {
+    body: BodyFormattingUploadApiV1FormatChecksPost;
+    path?: never;
+    query?: {
         /**
-         * Vor Version Id
+         * Sheet
          */
-        vor_version_id: string;
+        sheet?: string | null;
     };
-    query?: never;
-    url: '/api/v1/documents/{vor_version_id}/bindings';
+    url: '/api/v1/format-checks';
 };
 
-export type GetBindingsApiV1DocumentsVorVersionIdBindingsGetErrors = {
+export type FormattingUploadApiV1FormatChecksPostErrors = {
     /**
      * Validation Error
      */
     422: HttpValidationError;
 };
 
-export type GetBindingsApiV1DocumentsVorVersionIdBindingsGetError = GetBindingsApiV1DocumentsVorVersionIdBindingsGetErrors[keyof GetBindingsApiV1DocumentsVorVersionIdBindingsGetErrors];
+export type FormattingUploadApiV1FormatChecksPostError = FormattingUploadApiV1FormatChecksPostErrors[keyof FormattingUploadApiV1FormatChecksPostErrors];
 
-export type GetBindingsApiV1DocumentsVorVersionIdBindingsGetResponses = {
+export type FormattingUploadApiV1FormatChecksPostResponses = {
     /**
      * Successful Response
      */
-    200: BindingDto;
+    200: FormatDto;
 };
 
-export type GetBindingsApiV1DocumentsVorVersionIdBindingsGetResponse = GetBindingsApiV1DocumentsVorVersionIdBindingsGetResponses[keyof GetBindingsApiV1DocumentsVorVersionIdBindingsGetResponses];
+export type FormattingUploadApiV1FormatChecksPostResponse = FormattingUploadApiV1FormatChecksPostResponses[keyof FormattingUploadApiV1FormatChecksPostResponses];
 
-export type PutBindingsApiV1DocumentsVorVersionIdBindingsPutData = {
-    body: BindingPut;
-    path: {
+export type FormatReportUploadApiV1FormatReportPostData = {
+    body: BodyFormatReportUploadApiV1FormatReportPost;
+    path?: never;
+    query?: {
         /**
-         * Vor Version Id
+         * Sheet
          */
-        vor_version_id: string;
+        sheet?: string | null;
     };
-    query?: never;
-    url: '/api/v1/documents/{vor_version_id}/bindings';
+    url: '/api/v1/format-report';
 };
 
-export type PutBindingsApiV1DocumentsVorVersionIdBindingsPutErrors = {
+export type FormatReportUploadApiV1FormatReportPostErrors = {
     /**
      * Validation Error
      */
     422: HttpValidationError;
 };
 
-export type PutBindingsApiV1DocumentsVorVersionIdBindingsPutError = PutBindingsApiV1DocumentsVorVersionIdBindingsPutErrors[keyof PutBindingsApiV1DocumentsVorVersionIdBindingsPutErrors];
+export type FormatReportUploadApiV1FormatReportPostError = FormatReportUploadApiV1FormatReportPostErrors[keyof FormatReportUploadApiV1FormatReportPostErrors];
 
-export type PutBindingsApiV1DocumentsVorVersionIdBindingsPutResponses = {
+export type FormatReportUploadApiV1FormatReportPostResponses = {
     /**
      * Successful Response
      */
-    200: BindingDto;
+    200: unknown;
 };
 
-export type PutBindingsApiV1DocumentsVorVersionIdBindingsPutResponse = PutBindingsApiV1DocumentsVorVersionIdBindingsPutResponses[keyof PutBindingsApiV1DocumentsVorVersionIdBindingsPutResponses];
+export type FormatWordUploadApiV1FormatWordPostData = {
+    body: BodyFormatWordUploadApiV1FormatWordPost;
+    path?: never;
+    query?: {
+        /**
+         * Sheet
+         */
+        sheet?: string | null;
+    };
+    url: '/api/v1/format-word';
+};
+
+export type FormatWordUploadApiV1FormatWordPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type FormatWordUploadApiV1FormatWordPostError = FormatWordUploadApiV1FormatWordPostErrors[keyof FormatWordUploadApiV1FormatWordPostErrors];
+
+export type FormatWordUploadApiV1FormatWordPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
 
 export type ProjectsApiV1ProjectsGetData = {
     body?: never;

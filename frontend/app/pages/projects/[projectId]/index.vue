@@ -33,6 +33,9 @@ const docBusy = ref(false)
 const archivingDocId = ref<string | null>(null)
 const archiveBusy = ref(false)
 const confirmProjectArchive = ref(false)
+const confirmProjectDelete = ref(false)
+const deleteNameDraft = ref('')
+const deleteBusy = ref(false)
 
 const importOpen = ref(false)
 const revisionTargetId = ref<string | undefined>(undefined)
@@ -129,6 +132,22 @@ async function setProjectArchived(archived: boolean) {
   }
 }
 
+async function deleteProject() {
+  if (!project.value || deleteBusy.value) return
+  if (deleteNameDraft.value.trim() !== project.value.name) {
+    error.value = 'Название не совпадает. Удаление отменено.'
+    return
+  }
+  deleteBusy.value = true
+  try {
+    await backend.deleteProject(projectId.value)
+    await router.push({ path: '/', query: { archived: 'true' } })
+  } catch (e) {
+    error.value = readableError(e)
+  } finally {
+    deleteBusy.value = false
+  }
+}
 function startDocRename(doc: DocumentDto) {
   renamingDocId.value = doc.id
   docNameDraft.value = doc.title
@@ -336,16 +355,27 @@ onBeforeUnmount(() => {
                   @click="confirmProjectArchive = true"
                   >В архив</UButton
                 >
+                <UButton
+                  v-if="project.archived"
+                  icon="i-lucide-trash-2"
+                  color="error"
+                  variant="outline"
+                  size="sm"
+                  @click="confirmProjectDelete = true"
+                  >Удалить</UButton
+                >
               </div>
             </template>
           </div>
-          <UButton
-            icon="i-lucide-plus"
-            color="primary"
-            :disabled="project.archived"
-            @click="openImport()"
-            >Добавить документы</UButton
-          >
+          <div class="project-heading-side">
+            <UButton
+              icon="i-lucide-plus"
+              color="primary"
+              :disabled="project.archived"
+              @click="openImport()"
+              >Добавить документы</UButton
+            >
+          </div>
         </div>
 
         <UAlert
@@ -668,6 +698,38 @@ onBeforeUnmount(() => {
             </div>
           </template>
         </UModal>
+
+        <UModal v-model:open="confirmProjectDelete" title="Удалить проект?">
+          <template #body>
+            <p class="muted modal-text">
+              Проект «{{ project.name }}», все документы, проверки и результаты будут удалены
+              безвозвратно. Введите название проекта для подтверждения.
+            </p>
+            <UInput
+              v-model="deleteNameDraft"
+              aria-label="Название проекта для подтверждения удаления"
+              placeholder="Название проекта"
+              :disabled="deleteBusy"
+              @keyup.enter="deleteProject()"
+            />
+            <div class="toolbar spread modal-footer">
+              <UButton
+                color="neutral"
+                variant="ghost"
+                :disabled="deleteBusy"
+                @click="confirmProjectDelete = false"
+                >Отмена</UButton
+              >
+              <UButton
+                color="error"
+                :loading="deleteBusy"
+                :disabled="deleteNameDraft.trim() !== project.name"
+                @click="deleteProject()"
+                >Удалить навсегда</UButton
+              >
+            </div>
+          </template>
+        </UModal>
       </template>
     </main>
   </div>
@@ -687,6 +749,12 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 4px;
   margin-top: 4px;
+}
+.project-heading-side {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
 }
 .project-alert {
   margin-bottom: 16px;

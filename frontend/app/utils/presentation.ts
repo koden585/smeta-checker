@@ -1,6 +1,18 @@
 export function quantityText(value: string | number | null | undefined) {
   if (value === null || value === undefined || value === '') return '—'
+  let text = String(value).trim().replace(/\s/g, '')
+  // Normalize decimal mark first so 231.0 and 231,0 compare equal.
+  const num = Number(text.replace(',', '.'))
+  if (Number.isFinite(num)) {
+    // Strip insignificant zeros: 231.0 -> 231, 78.90 -> 78,9.
+    text = String(Math.round(num * 1000) / 1000).replace('.', ',')
+    return text
+  }
   return String(value).replace(/(?<=\d)\.(?=\d)/, ',')
+}
+function unitText(unit: string | null | undefined) {
+  // шт. and шт are the same unit; trailing dots vary by author.
+  return (unit || '').trim().replace(/\.+$/, '')
 }
 export function quantityWithUnit(
   value: string | number | null | undefined,
@@ -8,11 +20,29 @@ export function quantityWithUnit(
 ) {
   if (value === null || value === undefined || value === '') return '—'
   const text = quantityText(value),
-    suffix = unit?.trim() || ''
+    suffix = unitText(unit)
   return !suffix ||
     String(value).trim().toLocaleLowerCase('ru-RU').endsWith(suffix.toLocaleLowerCase('ru-RU'))
     ? text
     : text + ' ' + suffix
+}
+export function quantityDelta(
+  declared: string | number | null | undefined,
+  found: string | number | null | undefined,
+): string | null {
+  const parse = (value: string | number | null | undefined): number | null => {
+    if (value === null || value === undefined || value === '') return null
+    const num = Number(String(value).replace(/\s/g, '').replace(',', '.'))
+    return Number.isFinite(num) ? num : null
+  }
+  const a = parse(declared)
+  const b = parse(found)
+  if (a === null || b === null) return null
+  // Round to 3 decimals to avoid float artifacts (0.1 + 0.2).
+  const diff = Math.round((b - a) * 1000) / 1000
+  if (diff === 0) return '±0'
+  const text = quantityText(String(Math.abs(diff)))
+  return (diff > 0 ? '+' : '−') + text
 }
 export function queueLabel(queue: string) {
   return (

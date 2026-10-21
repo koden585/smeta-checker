@@ -143,58 +143,46 @@
         "title": "AuditStatusResponse",
         "type": "object"
       },
-      "BindingDTO": {
-        "additionalProperties": false,
+      "Body_format_report_upload_api_v1_format_report_post": {
         "properties": {
-          "candidates": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Candidates",
-            "type": "array"
-          },
-          "confirmed": {
-            "title": "Confirmed",
-            "type": "boolean"
-          },
-          "pdf_version_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Pdf Version Ids",
-            "type": "array"
-          },
-          "vor_version_id": {
-            "title": "Vor Version Id",
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
             "type": "string"
           }
         },
         "required": [
-          "vor_version_id",
-          "pdf_version_ids",
-          "confirmed",
-          "candidates"
+          "file"
         ],
-        "title": "BindingDTO",
+        "title": "Body_format_report_upload_api_v1_format_report_post",
         "type": "object"
       },
-      "BindingPut": {
-        "additionalProperties": false,
+      "Body_format_word_upload_api_v1_format_word_post": {
         "properties": {
-          "confirmed": {
-            "default": false,
-            "title": "Confirmed",
-            "type": "boolean"
-          },
-          "pdf_version_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Pdf Version Ids",
-            "type": "array"
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
           }
         },
-        "title": "BindingPut",
+        "required": [
+          "file"
+        ],
+        "title": "Body_format_word_upload_api_v1_format_word_post",
+        "type": "object"
+      },
+      "Body_formatting_upload_api_v1_format_checks_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_formatting_upload_api_v1_format_checks_post",
         "type": "object"
       },
       "Body_upload_document_api_v1_documents_post": {
@@ -587,6 +575,11 @@
       "FormatDTO": {
         "additionalProperties": false,
         "properties": {
+          "error_count": {
+            "default": 0,
+            "title": "Error Count",
+            "type": "integer"
+          },
           "issues": {
             "items": {
               "$ref": "#/components/schemas/FormatIssueDTO"
@@ -594,9 +587,26 @@
             "title": "Issues",
             "type": "array"
           },
+          "sheet": {
+            "default": "",
+            "title": "Sheet",
+            "type": "string"
+          },
+          "sheets": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Sheets",
+            "type": "array"
+          },
           "version_id": {
             "title": "Version Id",
             "type": "string"
+          },
+          "warning_count": {
+            "default": 0,
+            "title": "Warning Count",
+            "type": "integer"
           }
         },
         "required": [
@@ -623,6 +633,21 @@
           },
           "expected": {
             "title": "Expected",
+            "type": "string"
+          },
+          "group": {
+            "default": "",
+            "title": "Group",
+            "type": "string"
+          },
+          "group_hint": {
+            "default": "",
+            "title": "Group Hint",
+            "type": "string"
+          },
+          "group_title": {
+            "default": "",
+            "title": "Group Title",
             "type": "string"
           },
           "status": {
@@ -1565,6 +1590,11 @@
             "title": "Filename",
             "type": "string"
           },
+          "format_status": {
+            "additionalProperties": true,
+            "title": "Format Status",
+            "type": "object"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -1602,6 +1632,11 @@
           "size": {
             "title": "Size",
             "type": "integer"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
           }
         },
         "required": [
@@ -1681,6 +1716,13 @@
             "default": "",
             "title": "Comment",
             "type": "string"
+          },
+          "designation_refs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Designation Refs",
+            "type": "array"
           },
           "document_id": {
             "default": "",
@@ -2534,6 +2576,114 @@
         "summary": "Formatting"
       }
     },
+    "/api/v1/documents/{version_id}/format-report": {
+      "get": {
+        "operationId": "format_report_api_v1_documents__version_id__format_report_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "title": "Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sheet",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sheet"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Format Report"
+      }
+    },
+    "/api/v1/documents/{version_id}/format-word": {
+      "get": {
+        "operationId": "format_word_api_v1_documents__version_id__format_word_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "title": "Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sheet",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sheet"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Format Word"
+      }
+    },
     "/api/v1/documents/{version_id}/metadata": {
       "patch": {
         "operationId": "update_version_metadata_api_v1_documents__version_id__metadata_patch",
@@ -2661,62 +2811,33 @@
         "summary": "Delete Version"
       }
     },
-    "/api/v1/documents/{vor_version_id}/bindings": {
-      "get": {
-        "operationId": "get_bindings_api_v1_documents__vor_version_id__bindings_get",
+    "/api/v1/format-checks": {
+      "post": {
+        "operationId": "formatting_upload_api_v1_format_checks_post",
         "parameters": [
           {
-            "in": "path",
-            "name": "vor_version_id",
-            "required": true,
+            "in": "query",
+            "name": "sheet",
+            "required": false,
             "schema": {
-              "title": "Vor Version Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BindingDTO"
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
                 }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Bindings"
-      },
-      "put": {
-        "operationId": "put_bindings_api_v1_documents__vor_version_id__bindings_put",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "vor_version_id",
-            "required": true,
-            "schema": {
-              "title": "Vor Version Id",
-              "type": "string"
+              ],
+              "title": "Sheet"
             }
           }
         ],
         "requestBody": {
           "content": {
-            "application/json": {
+            "multipart/form-data": {
               "schema": {
-                "$ref": "#/components/schemas/BindingPut"
+                "$ref": "#/components/schemas/Body_formatting_upload_api_v1_format_checks_post"
               }
             }
           },
@@ -2727,7 +2848,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/BindingDTO"
+                  "$ref": "#/components/schemas/FormatDTO"
                 }
               }
             },
@@ -2744,7 +2865,117 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Put Bindings"
+        "summary": "Formatting Upload"
+      }
+    },
+    "/api/v1/format-report": {
+      "post": {
+        "operationId": "format_report_upload_api_v1_format_report_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "sheet",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sheet"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_format_report_upload_api_v1_format_report_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Format Report Upload"
+      }
+    },
+    "/api/v1/format-word": {
+      "post": {
+        "operationId": "format_word_upload_api_v1_format_word_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "sheet",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sheet"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_format_word_upload_api_v1_format_word_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Format Word Upload"
       }
     },
     "/api/v1/projects": {

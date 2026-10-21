@@ -5,7 +5,11 @@ export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig(event)
   if (!config.backendToken)
     throw createError({ statusCode: 503, statusMessage: 'Сервер проверки не подключён' })
-  if (!/^\/api\/v1\/(projects|documents|audits)(?:[/?]|$)/.test(event.path))
+  if (
+    !/^\/api\/v1\/(projects|documents|audits|format-checks|format-report|format-word)(?:[/?]|$)/.test(
+      event.path,
+    )
+  )
     throw createError({ statusCode: 404, statusMessage: 'Маршрут не найден' })
   const target = new URL(event.path, config.backendUrl)
   const backend = new URL(config.backendUrl)

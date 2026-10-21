@@ -92,6 +92,16 @@ class CorrelationTests(unittest.TestCase):
             run.close()
         self.assertEqual(seen["start"]["metadata"]["audit_run_id"], "explicit")
 
+    def test_session_id_stable_per_audit_run(self):
+        first = TracingRun(audit_run_id="run-123")
+        second = TracingRun(audit_run_id="run-123")
+        self.assertEqual(first.session_id, second.session_id)
+        self.assertEqual(first.session_id, "audit-run-123")
+        other = TracingRun(audit_run_id="run-456")
+        self.assertNotEqual(first.session_id, other.session_id)
+        fallback = TracingRun()
+        self.assertTrue(fallback.session_id.startswith("audit-"))
+
 
 class StructuredLogTests(unittest.TestCase):
     def test_json_record_carries_ids_and_scrubs_secrets(self):

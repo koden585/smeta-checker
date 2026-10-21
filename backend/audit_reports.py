@@ -27,6 +27,89 @@ STATUS_COLORS = {DISCREPANCY: "FEE2E2", MANUAL: "FEF3C7",
 REPORT_COLUMNS = ["№", "Наименование работ", "Статус аудита", "Что не так",
                   "Наименование файла", "Где проверить"]
 
+_CLAIM_SUBJECTS = {
+    "presence": "Работа",
+    "quantity": "Количество",
+    "unit": "Единица измерения",
+    "method": "Способ выполнения",
+    "comment": "Примечание из ВОР",
+}
+
+_REASON_TEXTS = {
+    "no_proposal": "в проекте не нашлось подходящего места",
+    "work_object_mismatch": "в проекте нашёлся другой объект работ",
+    "operation_needs_description_page": "нужна страница с описанием операции",
+    "work_cited": "работа упомянута в проекте",
+    "unusable_ocr": "страница не распозналась",
+    "worded_quantity_without_digits": "количество написано словами без цифр",
+    "ambiguous_measurements": "в проекте несколько разных чисел — неясно, какое относится к работе",
+    "quantity_not_bound_to_unit": "число есть, но единица измерения к нему не привязалась",
+    "conflicting_applicable_facts": "два места в проекте противоречат друг другу",
+    "comment_not_cited": "примечание из ВОР в проекте не нашлось",
+    "comment_required": "примечание обязательно для этой позиции",
+    "equivalence_unproven": "равнозначность формулировок не доказана",
+    "method_equivalence_unproven": "равнозначность способа выполнения не доказана",
+    "method_required": "способ выполнения обязателен для этой позиции",
+    "method_terms_missing": "в проекте нет слов про этот способ выполнения",
+    "value_mismatch": "число в проекте не совпало с ведомостью",
+    "unit_mismatch": "единица измерения в проекте другая",
+    "unit_not_bound": "единица измерения не привязалась к числу",
+    "directed_pair_mismatch": "пара «число — единица» не сошлась",
+    "source_conflict": "два источника в проекте противоречат друг другу",
+    "measurement_unresolved": "величину не удалось опознать",
+    "measurement_basis_unresolved": "неясно, к чему относится величина",
+    "measurement_subject_unresolved": "неясно, что именно измерено",
+    "geometry_only_not_measurement_basis": "есть только размеры, а нужно количество",
+    "layout_unresolved": "таблица в проекте не разобралась",
+    "requirement_operator_unresolved": "условие требования не разобралось",
+    "display-operand-mismatch": "число из текста расчёта не входит в формулу количества",
+    "display-cell-not-operand": "ячейка из текста расчёта не используется формулой количества",
+    "display-text-diverges": "текст расчёта не сходится с формулой количества",
+    "invalid_pdf_page_reference": "ссылка на страницы в ВОР некорректна",
+}
+
+
+def _human_claim_note(check):
+    """Render one machine check as a human sentence; unknown codes stay visible."""
+    claim_id = str(check.get("claim_id") or "")
+    state = str(check.get("state") or "")
+    reasons = [str(reason) for reason in check.get("reasons") or []]
+    head, _, tail = claim_id.partition(":")
+    if head == "workbook":
+        subject = "Ведомость"
+    elif head == "reference":
+        subject = "Ссылка на страницы"
+    elif head == "attribute":
+        subject = "Примечание из ВОР" if "comment" in claim_id else "Требование из ВОР"
+    elif head == "basis":
+        subject = "Основание"
+    elif head == "geometry":
+        subject = "Размеры"
+    elif head == "quantity" and tail == "consumption":
+        subject = "Расход материала"
+    else:
+        subject = _CLAIM_SUBJECTS.get(head, head or "Проверка")
+    if state == "contradiction":
+        verdict = "расхождение"
+    elif state == "not_found":
+        verdict = "не найдено в проекте"
+    elif state == "source_conflict":
+        verdict = "источники в проекте противоречат друг другу"
+    elif state == "review_required":
+        verdict = "нужна ручная проверка"
+    else:
+        verdict = state
+    details = "; ".join(
+        _REASON_TEXTS.get(reason, reason)
+        for reason in reasons
+        if (state, reason) not in {
+            ("not_found", "comment_not_cited"),
+            ("not_found", "no_proposal"),
+            ("contradiction", "source_conflict"),
+        }
+    )
+    text = f"{subject}: {verdict}"
+    return f"{text} ({details})." if details else f"{text}."
 
 def _text(value):
     text = str(value).strip() if value is not None else ""
@@ -271,11 +354,30 @@ def build_user_report(df, tracking, tasks):
                                                       or source.get("contexts")))
             status = {"Ошибка": DISCREPANCY, INCOMPLETE: MANUAL,
                       TECHNICAL_ERROR: NOT_CHECKED, "ОК": "ОК"}[verdict]
+            covered_workbook = any(
+                "ведомости противоречие" in str(note) for note in remarks
+            )
+            covered_comment = any(
+                "Примечание из ВОР" in str(note) for note in notes
+            )
+            seen_comment = False
             for check in checks.values():
                 if check.get("state") in {"confirmed", "not_applicable"}:
                     continue
-                reasons = ", ".join(check.get("reasons") or [])
-                notes.append(f"{check['claim_id']}: {check.get('state')} ({reasons}).")
+                claim_id = str(check.get("claim_id") or "")
+                head = claim_id.split(":")[0]
+                # Workbook findings already render above with cell addresses;
+                # a second generic sentence adds noise, not information.
+                if head == "workbook" and covered_workbook:
+                    continue
+                # comment + attribute:comment:* describe one fact; the note
+                # above already says it. Keep a single human sentence only
+                # when nothing said it yet.
+                if head in {"comment", "attribute"}:
+                    if covered_comment or seen_comment:
+                        continue
+                    seen_comment = True
+                notes.append(_human_claim_note(check))
         records.append(dict(zip(REPORT_COLUMNS, [row.iloc[0], task["w_name"], status,
             " ".join(remarks + notes) if remarks or notes else "Расхождений не обнаружено.",
             "\n".join(files) or "Не указан", location])))

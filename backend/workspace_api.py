@@ -7,12 +7,10 @@ from collections import Counter
 from urllib.parse import quote
 
 import fitz
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, UploadFile
 from fastapi.responses import Response
 
 from workspace_models import (
-    BindingDTO,
-    BindingPut,
     DocumentDTO,
     DocumentPatch,
     FormatDTO,
@@ -88,19 +86,26 @@ def workspace_router(get_context) -> APIRouter:
             raise ApiError(400, "project_required", "Укажите название проекта")
         # Independent UUID per call: duplicate names never merge.
         value = context.repository.create_project(name)
-        return {"id": str(value.id), "name": value.name,
-                "archived": value.archived, "created_at": value.created_at}
+        return {
+            "id": str(value.id),
+            "name": value.name,
+            "archived": value.archived,
+            "created_at": value.created_at,
+        }
 
     @router.get("/api/v1/projects/{project_id}", response_model=ProjectDTO)
     def get_project(project_id: str, context=Depends(guarded)):
-        return {"id": str(project(context, project_id).id),
-                "name": project(context, project_id).name,
-                "archived": project(context, project_id).archived,
-                "created_at": project(context, project_id).created_at}
+        return {
+            "id": str(project(context, project_id).id),
+            "name": project(context, project_id).name,
+            "archived": project(context, project_id).archived,
+            "created_at": project(context, project_id).created_at,
+        }
 
     @router.patch("/api/v1/projects/{project_id}", response_model=ProjectDTO)
-    def update_project(project_id: str, payload: ProjectUpdate,
-                       context=Depends(guarded)):
+    def update_project(
+        project_id: str, payload: ProjectUpdate, context=Depends(guarded)
+    ):
         if payload.name is not None and not payload.name.strip():
             raise ApiError(400, "project_required", "Укажите название проекта")
         try:
@@ -124,8 +129,12 @@ def workspace_router(get_context) -> APIRouter:
             raise ApiError(404, "project_not_found", "Проект не найден") from exc
         except LookupError as exc:
             raise ApiError(409, "project_in_use", str(exc)) from exc
-        return {"id": str(row.id), "name": row.name,
-                "archived": row.archived, "created_at": row.created_at}
+        return {
+            "id": str(row.id),
+            "name": row.name,
+            "archived": row.archived,
+            "created_at": row.created_at,
+        }
 
     @router.get(
         "/api/v1/projects/{project_id}/documents", response_model=list[VersionDTO]
@@ -139,7 +148,8 @@ def workspace_router(get_context) -> APIRouter:
             return document
         try:
             records = context.repository.run_progress_records(
-                run_id=_parse_uuid(str(last["run_id"]), field="run_id"))
+                run_id=_parse_uuid(str(last["run_id"]), field="run_id")
+            )
         except Exception:
             return document
         if not records:
@@ -148,13 +158,16 @@ def workspace_router(get_context) -> APIRouter:
         enriched["last_run"] = run_progress(context, records[0])
         return enriched
 
-    @router.get("/api/v1/projects/{project_id}/catalog",
-                response_model=list[DocumentDTO])
-    def catalog(project_id: str, archived: bool = Query(False),
-                context=Depends(guarded)):
+    @router.get(
+        "/api/v1/projects/{project_id}/catalog", response_model=list[DocumentDTO]
+    )
+    def catalog(
+        project_id: str, archived: bool = Query(False), context=Depends(guarded)
+    ):
         try:
             documents = context.repository.catalog(
-                project(context, project_id).id, archived=archived)
+                project(context, project_id).id, archived=archived
+            )
         except KeyError as exc:
             raise ApiError(404, "project_not_found", "Проект не найден") from exc
         return [_enrich_last_run(context, document) for document in documents]
@@ -162,24 +175,27 @@ def workspace_router(get_context) -> APIRouter:
     def _document_or_404(context, document_id: str) -> dict:
         try:
             return context.repository.load_document(
-                _parse_uuid(document_id, field="document_id"))
+                _parse_uuid(document_id, field="document_id")
+            )
         except KeyError as exc:
             raise ApiError(404, "document_not_found", "Документ не найден") from exc
 
-    @router.get("/api/v1/documents/{document_id}/detail",
-                response_model=DocumentDTO)
+    @router.get("/api/v1/documents/{document_id}/detail", response_model=DocumentDTO)
     def document_detail(document_id: str, context=Depends(guarded)):
         return _enrich_last_run(context, _document_or_404(context, document_id))
 
     @router.patch("/api/v1/documents/{document_id}", response_model=DocumentDTO)
-    def update_document(document_id: str, payload: DocumentPatch,
-                        context=Depends(guarded)):
+    def update_document(
+        document_id: str, payload: DocumentPatch, context=Depends(guarded)
+    ):
         if payload.title is not None and not payload.title.strip():
             raise ApiError(400, "document_invalid", "Название не может быть пустым")
         try:
-            current_id = (_parse_uuid(payload.current_version_id,
-                                      field="current_version_id")
-                          if payload.current_version_id else ...)
+            current_id = (
+                _parse_uuid(payload.current_version_id, field="current_version_id")
+                if payload.current_version_id
+                else ...
+            )
             updated = context.repository.update_document(
                 _parse_uuid(document_id, field="document_id"),
                 title=(payload.title.strip() if payload.title is not None else None),
@@ -192,12 +208,12 @@ def workspace_router(get_context) -> APIRouter:
         except ValueError as exc:
             raise ApiError(400, "document_invalid", str(exc)) from exc
 
-    @router.delete("/api/v1/documents/{document_id}/detail",
-                   response_model=DocumentDTO)
+    @router.delete("/api/v1/documents/{document_id}/detail", response_model=DocumentDTO)
     def delete_document(document_id: str, context=Depends(guarded)):
         try:
             row = _enrich_last_run(context, _document_or_404(context, document_id))
             from uuid import UUID as _UUID
+
             context.repository.delete_document(_UUID(str(row["id"])))
         except KeyError as exc:
             raise ApiError(404, "document_not_found", "Документ не найден") from exc
@@ -205,10 +221,10 @@ def workspace_router(get_context) -> APIRouter:
             raise ApiError(409, "document_in_use", str(exc)) from exc
         return row
 
-    @router.patch("/api/v1/documents/{version_id}/metadata",
-                  response_model=VersionDTO)
-    def update_version_metadata(version_id: str, payload: VersionMetadataPatch,
-                                context=Depends(guarded)):
+    @router.patch("/api/v1/documents/{version_id}/metadata", response_model=VersionDTO)
+    def update_version_metadata(
+        version_id: str, payload: VersionMetadataPatch, context=Depends(guarded)
+    ):
         try:
             return context.repository.update_version_metadata(
                 _parse_uuid(version_id, field="version_id"),
@@ -219,45 +235,19 @@ def workspace_router(get_context) -> APIRouter:
         except ValueError as exc:
             raise ApiError(400, "metadata_invalid", str(exc)) from exc
 
-    @router.delete("/api/v1/documents/{version_id}/version",
-                   response_model=VersionDeletedDTO)
+    @router.delete(
+        "/api/v1/documents/{version_id}/version", response_model=VersionDeletedDTO
+    )
     def delete_version(version_id: str, context=Depends(guarded)):
         try:
             context.repository.delete_version(
-                _parse_uuid(version_id, field="version_id"))
+                _parse_uuid(version_id, field="version_id")
+            )
         except KeyError as exc:
             raise ApiError(404, "version_not_found", "Версия не найдена") from exc
         except LookupError as exc:
             raise ApiError(409, "version_in_use", str(exc)) from exc
         return {"deleted": True}
-
-    @router.get("/api/v1/documents/{vor_version_id}/bindings",
-                response_model=BindingDTO)
-    def get_bindings(vor_version_id: str, context=Depends(guarded)):
-        try:
-            return context.repository.get_binding(
-                _parse_uuid(vor_version_id, field="vor_version_id"))
-        except KeyError as exc:
-            raise ApiError(404, "version_not_found", "Версия не найдена") from exc
-        except ValueError as exc:
-            raise ApiError(400, "not_vor_version", str(exc)) from exc
-
-    @router.put("/api/v1/documents/{vor_version_id}/bindings",
-                response_model=BindingDTO)
-    def put_bindings(vor_version_id: str, payload: BindingPut,
-                     context=Depends(guarded)):
-        try:
-            return context.repository.save_binding(
-                _parse_uuid(vor_version_id, field="vor_version_id"),
-                [_parse_uuid(item, field="pdf_version_ids")
-                 for item in (payload.pdf_version_ids or [])],
-                confirmed=bool(payload.confirmed),
-            )
-        except KeyError as exc:
-            raise ApiError(404, "version_not_found", "Версия не найдена") from exc
-        except ValueError as exc:
-            raise ApiError(400, "binding_invalid", str(exc)) from exc
-
 
     @router.get("/api/v1/projects/{project_id}/audits", response_model=list[RunDTO])
     def history(
@@ -431,6 +421,102 @@ def workspace_router(get_context) -> APIRouter:
                 native_records(doc), doc.get_toc(), sha256=ref.sha256
             )
 
+    @router.get("/api/v1/documents/{version_id}/format-report")
+    def format_report(
+        version_id: str,
+        request: Request,
+        sheet: str | None = Query(None, max_length=100),
+        context=Depends(guarded),
+    ):
+        import io
+        from vor_rules import (
+            get_highlighted_workbook,
+            validate_vor_formatting,
+            vor_sheet_names,
+        )
+
+        ref = version(context, version_id)
+        if ref.kind != "vor" or not ref.filename.lower().endswith(".xlsx"):
+            raise ApiError(
+                400, "xlsx_required", "Оформление проверяется только для XLSX"
+            )
+        blob = bytes(context.blob_store.get(ref.blob_key))
+        sheets = vor_sheet_names(io.BytesIO(blob))
+        wanted = (sheet or "").strip()
+        if wanted and wanted not in sheets:
+            raise ApiError(404, "sheet_not_found", "Лист ВОР не найден")
+        active = wanted or (sheets[0] if sheets else "")
+        try:
+            rows = validate_vor_formatting(io.BytesIO(blob), sheet_name=active or None)
+        except KeyError as exc:
+            raise ApiError(404, "sheet_not_found", "Лист ВОР не найден") from exc
+        painted = get_highlighted_workbook(
+            io.BytesIO(blob), rows, sheet_name=active or None
+        )
+        stem = (
+            ref.filename[:-5]
+            if ref.filename.lower().endswith(".xlsx")
+            else ref.filename
+        )
+        return Response(
+            content=painted or blob,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "ETag": f'"{ref.sha256}:format"',
+                "Cache-Control": "private, no-cache",
+                "Content-Disposition": (
+                    f"attachment; filename*=UTF-8''{quote(stem + ' — оформление.xlsx')}"
+                ),
+            },
+        )
+
+    @router.get("/api/v1/documents/{version_id}/format-word")
+    def format_word(
+        version_id: str,
+        request: Request,
+        sheet: str | None = Query(None, max_length=100),
+        context=Depends(guarded),
+    ):
+        import io
+        from vor_rules import (
+            generate_rules_word_report,
+            validate_vor_formatting,
+            vor_sheet_names,
+        )
+
+        ref = version(context, version_id)
+        if ref.kind != "vor" or not ref.filename.lower().endswith(".xlsx"):
+            raise ApiError(
+                400, "xlsx_required", "Оформление проверяется только для XLSX"
+            )
+        blob = bytes(context.blob_store.get(ref.blob_key))
+        sheets = vor_sheet_names(io.BytesIO(blob))
+        wanted = (sheet or "").strip()
+        if wanted and wanted not in sheets:
+            raise ApiError(404, "sheet_not_found", "Лист ВОР не найден")
+        active = wanted or (sheets[0] if sheets else "")
+        try:
+            rows = validate_vor_formatting(io.BytesIO(blob), sheet_name=active or None)
+        except KeyError as exc:
+            raise ApiError(404, "sheet_not_found", "Лист ВОР не найден") from exc
+        report = generate_rules_word_report(ref.filename, rows, sheet=active)
+        stem = (
+            ref.filename[:-5]
+            if ref.filename.lower().endswith(".xlsx")
+            else ref.filename
+        )
+        return Response(
+            content=report,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={
+                "ETag": f'"{ref.sha256}:format-word"',
+                "Cache-Control": "private, no-cache",
+                "Content-Disposition": (
+                    f"attachment; filename*=UTF-8''{quote(stem + ' — оформление.docx')}"
+                ),
+            },
+        )
+
     @router.post(
         "/api/v1/documents/{version_id}/format-checks", response_model=FormatDTO
     )
@@ -440,19 +526,218 @@ def workspace_router(get_context) -> APIRouter:
         context=Depends(guarded),
     ):
         import io
-        from vor_rules import validate_vor_formatting
+        from vor_rules import (
+            summarize_format_rows,
+            validate_vor_formatting,
+            vor_sheet_names,
+        )
 
         ref = version(context, version_id)
         if ref.kind != "vor" or not ref.filename.lower().endswith(".xlsx"):
             raise ApiError(
                 400, "xlsx_required", "Оформление проверяется только для XLSX"
             )
+        blob = context.blob_store.get(ref.blob_key)
+        sheets = vor_sheet_names(io.BytesIO(blob))
+        wanted = (sheet or "").strip()
+        if wanted and wanted not in sheets:
+            raise ApiError(404, "sheet_not_found", "Лист ВОР не найден")
+        active = wanted or (sheets[0] if sheets else "")
         try:
-            issues = validate_vor_formatting(
-                io.BytesIO(context.blob_store.get(ref.blob_key)), sheet_name=sheet
+            rows = validate_vor_formatting(io.BytesIO(blob), sheet_name=active or None)
+        except KeyError as exc:
+            raise ApiError(404, "sheet_not_found", "Лист ВОР не найден") from exc
+        issues, errors = summarize_format_rows(rows)
+        from datetime import datetime, timezone
+
+        context.repository.record_format_status(
+            _parse_uuid(version_id, field="version_id"),
+            {
+                "state": "passed" if not issues else "failed",
+                "sheet": active,
+                "error_count": errors,
+                "warning_count": len(issues) - errors,
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return {
+            "version_id": version_id,
+            "sheet": active,
+            "sheets": sheets,
+            "error_count": errors,
+            "warning_count": len(issues) - errors,
+            "issues": issues,
+        }
+
+    @router.post("/api/v1/format-checks", response_model=FormatDTO)
+    async def formatting_upload(
+        request: Request,
+        file: UploadFile,
+        sheet: str | None = Query(None, max_length=100),
+        context=Depends(guarded),
+    ):
+        from api import (
+            _check_upload_limits,
+            _check_upload_mime,
+            _safe_filename,
+        )
+
+        import io
+        from vor_rules import (
+            summarize_format_rows,
+            validate_vor_formatting,
+            vor_sheet_names,
+        )
+
+        data = await file.read(context.settings.max_upload_bytes + 1)
+        filename = _safe_filename(file.filename or "")
+        _check_upload_limits(context, bytes(data))
+        _check_upload_mime(file, "vor")
+        if not filename.lower().endswith(".xlsx"):
+            raise ApiError(
+                400, "xlsx_required", "Оформление проверяется только для XLSX"
+            )
+        if not data:
+            raise ApiError(400, "empty_upload", "Загруженный файл пуст.")
+        sheets = vor_sheet_names(io.BytesIO(bytes(data)))
+        wanted = (sheet or "").strip()
+        if wanted and wanted not in sheets:
+            raise ApiError(404, "sheet_not_found", "Лист ВОР не найден")
+        active = wanted or (sheets[0] if sheets else "")
+        try:
+            rows = validate_vor_formatting(
+                io.BytesIO(bytes(data)), sheet_name=active or None
             )
         except KeyError as exc:
             raise ApiError(404, "sheet_not_found", "Лист ВОР не найден") from exc
-        return {"version_id": version_id, "issues": issues}
+        except Exception as exc:
+            raise ApiError(
+                400, "invalid_vor", f"Не удалось прочитать ВОР: {exc}"
+            ) from exc
+        issues, errors = summarize_format_rows(rows)
+        return {
+            "version_id": "",
+            "sheet": active,
+            "sheets": sheets,
+            "error_count": errors,
+            "warning_count": len(issues) - errors,
+            "issues": issues,
+        }
+
+    @router.post("/api/v1/format-report")
+    async def format_report_upload(
+        request: Request,
+        file: UploadFile,
+        sheet: str | None = Query(None, max_length=100),
+        context=Depends(guarded),
+    ):
+        from api import (
+            _check_upload_limits,
+            _check_upload_mime,
+            _safe_filename,
+        )
+
+        import io
+        from vor_rules import (
+            get_highlighted_workbook,
+            validate_vor_formatting,
+            vor_sheet_names,
+        )
+
+        data = await file.read(context.settings.max_upload_bytes + 1)
+        filename = _safe_filename(file.filename or "")
+        _check_upload_limits(context, bytes(data))
+        _check_upload_mime(file, "vor")
+        if not filename.lower().endswith(".xlsx"):
+            raise ApiError(
+                400, "xlsx_required", "Оформление проверяется только для XLSX"
+            )
+        if not data:
+            raise ApiError(400, "empty_upload", "Загруженный файл пуст.")
+        blob = bytes(data)
+        sheets = vor_sheet_names(io.BytesIO(blob))
+        wanted = (sheet or "").strip()
+        if wanted and wanted not in sheets:
+            raise ApiError(404, "sheet_not_found", "Лист ВОР не найден")
+        active = wanted or (sheets[0] if sheets else "")
+        try:
+            rows = validate_vor_formatting(io.BytesIO(blob), sheet_name=active or None)
+        except KeyError as exc:
+            raise ApiError(404, "sheet_not_found", "Лист ВОР не найден") from exc
+        except Exception as exc:
+            raise ApiError(
+                400, "invalid_vor", f"Не удалось прочитать ВОР: {exc}"
+            ) from exc
+        painted = get_highlighted_workbook(
+            io.BytesIO(blob), rows, sheet_name=active or None
+        )
+        stem = filename[:-5] if filename.lower().endswith(".xlsx") else filename
+        return Response(
+            content=painted or blob,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Cache-Control": "private, no-cache",
+                "Content-Disposition": (
+                    f"attachment; filename*=UTF-8''{quote(stem + ' — оформление.xlsx')}"
+                ),
+            },
+        )
+
+    @router.post("/api/v1/format-word")
+    async def format_word_upload(
+        request: Request,
+        file: UploadFile,
+        sheet: str | None = Query(None, max_length=100),
+        context=Depends(guarded),
+    ):
+        from api import (
+            _check_upload_limits,
+            _check_upload_mime,
+            _safe_filename,
+        )
+
+        import io
+        from vor_rules import (
+            generate_rules_word_report,
+            validate_vor_formatting,
+            vor_sheet_names,
+        )
+
+        data = await file.read(context.settings.max_upload_bytes + 1)
+        filename = _safe_filename(file.filename or "")
+        _check_upload_limits(context, bytes(data))
+        _check_upload_mime(file, "vor")
+        if not filename.lower().endswith(".xlsx"):
+            raise ApiError(
+                400, "xlsx_required", "Оформление проверяется только для XLSX"
+            )
+        if not data:
+            raise ApiError(400, "empty_upload", "Загруженный файл пуст.")
+        blob = bytes(data)
+        sheets = vor_sheet_names(io.BytesIO(blob))
+        wanted = (sheet or "").strip()
+        if wanted and wanted not in sheets:
+            raise ApiError(404, "sheet_not_found", "Лист ВОР не найден")
+        active = wanted or (sheets[0] if sheets else "")
+        try:
+            rows = validate_vor_formatting(io.BytesIO(blob), sheet_name=active or None)
+        except KeyError as exc:
+            raise ApiError(404, "sheet_not_found", "Лист ВОР не найден") from exc
+        except Exception as exc:
+            raise ApiError(
+                400, "invalid_vor", f"Не удалось прочитать ВОР: {exc}"
+            ) from exc
+        report = generate_rules_word_report(filename, rows, sheet=active)
+        stem = filename[:-5] if filename.lower().endswith(".xlsx") else filename
+        return Response(
+            content=report,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={
+                "Cache-Control": "private, no-cache",
+                "Content-Disposition": (
+                    f"attachment; filename*=UTF-8''{quote(stem + ' — оформление.docx')}"
+                ),
+            },
+        )
 
     return router

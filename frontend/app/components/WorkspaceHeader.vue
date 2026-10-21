@@ -1,29 +1,28 @@
 <script setup lang="ts">
 const props = defineProps<{ active?: 'projects' | 'create' }>()
 const onProjects = computed(() => props.active !== 'create')
-const onCreate = computed(() => props.active === 'create')
 </script>
 
 <template>
   <a class="skip-link" href="#main-content">К содержимому</a>
   <header class="app-header">
-    <NuxtLink to="/" class="brand" aria-label="КДФП · Проверка ВОР — все проекты">
+    <NuxtLink to="/" class="brand">
       <span class="brand-mark">КД<span>ФП</span></span>
       <span class="brand-divider" aria-hidden="true"></span>
       <span class="brand-product">Проверка ВОР</span>
+      <span class="visually-hidden"> — все проекты</span>
     </NuxtLink>
     <nav class="header-navigation" aria-label="Основная навигация">
       <UButton
         to="/"
+        aria-label="Проекты"
         color="neutral"
         :variant="onProjects ? 'soft' : 'ghost'"
         :aria-current="onProjects ? 'page' : undefined"
         icon="i-lucide-layout-dashboard"
-        >Проекты</UButton
+        ><span class="header-project-label">Проекты</span></UButton
       >
-      <UButton v-if="!onCreate" to="/upload" icon="i-lucide-plus" color="neutral" variant="outline"
-        >Новый проект</UButton
-      >
+      <VorFormatProbe />
       <UColorModeButton
         class="theme-button"
         aria-label="Переключить светлую и тёмную тему"
@@ -70,9 +69,19 @@ const onCreate = computed(() => props.active === 'create')
   font-size: 16px;
   font-weight: 650;
 }
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
 .header-navigation {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .theme-button {

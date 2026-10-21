@@ -28,6 +28,7 @@ const canvas = ref<HTMLCanvasElement>(),
   zoom = ref(1),
   count = ref(0),
   busy = ref(false),
+  ready = ref(false),
   error = ref(''),
   width = ref(0),
   height = ref(0),
@@ -96,6 +97,7 @@ async function render() {
       viewport,
     }).render()
     if (current !== epoch) return
+    ready.value = true
     scroll.value.scrollTop = props.region?.highlights[0]
       ? Math.max(
           0,
@@ -115,6 +117,7 @@ async function open() {
   renderTask?.cancel()
   if (loading) await loading.destroy()
   documentPdf = null
+  ready.value = false
   busy.value = true
   error.value = ''
   try {
@@ -287,7 +290,7 @@ defineExpose({
         aria-label="Увеличить PDF"
         @click="zoom = Math.min(4, zoom + 0.5)"
       /><UButton variant="ghost" color="neutral" @click="zoom = 1">По ширине</UButton
-      ><span v-if="busy" class="muted" role="status">Открываем…</span>
+      ><span v-if="busy && !ready" class="muted" role="status">Открываем…</span>
     </div>
     <div v-if="error" class="error-box" role="alert">
       {{ error }} <UButton @click="open">Повторить</UButton>

@@ -852,7 +852,9 @@ class RealPDFTests(unittest.TestCase):
                                       expected_volume="999", expected_unit="m",
                                       expected_work="Copper cable")
         self.assertEqual(result["status"], "Неполная проверка")
-        self.assertIn("p2q9", result["discrepancy_details"])
+        # Fabricated ids are rejected without leaking ids into user text.
+        self.assertNotIn("p2q9", result["discrepancy_details"])
+        self.assertNotIn("Отклонено", result["discrepancy_details"])
 
     def test_rotated_source_document_is_never_mutated(self):
         import pymupdf

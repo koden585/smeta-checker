@@ -60,7 +60,7 @@ def _prompt_reserve(prompt, max_output_tokens):
 class RequestBudget:
     """Count every HTTP attempt, including retries, before sending it."""
 
-    def __init__(self, max_requests=6, max_total_tokens=60000, max_output_tokens=6000):
+    def __init__(self, max_requests=6, max_total_tokens=120000, max_output_tokens=12000):
         if min(max_requests, max_total_tokens, max_output_tokens) <= 0:
             raise ValueError("Бюджеты должны быть положительными")
         self.max_requests = max_requests
@@ -1474,8 +1474,11 @@ def parse_audit_response(raw, context, comment_required=True, *, expected_volume
                                      state=ClaimState.NOT_FOUND,
                                      reasons=["comment_not_cited"], required=False))
     details = str(wire.get("discrepancy_details") or "")
-    for message in rejected:
-        details = f"{details} Отклонено предложение: {message}.".strip()
+    if rejected:
+        with span("validate-claim-proposals", as_type="chain") as observation:
+            observation.update(output={"rejected": rejected})
+            if evidence:
+                observation.update(metadata={"accepted_claims": sorted(grouped)})
     if not evidence and "не доказывает" not in details:
         details = (details + " В переданных фрагментах подходящих сведений не найдено; это не доказывает их отсутствие в PDF.").strip()
     by_id = {check.claim_id: check for check in checks}

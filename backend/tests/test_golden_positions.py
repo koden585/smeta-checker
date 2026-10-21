@@ -76,11 +76,11 @@ class GoldenWorkbookTests(unittest.TestCase):
             calc, "631,2*0,44",
             {"display_cell": "E20", "display_formula": '=D19&"*0,44"'},
             _CELLS)
-        kinds = {h["kind"] for h in hits}
-        self.assertEqual(
-            kinds, {"display-operand-mismatch", "display-cell-not-operand"})
-        self.assertTrue(any("631.2" in h["message"] for h in hits))
-        self.assertTrue(any("D19" in h["message"] for h in hits))
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["kind"], "display-text-diverges")
+        self.assertIn("631,2", hits[0]["message"])
+        self.assertIn("D19", hits[0]["message"])
+        self.assertIn("231", hits[0]["message"])
 
     def test_no14_display_contradiction(self):
         calc = _anchor_calc("=ROUND(D30*0.44,0)", "1879", "D30")
@@ -89,11 +89,11 @@ class GoldenWorkbookTests(unittest.TestCase):
             calc, "2254,8*0,44",
             {"display_cell": "E32", "display_formula": '=D31&"*0,44"'},
             _CELLS)
-        kinds = {h["kind"] for h in hits}
-        self.assertEqual(
-            kinds, {"display-operand-mismatch", "display-cell-not-operand"})
-        self.assertTrue(any("2254.8" in h["message"] for h in hits))
-        self.assertTrue(any("D31" in h["message"] for h in hits))
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["kind"], "display-text-diverges")
+        self.assertIn("2254,8", hits[0]["message"])
+        self.assertIn("D31", hits[0]["message"])
+        self.assertIn("827", hits[0]["message"])
 
 
 class GoldenStockChainTests(unittest.TestCase):
@@ -197,12 +197,11 @@ class GoldenReportTests(unittest.TestCase):
 
     def test_no3_wording_names_workbook_contradiction(self):
         row = self._row("Ошибка", {"workbook_notes": [
-            {"kind": "display-operand-mismatch", "display_cell": "E20",
-             "message": "в тексте расчёта E20 показано число 631.2"},
-            {"kind": "display-cell-not-operand", "display_cell": "E20",
-             "message": "текст расчёта E20 ссылается на D19"}]})
+            {"kind": "display-text-diverges", "display_cell": "E20",
+             "message": "расчёт E20 не сходится с количеством D20"}]})
         self.assertEqual(row["Статус аудита"], DISCREPANCY)
         self.assertIn("В самой ведомости противоречие", row["Что не так"])
+        self.assertIn("E20", row["Что не так"])
         self.assertNotIn("а в спецификации", row["Что не так"])
 
     def test_chain_convergence_is_manual_not_error(self):

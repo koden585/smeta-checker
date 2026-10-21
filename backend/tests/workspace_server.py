@@ -99,11 +99,6 @@ def main():
             )
             response.raise_for_status()
             versions.append(response.json()["version_id"])
-        binding = client.put(
-            f"/api/v1/documents/{versions[0]}/bindings",
-            json={"pdf_version_ids": [versions[1]], "confirmed": True},
-        )
-        binding.raise_for_status()
         response = client.post(
             "/api/v1/audits",
             json={

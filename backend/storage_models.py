@@ -10,8 +10,8 @@ every version carries its own source filename, extracted metadata and editable
 overrides. The unique ``(project, kind, filename)`` identity was removed in
 the lifecycle migration: same bytes in different logical documents are
 permitted, same bytes in one document still dedupe to one version. Run PDF
-pins are relational rows (``run_pdf_versions``); VOR->PDF bindings are stored
-per VOR version with a confirmation flag, never inferred.
+pins are relational rows (``run_pdf_versions``). VOR designations verify
+against PDF text at audit time; no manual binding is stored.
 """
 
 from __future__ import annotations
@@ -105,6 +105,9 @@ class DocumentVersion(Base):
     metadata_overrides: Mapped[dict[str, Any]] = mapped_column(
         JSONB, default=dict, server_default="{}"
     )
+    format_status: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -138,33 +141,6 @@ class RunPdfVersion(Base):
     __table_args__ = (UniqueConstraint("run_id", "version_id"),)
 
 
-class VorBinding(Base):
-    """Per-VOR-version PDF selection. Rows are created unconfirmed and only
-    become ``confirmed`` through an explicit PUT; nothing is ever inferred."""
-
-    __tablename__ = "vor_bindings"
-
-    vor_version_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("document_versions.id", ondelete="RESTRICT"),
-        primary_key=True,
-    )
-    confirmed: Mapped[bool] = mapped_column(
-        Boolean, default=False, server_default="false", nullable=False
-    )
-
-
-class VorBindingPdf(Base):
-    __tablename__ = "vor_binding_pdfs"
-
-    vor_version_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("vor_bindings.vor_version_id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    pdf_version_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("document_versions.id", ondelete="RESTRICT"),
-        primary_key=True,
-    )
 
 
 class Run(Base):

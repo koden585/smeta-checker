@@ -8,7 +8,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pdf_binding import (  # noqa: E402
     clean_pdf_name,
+    index_designations,
+    normalize_designation,
     resolve_position_pdfs,
+    split_designation_refs,
     split_pdf_refs,
 )
 
@@ -59,6 +62,35 @@ class PdfBindingTests(unittest.TestCase):
         self.assertEqual(pdfs, [])
         self.assertIn("Неоднозначная", error)
         self.assertIsNotNone(resolve_position_pdfs([], pool)[3])
+
+    def test_designation_refs_skip_sheet_numbers(self):
+        self.assertEqual(
+            split_designation_refs("30/09-ТКР16.ГЧ л. 1,"),
+            ["30/09-ТКР16.ГЧ"])
+        self.assertEqual(
+            split_designation_refs("30/09-ТКР16.ГЧ л.1-3; 30/09-ТКР16.СО л. 2"),
+            ["30/09-ТКР16.ГЧ", "30/09-ТКР16.СО"])
+
+    def test_designation_refs_empty_without_designations(self):
+        for value in (None, "", "nan", "см. чертежи"):
+            self.assertEqual(split_designation_refs(value), [])
+
+    def test_normalize_designation_folds_case_and_spacing(self):
+        self.assertEqual(
+            normalize_designation("30/09 - ТКР16.гч"),
+            normalize_designation("30/09-ТКР16.ГЧ"))
+        self.assertNotEqual(
+            normalize_designation("30/09-ТКР16.ГЧ"),
+            normalize_designation("30/09-ТКР16.СО"))
+
+    def test_index_designations_maps_full_and_bare_forms(self):
+        index = index_designations([
+            (1, "ПРОЕКТНАЯ ДОКУМЕНТАЦИЯ 30/09-ТКР16 Том 3.16"),
+            (5, "Спецификация 30/09-ТКР16.СО"),
+        ])
+        self.assertEqual(index[normalize_designation("30/09-ТКР16")], [1, 5])
+        self.assertEqual(index[normalize_designation("30/09-ТКР16.СО")], [5])
+        self.assertNotIn(normalize_designation("30/09-ТКР16.ГЧ"), index)
 
 
 if __name__ == "__main__":

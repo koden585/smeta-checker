@@ -306,6 +306,21 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual(book["ВОР-2"]["C3"].value, 45)
             book.close()
 
+    def test_sheet_window_shows_three_rows_and_key_columns(self):
+        from vor_parse import load_vor_positions
+        from workspace_service import sheet_window
+
+        data = workbook_bytes()
+        positions, _ = load_vor_positions(data, "source.xlsx")
+        window = sheet_window(data, positions[0])
+        rows = [row["number"] for row in window["rows"]]
+        # Fixture has a single data row at 3: window clamps to [2, 3].
+        self.assertEqual(rows, [2, 3])
+        self.assertEqual(window["columns"], ["A", "B", "C", "D", "E", "J", "K"])
+        selected = [row for row in window["rows"] if row["selected"]]
+        self.assertEqual([row["number"] for row in selected], [3])
+        for row in window["rows"]:
+            self.assertLessEqual(len(row["cells"]), 7)
     def test_new_routes_require_same_bearer_as_existing_api(self):
         with tempfile.TemporaryDirectory() as tmp:
             client, app = self._open_app(tmp)
@@ -316,3 +331,31 @@ class WorkspaceTests(unittest.TestCase):
                 headers={"Authorization": "Bearer synthetic-server-key"},
             )
             self.assertEqual(response.status_code, 200)
+
+    def test_table_quote_highlights_row_with_matching_quantity(self):
+        import fitz
+        from workspace_service import _quote_boxes
+
+        with fitz.open() as pdf:
+            page = pdf.new_page()
+            page.insert_text((72, 100), "2.2 Gruntovye ankery Aker sht. 827")
+            page.insert_text((72, 200), "1.2 Gruntovye ankery Aker sht. 231")
+            quote = (
+                "<tr><td>1.2</td>"
+                "<td>Gruntovye ankery Aker</td>"
+                "<td>sht.</td><td>231</td></tr>"
+            )
+            boxes = _quote_boxes(page, quote)
+            self.assertEqual(len(boxes), 1)
+            self.assertGreater(boxes[0].y0, 150)
+
+    def test_table_quote_without_numbers_stays_unhighlighted(self):
+        import fitz
+        from workspace_service import _quote_boxes
+
+        with fitz.open() as pdf:
+            page = pdf.new_page()
+            page.insert_text((72, 100), "Gruntovye ankery Aker")
+            page.insert_text((72, 200), "Gruntovye ankery Aker")
+            quote = "<tr><td>Gruntovye ankery Aker</td></tr>"
+            self.assertEqual(_quote_boxes(page, quote), [])

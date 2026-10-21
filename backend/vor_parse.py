@@ -15,7 +15,7 @@ import re
 import pandas as pd
 
 from audit_models import PositionSource, SourceHeading, VorMeta, VorPosition
-from pdf_binding import split_pdf_refs
+from pdf_binding import split_designation_refs, split_pdf_refs
 from vor_formula import calculate_cell, snapshot_cells
 
 
@@ -668,6 +668,7 @@ def _vor_positions(df):
                 page_ref="" if page_ref.lower() == "nan" else page_ref,
                 file_ref="" if file_ref.lower() == "nan" else file_ref,
                 explicit_refs=split_pdf_refs(file_ref),
+                designation_refs=split_designation_refs(reference),
                 comment=comment,
                 formula=formula,
                 formula_refs=formula_refs,

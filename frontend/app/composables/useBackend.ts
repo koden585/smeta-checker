@@ -2,7 +2,6 @@ import { z } from 'zod'
 import {
   zProjectDto,
   zDocumentDto,
-  zBindingDto,
   zVersionDto,
   zRunDto,
   zSummaryDto,
@@ -70,11 +69,29 @@ export function useBackend() {
     link.click()
     setTimeout(() => URL.revokeObjectURL(href), 1000)
   }
+  async function downloadPost(url: string, form: FormData, filename: string) {
+    const reply = await fetch(url, {
+      method: 'POST',
+      body: form,
+      credentials: 'same-origin',
+    })
+    if (!reply.ok) {
+      const data: unknown = await reply.json().catch(() => null)
+      throw Error(backendError(data))
+    }
+    const href = URL.createObjectURL(await reply.blob())
+    const link = document.createElement('a')
+    link.href = href
+    link.download = filename
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(href), 1000)
+  }
   return {
     json,
     audit,
     contentUrl,
     download,
+    downloadPost,
     connect: (password = '') =>
       json('/api/session', z.object({ connected: z.literal(true) }), {
         method: 'POST',
@@ -95,6 +112,10 @@ export function useBackend() {
       json(`${root}/projects/${encodeURIComponent(id)}`, zProjectDto, {
         method: 'PATCH',
         body: JSON.stringify(fields),
+      }),
+    deleteProject: (id: string) =>
+      json(`${root}/projects/${encodeURIComponent(id)}`, zProjectDto, {
+        method: 'DELETE',
       }),
     catalog: (id: string, archived = false) =>
       json(
@@ -124,13 +145,6 @@ export function useBackend() {
           method: 'DELETE',
         },
       ),
-    bindings: (id: string) =>
-      json(`${root}/documents/${encodeURIComponent(id)}/bindings`, zBindingDto),
-    saveBindings: (id: string, pdfVersionIds: string[], confirmed = true) =>
-      json(`${root}/documents/${encodeURIComponent(id)}/bindings`, zBindingDto, {
-        method: 'PUT',
-        body: JSON.stringify({ pdf_version_ids: pdfVersionIds, confirmed }),
-      }),
     documents: (id: string) =>
       json(`${root}/projects/${encodeURIComponent(id)}/documents`, z.array(zVersionDto)),
     upload: (form: FormData) =>
@@ -161,13 +175,18 @@ export function useBackend() {
       json(`${audit(id)}/positions/${position}/workspace`, zWorkspaceDto),
     structure: (id: string) =>
       json(`${root}/documents/${encodeURIComponent(id)}/structure`, zStructureDto),
-    formatting: (id: string, sheet = '') =>
-      json(
-        `${root}/documents/${encodeURIComponent(id)}/format-checks?sheet=${encodeURIComponent(sheet)}`,
-        zFormatDto,
-        {
-          method: 'POST',
-        },
-      ),
+    formatting: (id: string, sheet = '') => {
+      const query = sheet.trim() ? `?sheet=${encodeURIComponent(sheet.trim())}` : ''
+      return json(`${root}/documents/${encodeURIComponent(id)}/format-checks${query}`, zFormatDto, {
+        method: 'POST',
+      })
+    },
+    formattingUpload: (form: FormData, sheet = '') => {
+      const query = sheet.trim() ? `?sheet=${encodeURIComponent(sheet.trim())}` : ''
+      return json(root + `/format-checks${query}`, zFormatDto, {
+        method: 'POST',
+        body: form,
+      })
+    },
   }
 }

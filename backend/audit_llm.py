@@ -241,7 +241,7 @@ def audit_position_hybrid(
             try:
                 attempt_sources = repair_sources if repair_sources is not None else quote_sources
                 attempt_input = repair_input or user_input
-                if attempt:
+                if attempt and not (length_repaired and repair_input):
                     retry_note = f"\n\nПредыдущий ответ отклонен: {last_error[:300]}. "
                     if last_hint:
                         retry_note += f"Исправление: {last_hint[:400]} "
@@ -458,7 +458,7 @@ def audit_position_hybrid(
                     marker in last_incomplete.lower()
                     for marker in ("max_output_tokens", "length")
                 ):
-                    if chat_options and not length_repaired and attempt + 1 < max_retries:
+                    if not length_repaired and attempt + 1 < max_retries:
                         compact = {}
                         for page in context:
                             ids = [key for key, source in quote_sources.items() if source["page"] == page]

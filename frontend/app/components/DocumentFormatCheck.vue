@@ -12,7 +12,27 @@ const result = ref<FormatDto | null>(null)
 
 let epoch = 0
 
-const issues = computed(() => (result.value?.issues ?? []).filter((issue) => issue.status !== 'OK'))
+const sheetItems = computed(() =>
+  (result.value?.sheets ?? []).map((name) => ({ label: name, value: name })),
+)
+
+const formatBadge = computed(() => {
+  const status = (props.version.format_status ?? {}) as Record<string, unknown>
+  if (status.state === 'passed')
+    return { color: 'success' as const, label: 'Оформление: соответствует' }
+  if (status.state === 'failed') {
+    const errors = Number(status.error_count ?? 0)
+    const warnings = Number(status.warning_count ?? 0)
+    const parts = []
+    if (errors) parts.push(`ошибок: ${errors}`)
+    if (warnings) parts.push(`замечаний: ${warnings}`)
+    return {
+      color: 'warning' as const,
+      label: `Оформление: ${parts.join(', ') || 'есть замечания'}`,
+    }
+  }
+  return null
+})
 
 async function check() {
   const current = ++epoch
@@ -22,6 +42,7 @@ async function check() {
     const value = await backend.formatting(props.version.id, sheet.value.trim())
     if (current !== epoch) return
     result.value = value
+    if (!sheet.value && value.sheet) sheet.value = value.sheet
   } catch (e) {
     if (current !== epoch) return
     error.value = readableError(e)
@@ -30,23 +51,26 @@ async function check() {
   }
 }
 
-watch(
-  () => props.version.id,
-  () => {
-    epoch++
-    checking.value = false
-    open.value = false
-    result.value = null
-    error.value = ''
-    sheet.value = ''
-  },
-)
-
-watch(sheet, () => {
+function reset() {
   epoch++
   checking.value = false
   result.value = null
   error.value = ''
+}
+
+watch(
+  () => props.version.id,
+  () => {
+    open.value = false
+    sheet.value = ''
+    reset()
+  },
+)
+
+watch(sheet, (value, old) => {
+  if (value === old) return
+  reset()
+  if (open.value) void check()
 })
 
 watch(open, (value) => {
@@ -59,6 +83,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <UBadge
+    v-if="formatBadge"
+    :color="formatBadge.color"
+    variant="soft"
+    size="sm"
+    :label="formatBadge.label"
+  />
   <UButton
     v-if="props.version.filename.toLowerCase().endsWith('.xlsx')"
     icon="i-lucide-spell-check"
@@ -77,7 +108,15 @@ onBeforeUnmount(() => {
   >
     <template #body>
       <div class="toolbar format-bar">
+        <USelect
+          v-if="sheetItems.length"
+          v-model="sheet"
+          :items="sheetItems"
+          aria-label="Лист ведомости для проверки оформления"
+          class="format-sheet"
+        />
         <UInput
+          v-else
           v-model="sheet"
           placeholder="Лист (по умолчанию — первый)"
           aria-label="Лист ведомости для проверки оформления"
@@ -102,33 +141,12 @@ onBeforeUnmount(() => {
           Повторить
         </UButton>
       </p>
-      <p v-else-if="result && !issues.length" class="empty" role="status">
-        Замечаний нет. Шапка, ячейки и формулы соответствуют шаблону.
-      </p>
-
-      <div v-else-if="result" class="format-table-wrap">
-        <table class="results">
-          <thead>
-            <tr>
-              <th scope="col">Ячейка</th>
-              <th scope="col">Тип</th>
-              <th scope="col">Ошибка</th>
-              <th scope="col">Ожидалось</th>
-              <th scope="col">Факт</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="issue in issues" :key="issue.coord + issue.type">
-              <td class="numbers">{{ issue.coord }}</td>
-              <td>{{ issue.type }}</td>
-              <td class="format-cell">{{ issue.error }}</td>
-              <td class="format-cell">{{ issue.expected || '—' }}</td>
-              <td class="format-cell">{{ issue.actual || '—' }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <p class="muted">Замечаний: {{ issues.length }}</p>
-      </div>
+      <FormatCheckResult
+        v-else-if="result"
+        :result="result"
+        :version-id="props.version.id"
+        :filename="props.version.filename"
+      />
     </template>
   </UModal>
 </template>
@@ -140,12 +158,5 @@ onBeforeUnmount(() => {
 .format-sheet {
   min-width: 220px;
   flex: 1;
-}
-.format-table-wrap {
-  overflow-x: auto;
-}
-.format-cell {
-  overflow-wrap: anywhere;
-  min-width: 120px;
 }
 </style>
