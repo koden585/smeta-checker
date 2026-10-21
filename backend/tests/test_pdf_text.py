@@ -593,7 +593,10 @@ class CacheTests(FakeSourceTests):
                 second = PDFTextSource(doc2, cache_dir=cache)
                 snapshot = second.for_position([0], "Кабель", "45", max_ocr_pages=2)
             self.assertEqual(second.extraction_hits, 0)
-            self.assertEqual(second.extraction_misses, 6)
+            # Scans skip to_markdown (it returns '' after ~2s); OCR lands
+            # separately via for_position.
+            self.assertEqual(second.extraction_misses, 0)
+            self.assertEqual(second.pending_ocr, (2, 3, 4, 5))
             self.assertEqual(calls2, [])
             self.assertGreater(second.cache_hits, 0)
             self.assertNotEqual(snapshot.texts[0], "")
