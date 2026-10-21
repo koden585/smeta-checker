@@ -157,6 +157,12 @@ def _fake_to_markdown(doc, pages=None, **kwargs):
 def _fake_open_pdf(*args, **kwargs):
     """Yield the FakeDoc itself as the private Markdown clone."""
     stream = kwargs.get("stream", args[0] if args else None)
+    if isinstance(stream, (str, bytes)):
+        try:
+            with open(stream, "rb") as tmp:
+                stream = tmp.read()
+        except OSError:
+            pass
     try:
         return _CLONE_ORIGINS[stream]
     except KeyError:
