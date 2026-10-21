@@ -6,7 +6,6 @@ import re
 from collections import Counter
 from urllib.parse import quote
 
-import fitz
 from fastapi import APIRouter, Depends, Query, Request, UploadFile
 from fastapi.responses import Response
 
@@ -409,6 +408,8 @@ def workspace_router(get_context) -> APIRouter:
 
     @router.get("/api/v1/documents/{version_id}/structure", response_model=StructureDTO)
     def structure(version_id: str, context=Depends(guarded)):
+        import fitz
+
         from document_structure import build_structure, native_records
 
         ref = version(context, version_id)

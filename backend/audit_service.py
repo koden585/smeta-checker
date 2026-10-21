@@ -10,8 +10,6 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 
-import pandas as pd
-
 from audit_core import (
     TECHNICAL_ERROR,
     build_claim_specs,
@@ -22,7 +20,6 @@ from audit_core import (
 )
 from audit_llm import audit_position_hybrid
 from audit_models import AuditResult, expected_scope_hint, position_source_dict, claim_status
-from audit_reports import build_user_report, generate_word_report
 from audit_snapshot import decode_snapshot, encode_snapshot
 from audit_tracing import TracingRun
 from pdf_binding import (
@@ -31,8 +28,6 @@ from pdf_binding import (
     resolve_position_pdfs,
     verify_designations,
 )
-from pdf_text import PDFTextSource
-from vor_parse import load_vor_frame_positions, load_vor_positions
 
 
 def get_optimized_page_indices(doc, page_str):
@@ -42,6 +37,8 @@ def get_optimized_page_indices(doc, page_str):
 
 def preflight_bindings(loaded_vors, target_vor_selection, pdf_pool_keys):
     """Check PDF references per VOR; returns (rows, has_critical_error)."""
+    from vor_parse import load_vor_positions
+
     preflight_rows = []
     has_critical_error = False
 
@@ -458,6 +455,9 @@ def build_run_artifacts(df_works, meta, tasks, tracking, results):
     projection are byte-identical to the historical inline block: Celery
     finalize must emit the same exports as the in-process path.
     """
+    import pandas as pd
+    from audit_reports import build_user_report, generate_word_report
+
     vol_col = next(
         (
             c
@@ -611,6 +611,9 @@ def run_audit(
     transport (Yandex Responses vs chat gateways); ``llm_provider`` labels
     traces and stored run configs.
     """
+    from pdf_text import PDFTextSource
+    from vor_parse import load_vor_frame_positions
+
     audit_position = partial(
         audit_position_hybrid,
         api_key=api_key,

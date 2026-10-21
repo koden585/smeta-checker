@@ -9,8 +9,6 @@ from collections import Counter
 from pathlib import Path
 from uuid import uuid4
 
-import pymupdf
-
 VERSION = "pdf-structure-5"
 NUMBER = re.compile(
     r"^(?:(?i:раздел|глава|подраздел)\s+)?(\d{1,2}(?:\.\d{1,3}){0,5})[.)]?\s+([А-ЯЁA-Z][^\n]{2,180})$"
@@ -27,6 +25,8 @@ def _key(text):
 
 
 def native_records(document, saved_pages=None):
+    import pymupdf
+
     saved_pages = saved_pages or {}
     records = []
     for physical, page in enumerate(document, 1):
@@ -521,6 +521,8 @@ def resolve_reference(structure, reference):
 
 
 def cached_structure(path, sha256, directory, saved_pages=None):
+    import pymupdf
+
     path, directory = Path(path), Path(directory)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     if digest != sha256:

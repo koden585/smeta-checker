@@ -18,7 +18,6 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 from uuid import UUID, uuid4
 
-import fitz
 from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
@@ -30,7 +29,6 @@ from audit_observability import bind, get_logger, reset, restore, snapshot
 from audit_service import preflight_bindings, run_audit
 from storage_blobs import BlobStore, open_blob_store
 from storage_db import DocumentVersionRow, Repository, open_repository
-from vor_parse import load_vor_positions
 
 logger = get_logger(__name__)
 
@@ -337,6 +335,8 @@ def _upload_document(
     document_id: UUID | None = None,
     new_document: bool = False,
 ) -> DocumentUploadResponse:
+    from vor_parse import load_vor_positions
+
     filename = _safe_filename(upload.filename or "")
     _check_upload_limits(context, data)
     _check_upload_mime(upload, kind)
@@ -370,6 +370,8 @@ def _upload_document(
     else:
         _check_pdf_magic(data)
         try:
+            import fitz
+
             with fitz.open(stream=bytes(data), filetype="pdf") as doc:
                 if doc.page_count < 1:
                     raise ApiError(400, "empty_pdf", "PDF не содержит страниц.")
@@ -409,6 +411,8 @@ def _upload_document(
 def _preflight_for_versions(
     context: ApiContext, vor_version_id: UUID, pdf_version_ids: list[UUID]
 ) -> PreflightResponse:
+    from vor_parse import load_vor_positions
+
     vor_bytes, _, vor_filename, vor_kind = _read_version_bytes(context, vor_version_id)
     if vor_kind != "vor":
         raise ApiError(400, "not_vor_version", "Указанная версия — не ВОР.")
@@ -774,6 +778,8 @@ def create_app(context: ApiContext | None = None) -> FastAPI:
         context: ApiContext = Depends(get_context),
         audit_runner: AuditRunner = Depends(get_runner),
     ) -> AuditCreateResponse:
+        from vor_parse import load_vor_positions
+
         request_id = _request_id(request)
         _require_api_token(context, request)
         _require_configured(context)

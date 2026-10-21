@@ -7,14 +7,10 @@ from collections import Counter
 from html.parser import HTMLParser
 from uuid import UUID
 
-import fitz
-import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 from audit_models import VorPosition
-from audit_reports import build_user_report
-from vor_parse import load_vor_positions
 from workspace_models import ResultDTO, RunDTO
 
 def run_progress(context, record) -> RunDTO:
@@ -66,6 +62,8 @@ def inputs_for_run(context, record) -> list[VorPosition]:
     snapshot = record["config"].get("position_inputs")
     if isinstance(snapshot, list):
         return [VorPosition.model_validate(item) for item in snapshot]
+    from vor_parse import load_vor_positions
+
     version = context.repository.load_version(record["vor_version_id"])
     positions, _ = load_vor_positions(
         context.blob_store.get(version.blob_key), version.filename
@@ -81,6 +79,8 @@ def _provenance(position: VorPosition) -> tuple[str, int | None, dict[str, str]]
 
 
 def present_results(context, record) -> list[ResultDTO]:
+    import pandas as pd
+
     positions = {p.index: p for p in inputs_for_run(context, record)}
     jobs = {
         j.position_index: j for j in context.repository.list_position_jobs(record["id"])
@@ -108,6 +108,8 @@ def present_results(context, record) -> list[ResultDTO]:
             "found_page": stored.get("found_page")
             or next(iter(stored.get("found_pages") or []), None),
         }
+        from audit_reports import build_user_report
+
         report = build_user_report(
             pd.DataFrame([{0: position.number, "Статус аудита": stored["status"]}]),
             [tracking],
@@ -256,6 +258,8 @@ def _quote_boxes(page, quote):
     unique fragment, numeric cells by row intersection. Plain-text quotes
     keep the previous exact behaviour.
     """
+    import fitz
+
     normalized = " ".join(page.get_text().casefold().split())
     if "<td" not in quote and "<th" not in quote:
         phrase = " ".join(quote.casefold().split())
@@ -319,6 +323,8 @@ def _unique_subphrase(normalized, phrase):
 
 
 def source_evidence(context, record, index, position):
+    import fitz
+
     stored = next(
         x["result"] for x in record["indexed_results"] if x["position_index"] == index
     )

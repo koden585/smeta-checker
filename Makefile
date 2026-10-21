@@ -1,4 +1,4 @@
-.PHONY: help dev up down build logs ps backup restore verify test lint
+.PHONY: help dev up down build logs ps backup restore verify test lint clean
 
 help: ## показать команды
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
@@ -41,3 +41,7 @@ lint: ## все проверки качества
 	pnpm --dir frontend run lint
 	pnpm --dir frontend run typecheck
 	PYTHON=$(PWD)/backend/.venv/bin/python pnpm --dir frontend run api:check
+
+clean: ## удалить висячие образы и build-кэш (данные целы)
+	docker system prune -f --filter 'label!=keep'
+	docker builder prune -f
