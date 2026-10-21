@@ -111,6 +111,28 @@ class SnapshotCodecTests(unittest.TestCase):
         self.assertEqual(
             restored.to_snapshot()["corpus_id"], index.to_snapshot()["corpus_id"]
         )
+    def test_roundtrip_with_double_digit_pages(self):
+        # Regression: int page keys sort numerically on write
+        # but lexicographically after a JSON round trip,
+        # which used to break corpus_id on multi-page PDFs.
+        from audit_core import PageTextIndex
+
+        texts = tuple("page %d body" % i for i in range(15))
+        index = PageTextIndex(
+            texts,
+            {2: "scan issue", 10: "complex drawing", 12: "read failure"},
+            (10,),
+            quality={0: {"state": "usable"}, 3: {"state": "pending"},
+                     11: {"state": "uncertain"}},
+            metadata={"pdf_sha256": "abc"},
+        )
+        snapshot = index.to_snapshot()
+        wire = json.loads(json.dumps(snapshot))
+        restored = decode_snapshot(encode_snapshot(index))
+        self.assertEqual(restored.to_snapshot(), snapshot)
+        from audit_core import PageTextIndex as Restored
+
+        self.assertEqual(Restored.from_snapshot(wire).to_snapshot(), snapshot)
 
     def test_decode_rejects_tampered_payload(self):
         data = encode_snapshot(self._index())

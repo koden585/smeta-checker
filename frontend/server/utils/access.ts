@@ -80,8 +80,29 @@ function issueSession(event: H3Event) {
   setHeader(event, 'Cache-Control', 'no-store')
 }
 
+function sessionOk(event: H3Event): boolean {
+  const cookie = getCookie(event, 'kdfp_workspace') || ''
+  const parts = cookie.split('.')
+  const received = Buffer.from(parts[2] || ''),
+    expected = Buffer.from(signature(parts.slice(0, 2).join('.')))
+  return (
+    parts.length === 3 &&
+    Number(parts[0]) >= Date.now() &&
+    received.length === expected.length &&
+    timingSafeEqual(received, expected)
+  )
+}
+
 export function issueLocalSession(event: H3Event, password = '') {
   assertLocal(event)
+  // Pages call POST /api/session with an empty password on every load to
+  // refresh the session (see useBackend().connect). A still-valid cookie
+  // renews without asking for the password again; only a missing/expired
+  // cookie (or a wrong password) is a 401.
+  if (sessionOk(event)) {
+    issueSession(event)
+    return
+  }
   if (workspacePassword() && !passwordOk(password))
     throw createError({ statusCode: 401, statusMessage: 'Неверный пароль' })
   issueSession(event)
@@ -89,16 +110,7 @@ export function issueLocalSession(event: H3Event, password = '') {
 
 export function requireSession(event: H3Event) {
   assertLocal(event)
-  const cookie = getCookie(event, 'kdfp_workspace') || ''
-  const parts = cookie.split('.')
-  const received = Buffer.from(parts[2] || ''),
-    expected = Buffer.from(signature(parts.slice(0, 2).join('.')))
-  if (
-    parts.length !== 3 ||
-    Number(parts[0]) < Date.now() ||
-    received.length !== expected.length ||
-    !timingSafeEqual(received, expected)
-  )
+  if (!sessionOk(event))
     throw createError({ statusCode: 401, statusMessage: 'Обновите подключение' })
 }
 

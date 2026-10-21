@@ -87,6 +87,48 @@ class PageReferenceTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertEqual(parse_page_reference(value, 303)[0], [])
 
+    def test_volume_sheet_stamp_maps_to_physical_page(self):
+        from audit_service import _SHEET_MAP_CACHE, get_optimized_page_indices
+
+        class FakePage:
+            def __init__(self, text):
+                self.text = text
+
+            def get_text(self):
+                return self.text
+
+        class FakeDoc(list):
+            pass
+
+        pages = ["cover %d" % i for i in range(6)]
+        pages += ["Том отчет\n%d из 10\nтело листа" % n for n in range(1, 11)]
+        doc = FakeDoc([FakePage(text) for text in pages])
+        _SHEET_MAP_CACHE.clear()
+        try:
+            indices, description, numbers = get_optimized_page_indices(doc, "9")
+            self.assertEqual(indices, [14])
+            self.assertEqual(numbers, [9])
+            self.assertIn("PDF 15", description)
+        finally:
+            _SHEET_MAP_CACHE.clear()
+
+    def test_missing_stamp_keeps_legacy_file_order(self):
+        from audit_service import _SHEET_MAP_CACHE, get_optimized_page_indices
+
+        class FakePage:
+            def get_text(self):
+                return "plain body without stamps"
+
+        class FakeDoc(list):
+            pass
+
+        doc = FakeDoc([FakePage() for _ in range(5)])
+        _SHEET_MAP_CACHE.clear()
+        try:
+            self.assertEqual(get_optimized_page_indices(doc, "3")[0], [2])
+        finally:
+            _SHEET_MAP_CACHE.clear()
+
 
 class ResponseTests(unittest.TestCase):
     def setUp(self):
@@ -716,6 +758,33 @@ class SearchTests(unittest.TestCase):
         result = audit_text_pages(PageTextIndex(["Cable"] * 100), [0], ask, "Cable", "45")
         self.assertEqual(result["status"], TECHNICAL_ERROR)
         self.assertEqual(len(calls), 1)
+
+    def test_incomplete_without_work_continues_to_candidates(self):
+        # A VOR reference may point at the wrong physical pages; "not in
+        # these fragments" must not stop the search while candidates remain.
+        index = PageTextIndex(["Title intro cable", "Intro words cable",
+                               "Cable 45 m scope"])
+        calls = []
+        def ask(context):
+            calls.append(dict(context))
+            if len(calls) == 1:
+                return empty_result(INCOMPLETE, "not in these fragments")
+            quote_sources = _catalog(context)
+            sid = next(s for s, src in quote_sources.items()
+                       if "Cable 45 m scope" in src["quote"])
+            wire = claims(("presence", [sid]),
+                          ("quantity", [sid],
+                           {"value_source_id": sid, "unit_source_id": sid}),
+                          ("unit", [sid], {"unit_source_id": sid}),
+                          details="Confirmed")
+            return parse_audit_response(
+                json.dumps(wire), context, False,
+                expected_volume="45", expected_unit="m",
+                expected_work="Cable", position_type="Материал",
+                quote_sources=quote_sources)
+        result = audit_text_pages(index, [0], ask, "Cable", "45")
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertTrue(result["work_found"])
 
 
 class TextRankingTests(unittest.TestCase):

@@ -524,6 +524,20 @@ def _scoped_resource_scopes(texts, skip, task_terms, numbers, known, mention_res
                 found[_scope_key(header)] += 1
     return found
 
+def _canonical_page_map(data):
+    """Stringify page-index keys so write/read hashing see one JSON order.
+
+    ``errors``/``quality`` use int page numbers in memory but JSON object
+    keys after a round trip, and ``json.dumps(sort_keys=True)`` orders
+    ``2`` before ``10`` numerically yet after it lexicographically. Without
+    this both sides hash different byte strings and every snapshot with a
+    double-digit page entry fails as a corpus mismatch.
+    """
+    if not isinstance(data, dict):
+        return data
+    return {str(key): value for key, value in data.items()}
+
+
 class PageTextIndex:
     def __init__(self, texts, errors=None, pending_ocr=(), table_rows=None, locators=None,
                  *, quality=None, metadata=None):
@@ -545,10 +559,11 @@ class PageTextIndex:
         """Plain-data, content-addressed extraction boundary; never PDF handles."""
         import hashlib
         payload = {
-            "schema": 1, "texts": list(self.texts), "errors": self.errors,
+            "schema": 1, "texts": list(self.texts),
+            "errors": _canonical_page_map(self.errors),
             "pending_ocr": list(self.pending_ocr),
             "table_rows": self.table_rows, "locators": self.locators,
-            "quality": self.quality, "metadata": self.metadata,
+            "quality": _canonical_page_map(self.quality), "metadata": self.metadata,
         }
         # Canonical JSON also detaches nested dictionaries from the index.
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True,
@@ -564,6 +579,9 @@ class PageTextIndex:
         if not isinstance(snapshot, dict) or snapshot.get("schema") != 1:
             raise ValueError("Unsupported extraction snapshot schema")
         payload = {key: value for key, value in snapshot.items() if key != "corpus_id"}
+        for field in ("errors", "quality"):
+            if isinstance(payload.get(field), dict):
+                payload[field] = _canonical_page_map(payload[field])
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True,
                              separators=(",", ":"), allow_nan=False).encode("utf-8")
         if hashlib.sha256(encoded).hexdigest() != snapshot.get("corpus_id"):
@@ -1785,9 +1803,14 @@ def audit_text_pages(index, target_indices, ask, work_name, volume, reference=""
                                level=result_level(result["status"]))
         if result["status"] in {TECHNICAL_ERROR, INCOMPLETE} and not result.get("work_found"):
             last_failure = result
-            if result.get("recoverable"):
-                continue
-            return finish(result)
+            # A VOR page reference may point at the wrong physical pages
+            # (volume sheet numbers vs PDF file order). "Not in these
+            # fragments" is never final while ranked candidates remain:
+            # keep searching them instead of stopping after context 1.
+            # Only a technical error without a recovery flag stops early.
+            if result["status"] == TECHNICAL_ERROR and result.get("recoverable") is not True:
+                return finish(result)
+            continue
         if result["work_found"]:
             # First confirmed work stops the search: one bounded confirmation
             # at most; a mismatched quantity/unit is a finding, never a
