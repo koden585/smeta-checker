@@ -466,7 +466,8 @@ export const zVersionDto = z.object({
     number: z.int(),
     project_id: z.string(),
     sha256: z.string(),
-    size: z.int()
+    size: z.int(),
+    title: z.string().optional().default('')
 });
 
 /**

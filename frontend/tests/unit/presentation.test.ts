@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { clampPage, queueColor, quantityText, quantityWithUnit } from '../../app/utils/presentation'
+import {
+  clampPage,
+  queueColor,
+  quantityDelta,
+  quantityText,
+  quantityWithUnit,
+} from '../../app/utils/presentation'
 
 describe('domain status mapping', () => {
   it('maps the four queues to distinct functional colors', () => {
@@ -21,6 +27,21 @@ describe('quantity rendering', () => {
     expect(quantityWithUnit('45', 'м')).toBe('45 м')
     expect(quantityWithUnit('45 м', 'м')).toBe('45 м')
     expect(quantityWithUnit(null, null)).toBe('—')
+  })
+  it('normalizes equal quantities to identical strings', () => {
+    expect(quantityText('231.0')).toBe('231')
+    expect(quantityText('231,0')).toBe('231')
+    expect(quantityText('78.90')).toBe('78,9')
+    expect(quantityWithUnit('231,0', 'шт.')).toBe('231 шт')
+    expect(quantityWithUnit('231', 'шт')).toBe('231 шт')
+  })
+  it('computes signed deltas without float artifacts', () => {
+    expect(quantityDelta('231,0', '231')).toBe('±0')
+    expect(quantityDelta('231', '243,5')).toBe('+12,5')
+    expect(quantityDelta('100', '87')).toBe('−13')
+    expect(quantityDelta('0,1', '0,3')).toBe('+0,2')
+    expect(quantityDelta(null, '5')).toBe(null)
+    expect(quantityDelta('abc', '5')).toBe(null)
   })
 })
 

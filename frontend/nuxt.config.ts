@@ -10,7 +10,11 @@ export default defineNuxtConfig({
   app: {
     // Separate build assets so an open local stand cannot reuse an older CSS dependency map.
     buildAssetsDir: '/_nuxt/' + Date.now().toString(36) + '/',
-    head: { title: 'КДФП · Проверка ВОР', htmlAttrs: { lang: 'ru' } },
+    head: {
+      title: 'КДФП · Проверка ВОР',
+      htmlAttrs: { lang: 'ru' },
+      link: [{ rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }],
+    },
   },
   icon: {
     clientBundle: {

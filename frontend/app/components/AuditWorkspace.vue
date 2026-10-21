@@ -5,9 +5,8 @@ import type {
   VersionDto,
   StructureDto,
   StructureNodeDto,
-  FormatDto,
 } from '~/generated/types.gen'
-import { queueColor, queueLabel, quantityWithUnit } from '~/utils/presentation'
+import { queueColor, queueLabel, quantityDelta, quantityWithUnit } from '~/utils/presentation'
 const props = defineProps<{
     runId: string
     positionIndex: number
@@ -27,10 +26,6 @@ const props = defineProps<{
   error = ref(''),
   structureError = ref(''),
   busy = ref(true),
-  formatting = ref<FormatDto | null>(null),
-  formatOpen = ref(false),
-  formatError = ref(''),
-  checking = ref(false),
   search = ref(''),
   pdfPanel = ref<{ find: (q: string) => Promise<number[]> }>(),
   searchPages = ref<number[]>([]),
@@ -65,19 +60,24 @@ const source = computed(() => workspace.value?.evidence[sourceIndex.value]),
     // so show the first address on the source row (stable, no guessing).
     return Object.keys(cells).find((addr) => addr.endsWith(String(row))) || ''
   }),
-  verdictTone = computed(() => {
-    const tones = {
-      fix: { bg: 'var(--app-error-bg)', text: 'var(--app-error-text)' },
-      review: { bg: 'var(--app-warning-bg)', text: 'var(--app-warning-text)' },
-      missing: { bg: 'var(--ui-bg-muted)', text: 'var(--ui-text-muted)' },
-      ok: { bg: 'var(--app-success-bg)', text: 'var(--app-success-text)' },
-    } as const
-    return tones[workspace.value?.row.queue as keyof typeof tones] ?? tones.missing
+  verdictOpen = ref(false),
+  verdictLead = computed(() => {
+    const text = workspace.value?.row.problem || ''
+    const end = text.search(/[.?!]\s/)
+    return end > 0 ? text.slice(0, end + 1) : text
+  }),
+  verdictRest = computed(() => {
+    const text = workspace.value?.row.problem || ''
+    const end = text.search(/[.?!]\s/)
+    return end > 0 ? text.slice(end + 1).trim() : ''
   }),
   dossierItems: SplitterItem[] = [
     { slot: 'pdf', minSize: 30, defaultSize: 62 },
     { slot: 'dossier', minSize: 25, defaultSize: 38 },
-  ]
+  ],
+  compareDelta = computed(() =>
+    quantityDelta(workspace.value?.row.declared_quantity, workspace.value?.row.found_quantity),
+  )
 let active = true,
   epoch = 0
 const kindLabels: Record<string, string> = {
@@ -131,27 +131,27 @@ function changePage(value: number) {
   page.value = value
   selectedNode.value = ''
 }
+function plainQuote(quote: string) {
+  const text = quote
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return text || quote
+}
 function shortQuote(quote: string) {
-  return quote.length > 240 ? `${quote.slice(0, 240)}…` : quote
+  const plain = plainQuote(quote)
+  return plain.length > 240 ? `${plain.slice(0, 240)}…` : plain
+}
+function isNumericCell(value: unknown) {
+  if (typeof value !== 'string' && typeof value !== 'number') return false
+  const text = String(value).replace(/\s/g, '').replace(',', '.')
+  return text !== '' && !Number.isNaN(Number(text))
 }
 function toggleQuote(index: number) {
   const next = new Set(expandedQuotes.value)
   if (next.has(index)) next.delete(index)
   else next.add(index)
   expandedQuotes.value = next
-}
-async function checkFormat() {
-  if (!workspace.value) return
-  formatOpen.value = true
-  checking.value = true
-  formatError.value = ''
-  try {
-    formatting.value = await backend.formatting(workspace.value.vor_version_id, sheetName.value)
-  } catch (e) {
-    formatError.value = readableError(e)
-  } finally {
-    checking.value = false
-  }
 }
 async function find() {
   if (pdfPanel.value) searchPages.value = await pdfPanel.value.find(search.value)
@@ -176,26 +176,40 @@ function onMediaChange(event: MediaQueryListEvent) {
   isNarrow.value = event.matches
 }
 watch(version, loadStructure)
+watch(
+  () => props.positionIndex,
+  () => {
+    verdictOpen.value = false
+    void loadPosition()
+  },
+)
 watch(open, (value) => {
   if (!value) emit('close')
 })
-onMounted(async () => {
-  mediaQuery = window.matchMedia('(max-width: 720px)')
-  isNarrow.value = mediaQuery.matches
-  mediaQuery.addEventListener('change', onMediaChange)
+async function loadPosition() {
+  const current = ++epoch
+  busy.value = true
+  error.value = ''
   try {
-    workspace.value = await backend.workspace(props.runId, props.positionIndex)
-    if (!active) return
+    const data = await backend.workspace(props.runId, props.positionIndex)
+    if (!active || current !== epoch) return
+    workspace.value = data
     if (workspace.value.evidence.length) basis(0)
     else {
       version.value = pdfs.value[0]?.id || ''
       page.value = 1
     }
   } catch (e) {
-    if (active) error.value = readableError(e)
+    if (active && current === epoch) error.value = readableError(e)
   } finally {
-    if (active) busy.value = false
+    if (active && current === epoch) busy.value = false
   }
+}
+onMounted(async () => {
+  mediaQuery = window.matchMedia('(max-width: 720px)')
+  isNarrow.value = mediaQuery.matches
+  mediaQuery.addEventListener('change', onMediaChange)
+  await loadPosition()
 })
 onBeforeUnmount(() => {
   active = false
@@ -238,24 +252,6 @@ onBeforeUnmount(() => {
             </p>
           </div>
           <UButton
-            v-if="workspace?.excel"
-            color="neutral"
-            variant="outline"
-            icon="i-lucide-clipboard-check"
-            aria-label="Проверить оформление ведомости"
-            :loading="checking"
-            @click="checkFormat"
-          >
-            Оформление
-            <UBadge
-              v-if="formatting"
-              :label="String(formatting.issues.length)"
-              :color="formatting.issues.length ? 'warning' : 'success'"
-              variant="solid"
-              size="sm"
-            />
-          </UButton>
-          <UButton
             color="neutral"
             variant="ghost"
             icon="i-lucide-x"
@@ -266,10 +262,22 @@ onBeforeUnmount(() => {
           </UButton>
         </header>
 
-        <div v-if="busy" class="empty" role="status">Открываем источники…</div>
+        <div
+          v-if="busy && !workspace"
+          class="aw-loading"
+          role="status"
+          aria-label="Открываем позицию"
+        >
+          <USkeleton class="aw-loading-title" />
+          <USkeleton class="aw-loading-line" />
+          <div class="aw-loading-panes">
+            <USkeleton class="aw-loading-pdf" />
+            <USkeleton class="aw-loading-side" />
+          </div>
+        </div>
         <p v-if="error" class="error-box" role="alert">{{ error }}</p>
         <template v-if="workspace">
-          <section class="aw-verdict" :style="{ background: verdictTone.bg }" aria-live="polite">
+          <section class="aw-verdict" aria-live="polite">
             <div class="aw-verdict-main">
               <div class="aw-verdict-meta">
                 <UBadge
@@ -279,31 +287,60 @@ onBeforeUnmount(() => {
                   size="md"
                 />
                 <span class="aw-verdict-queue">
-                  Очередь · поз. {{ workspace.row.number }} · Позиция {{ positionIndex + 1
+                  Позиция {{ positionIndex + 1
                   }}{{ typeof positionCount === 'number' ? ` из ${positionCount}` : '' }}
                 </span>
               </div>
-              <h1 class="aw-verdict-title" :style="{ color: verdictTone.text }">
-                {{ workspace.row.problem }}
+              <h1 class="aw-verdict-title">
+                {{ verdictLead }}
               </h1>
+              <button
+                v-if="verdictRest"
+                type="button"
+                class="aw-verdict-more"
+                :aria-expanded="verdictOpen"
+                @click="verdictOpen = !verdictOpen"
+              >
+                {{ verdictOpen ? 'Скрыть подробности' : 'Подробнее' }}
+              </button>
+              <p v-if="verdictOpen && verdictRest" class="aw-verdict-rest">{{ verdictRest }}</p>
+              <p v-if="verdictOpen && workspace.row.details" class="aw-verdict-details">
+                {{ workspace.row.details }}
+              </p>
               <p class="aw-verdict-action">{{ workspace.row.action }}</p>
             </div>
-            <dl class="aw-compare">
-              <div>
-                <dt>ВОР{{ quantityCell ? ` · ${quantityCell}` : '' }}</dt>
-                <dd>{{ quantityWithUnit(workspace.row.declared_quantity, workspace.row.unit) }}</dd>
+            <div class="aw-compare" role="group" aria-label="Сравнение количества">
+              <div class="aw-compare-values">
+                <span class="aw-compare-side">
+                  <span class="aw-compare-label"
+                    >ВОР{{ quantityCell ? ` · ${quantityCell}` : '' }}</span
+                  >
+                  <span class="aw-compare-number">{{
+                    quantityWithUnit(workspace.row.declared_quantity, workspace.row.unit)
+                  }}</span>
+                </span>
+                <span
+                  class="aw-compare-sign"
+                  :class="{
+                    match: compareDelta === '±0',
+                    diff: compareDelta !== null && compareDelta !== '±0',
+                  }"
+                  aria-hidden="true"
+                  >{{ compareDelta === null ? '→' : compareDelta === '±0' ? '=' : '≠' }}</span
+                >
+                <span class="aw-compare-side">
+                  <span class="aw-compare-label"
+                    >ПД{{ source ? ` · стр. ${source.page}` : '' }}</span
+                  >
+                  <span class="aw-compare-number">{{
+                    quantityWithUnit(workspace.row.found_quantity, workspace.row.found_unit)
+                  }}</span>
+                </span>
               </div>
-              <div>
-                <dt>ПД{{ source ? ` · стр. ${source.page}` : '' }}</dt>
-                <dd>
-                  {{ quantityWithUnit(workspace.row.found_quantity, workspace.row.found_unit) }}
-                </dd>
-              </div>
-              <div>
-                <dt>Единица</dt>
-                <dd>{{ workspace.row.unit || '—' }}</dd>
-              </div>
-            </dl>
+              <p v-if="compareDelta && compareDelta !== '±0'" class="aw-compare-delta">
+                Разница {{ compareDelta }} {{ workspace.row.unit || '' }}
+              </p>
+            </div>
           </section>
 
           <div class="aw-tabs" role="group" aria-label="Выбор панели">
@@ -368,27 +405,14 @@ onBeforeUnmount(() => {
                   </UCollapsible>
 
                   <div class="aw-pdf-toolbar">
-                    <span class="aw-page">
-                      Физическая {{ page }} · печатная {{ printed || 'не установлена' }}
-                    </span>
                     <div class="aw-pdf-search">
                       <UInput
                         v-model="search"
                         placeholder="Текст в PDF"
-                        aria-label="Поиск в PDF"
+                        aria-label="Поиск в PDF, Enter для поиска"
                         size="sm"
                         icon="i-lucide-search"
                         @keyup.enter="find"
-                      />
-                      <UButton variant="outline" size="sm" @click="find">Найти</UButton>
-                      <UButton
-                        v-if="source"
-                        label="К основанию"
-                        icon="i-lucide-crosshair"
-                        color="primary"
-                        variant="soft"
-                        size="sm"
-                        @click="basis()"
                       />
                     </div>
                   </div>
@@ -402,7 +426,9 @@ onBeforeUnmount(() => {
                     title="Просмотр другой страницы. Заключение по позиции не изменилось."
                     :description="`Открыта стр. ${page}, основание — на стр. ${source.page}. Вердикт «${queueLabel(workspace.row.queue)}» относится к позиции, а не к открытому листу.`"
                   />
-                  <p v-if="region?.reason" class="muted">{{ region.reason }}</p>
+                  <p v-if="region && !region.highlights.length" class="muted">
+                    Совпадение не подсвечено — листайте страницу вручную
+                  </p>
 
                   <PdfPanel
                     v-if="version"
@@ -440,20 +466,18 @@ onBeforeUnmount(() => {
                             :label="kindLabels[kind] || kind"
                             color="neutral"
                             variant="soft"
-                            size="sm"
                           />
                           <span class="aw-evidence-page">стр. {{ group.item.page }}</span>
                           <UBadge
                             :label="group.item.confirmed ? 'Подтверждено' : 'Не подтверждено'"
                             :color="group.item.confirmed ? 'success' : 'error'"
                             variant="soft"
-                            size="sm"
                           />
                         </div>
                         <blockquote class="aw-quote">
                           «{{
                             expandedQuotes.has(group.index)
-                              ? group.item.quote
+                              ? plainQuote(group.item.quote)
                               : shortQuote(group.item.quote)
                           }}»
                         </blockquote>
@@ -483,9 +507,20 @@ onBeforeUnmount(() => {
                   </section>
 
                   <section aria-label="Таблица ВОР">
-                    <h2 class="aw-section-title">
-                      {{ sheetName || 'Позиция CSV' }} ·
-                      {{ quantityCell || workspace.row.number }}
+                    <h2 class="aw-section-title aw-table-head">
+                      <span>
+                        {{ sheetName || 'Позиция CSV' }} ·
+                        {{ quantityCell || workspace.row.number }}
+                      </span>
+                      <UButton
+                        icon="i-lucide-download"
+                        color="neutral"
+                        variant="ghost"
+                        size="xs"
+                        aria-label="Скачать исходную ВОР"
+                        title="Скачать исходную ВОР"
+                        @click="downloadSource"
+                      />
                     </h2>
                     <div v-if="workspace.excel" class="sheet-scroll">
                       <table class="sheet">
@@ -509,7 +544,10 @@ onBeforeUnmount(() => {
                               :key="cell.coordinate"
                               :colspan="cell.column_span"
                               :rowspan="cell.row_span"
-                              :class="{ question: cell.highlight }"
+                              :class="{
+                                question: cell.highlight,
+                                numbers: isNumericCell(cell.value),
+                              }"
                             >
                               {{ cell.value }}
                             </td>
@@ -523,113 +561,11 @@ onBeforeUnmount(() => {
                       <p>{{ workspace.position.formula }}</p>
                     </div>
                   </section>
-
-                  <section aria-label="Детали проверки">
-                    <h2 class="aw-section-title">Детали проверки</h2>
-                    <UCard :ui="{ body: 'p-3 sm:p-3' }">
-                      <dl class="aw-details">
-                        <div>
-                          <dt>Работа найдена</dt>
-                          <dd>
-                            {{
-                              confirmationText(
-                                workspace.row.work_found,
-                                workspace.row.work_found
-                                  ? `${source?.filename || ''}${source ? `, стр. ${source.page}` : ''}`
-                                  : 'Не найдена в проекте',
-                              )
-                            }}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>Объём подтверждён</dt>
-                          <dd
-                            :style="{
-                              color: workspace.row.volume_confirmed
-                                ? 'var(--ui-success)'
-                                : 'var(--ui-error)',
-                            }"
-                          >
-                            {{
-                              confirmationText(
-                                workspace.row.volume_confirmed,
-                                workspace.row.volume_confirmed
-                                  ? quantityWithUnit(
-                                      workspace.row.found_quantity,
-                                      workspace.row.found_unit,
-                                    )
-                                  : `${quantityWithUnit(workspace.row.declared_quantity, workspace.row.unit)} ≠ ${quantityWithUnit(workspace.row.found_quantity, workspace.row.found_unit)}`,
-                              )
-                            }}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>Единица подтверждена</dt>
-                          <dd>
-                            {{
-                              confirmationText(
-                                workspace.row.unit_confirmed,
-                                workspace.row.unit || '—',
-                              )
-                            }}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>Формула ВОР</dt>
-                          <dd class="aw-formula">
-                            {{ workspace.position.formula || 'не указано' }}
-                          </dd>
-                        </div>
-                      </dl>
-                      <p class="aw-details-text">{{ workspace.row.details }}</p>
-                      <p class="aw-details-text">
-                        Ссылка на страницы: {{ workspace.position.page_ref }}
-                      </p>
-                      <div class="aw-details-actions">
-                        <UButton
-                          label="Скачать исходную ВОР"
-                          icon="i-lucide-download"
-                          color="neutral"
-                          variant="soft"
-                          size="xs"
-                          @click="downloadSource"
-                        />
-                      </div>
-                    </UCard>
-                  </section>
                 </div>
               </template>
             </USplitter>
           </main>
         </template>
-      </div>
-    </template>
-  </UModal>
-  <UModal
-    v-model:open="formatOpen"
-    :title="`Оформление · ${sheetName || 'ведомости'}`"
-    description="Детерминированная проверка шапки, ячеек и формул — без модели"
-    :ui="{ content: 'max-w-3xl' }"
-  >
-    <template #body>
-      <p v-if="checking" class="empty" role="status">Проверяем оформление…</p>
-      <p v-else-if="formatError" class="error-box" role="alert">
-        {{ formatError }}
-        <UButton variant="link" @click="checkFormat">Повторить</UButton>
-      </p>
-      <FormatCheckResult
-        v-else-if="formatting"
-        :result="formatting"
-        :version-id="workspace?.vor_version_id"
-        filename="Ведомость"
-      />
-    </template>
-    <template #footer>
-      <div class="aw-format-footer">
-        <span v-if="formatting" class="muted">Замечаний: {{ formatting.issues.length }}</span>
-        <UButton color="neutral" variant="outline" :loading="checking" @click="checkFormat">
-          Проверить снова
-        </UButton>
       </div>
     </template>
   </UModal>
@@ -642,6 +578,29 @@ onBeforeUnmount(() => {
   min-height: 0;
   background: var(--ui-bg-muted);
   color: var(--ui-text);
+}
+.aw-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 16px;
+  flex: 1;
+  min-height: 0;
+}
+.aw-loading-title {
+  height: 28px;
+  width: min(420px, 70%);
+}
+.aw-loading-line {
+  height: 16px;
+  width: min(560px, 85%);
+}
+.aw-loading-panes {
+  display: grid;
+  grid-template-columns: 62fr 38fr;
+  gap: 12px;
+  flex: 1;
+  min-height: 280px;
 }
 .aw-topbar {
   display: flex;
@@ -713,26 +672,88 @@ onBeforeUnmount(() => {
 }
 .aw-compare {
   margin: 0;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  padding: 8px;
+  padding: 10px 14px;
   border: 1px solid var(--ui-border);
   border-radius: 8px;
   background: var(--ui-bg-elevated);
-  flex: 0 1 320px;
+  flex: 0 1 340px;
 }
-.aw-compare dt {
+.aw-compare-values {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.aw-compare-side {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.aw-compare-label {
   font-size: 11px;
   text-transform: uppercase;
   color: var(--ui-text-muted);
+  white-space: nowrap;
 }
-.aw-compare dd {
-  margin: 0;
-  font-size: 16px;
+.aw-compare-number {
+  font-size: 28px;
   font-weight: 700;
+  line-height: 1.15;
   color: var(--ui-text-highlighted);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.aw-compare-sign {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--ui-text-muted);
+  flex-shrink: 0;
+}
+.aw-compare-sign.match {
+  color: var(--ui-success);
+}
+.aw-compare-sign.diff {
+  color: var(--ui-error);
+}
+.aw-compare-delta {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--ui-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.aw-verdict-more {
+  background: none;
+  border: none;
+  padding: 0;
+  margin-top: 6px;
+  color: var(--ui-primary);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+}
+.aw-verdict-more:hover {
+  text-decoration: underline;
+}
+.aw-verdict-rest {
+  margin: 6px 0 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--ui-text-muted);
+}
+.aw-verdict-details {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ui-text-muted);
+  overflow-wrap: anywhere;
+}
+.aw-table-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 .aw-tabs {
   display: none;
@@ -748,14 +769,25 @@ onBeforeUnmount(() => {
   height: 100%;
   min-height: 560px;
 }
+.aw-splitter :deep([role='separator']) {
+  width: 1px;
+  background: var(--ui-border);
+  margin-inline: 6px;
+}
+.aw-splitter :deep([role='separator']:hover),
+.aw-splitter :deep([role='separator']:focus-visible) {
+  background: var(--ui-primary);
+}
 .aw-pdf {
   display: flex;
   flex-direction: column;
   gap: 8px;
   min-width: 0;
+  flex: 1;
+  width: 100%;
   height: 100%;
   min-height: 0;
-  padding-right: 8px;
+  padding-right: 0;
 }
 .aw-outline-panel {
   border: 1px solid var(--ui-border);
@@ -805,10 +837,12 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 16px;
   min-width: 0;
+  flex: 1;
+  width: 100%;
   height: 100%;
   min-height: 0;
   overflow: auto;
-  padding-left: 8px;
+  padding-left: 0;
 }
 .aw-section-title {
   margin: 0 0 6px;
@@ -824,7 +858,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 4px;
 }
 .aw-evidence-page {
@@ -880,6 +914,11 @@ onBeforeUnmount(() => {
   padding: 4px 8px;
   text-align: left;
   vertical-align: top;
+  font-variant-numeric: tabular-nums;
+}
+.sheet td.numbers,
+.sheet th.numbers {
+  text-align: right;
 }
 .sheet thead th {
   color: var(--ui-text-muted);
@@ -900,59 +939,14 @@ onBeforeUnmount(() => {
   padding: 16px;
   font-size: 14px;
 }
-.aw-details {
-  margin: 0;
-  display: grid;
-  gap: 6px;
-  font-size: 14px;
-}
-.aw-details > div {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-}
-.aw-details dt {
-  color: var(--ui-text-muted);
-}
-.aw-details dd {
-  margin: 0;
-  font-weight: 600;
-  color: var(--ui-text);
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-.aw-formula {
-  font-family: ui-monospace, monospace;
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-.aw-details-text {
-  margin: 8px 0 0;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--ui-text-muted);
-  overflow-wrap: anywhere;
-}
-.aw-format-table {
-  overflow: auto;
-  max-height: 60vh;
-}
-.aw-format-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  width: 100%;
-}
-.aw-details-actions {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--ui-border);
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
 @media (max-width: 720px) {
+  .aw-topbar {
+    flex-wrap: wrap;
+  }
+  .aw-heading {
+    order: 3;
+    flex-basis: 100%;
+  }
   .aw-tabs {
     display: flex;
   }

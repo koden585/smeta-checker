@@ -1632,6 +1632,11 @@
           "size": {
             "title": "Size",
             "type": "integer"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
           }
         },
         "required": [

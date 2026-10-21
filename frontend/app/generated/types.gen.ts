@@ -1064,6 +1064,10 @@ export type VersionDto = {
      * Size
      */
     size: number;
+    /**
+     * Title
+     */
+    title?: string;
 };
 
 /**
