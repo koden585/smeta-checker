@@ -66,6 +66,7 @@ class VersionDTO(DTO):
     metadata: DocumentMetadataDTO
     metadata_overrides: dict[str, str]
     format_status: dict[str, Any] = Field(default_factory=dict)
+    title: str = ""
 
 
 class RunDTO(DTO):

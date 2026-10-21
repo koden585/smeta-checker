@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 from collections import Counter
+from html.parser import HTMLParser
 from uuid import UUID
 
 import fitz
@@ -15,7 +16,6 @@ from audit_models import VorPosition
 from audit_reports import build_user_report
 from vor_parse import load_vor_positions
 from workspace_models import ResultDTO, RunDTO
-
 
 def run_progress(context, record) -> RunDTO:
     if "job_counts" not in record:
@@ -169,10 +169,13 @@ def sheet_window(data: bytes, position: VorPosition):
     try:
         sheet_obj = book[sheet]
         low, high = (
-            max(1, source_row - 3),
-            min(sheet_obj.max_row, source_row + 4),
+            max(1, source_row - 1),
+            min(sheet_obj.max_row, source_row + 1),
         )
-        columns = list(range(1, min(20, sheet_obj.max_column) + 1))
+        # Only the columns a reviewer reads: A–E (number, work, unit,
+        # volume, formula) plus J–K (identifier, position type). Links,
+        # filenames and comments stay out of the window.
+        columns = [c for c in range(1, 12) if c <= 5 or c >= 10]
         merged = list(sheet_obj.merged_cells.ranges)
         coords = (
             set((position.position_source.cells or {}).keys())
@@ -220,6 +223,101 @@ def sheet_window(data: bytes, position: VorPosition):
         book.close()
 
 
+class _CellText(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.cells: list[str] = []
+        self._current: list[str] = []
+        self._in_cell = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"td", "th"}:
+            self._current = []
+            self._in_cell = True
+
+    def handle_endtag(self, tag):
+        if tag in {"td", "th"} and self._in_cell:
+            text = "".join(self._current).strip()
+            if text:
+                self.cells.append(text)
+            self._in_cell = False
+
+    def handle_data(self, data):
+        if self._in_cell:
+            self._current.append(data)
+
+
+def _quote_boxes(page, quote):
+    """Locate a quote on a PDF page, tolerating table HTML in evidence.
+
+    Evidence quotes may be whole ``<tr>`` rows from the table layer; raw
+    tags never occur in the page text, so split into cells and match the
+    row whose cells share one text row: the longest cell via its longest
+    unique fragment, numeric cells by row intersection. Plain-text quotes
+    keep the previous exact behaviour.
+    """
+    normalized = " ".join(page.get_text().casefold().split())
+    if "<td" not in quote and "<th" not in quote:
+        phrase = " ".join(quote.casefold().split())
+        if not phrase or normalized.count(phrase) != 1:
+            return []
+        return list(page.search_for(quote))
+    parser = _CellText()
+    try:
+        parser.feed(quote)
+    except Exception:
+        return []
+    phrases = [" ".join(cell.split()) for cell in parser.cells]
+    phrases = [phrase for phrase in phrases if phrase]
+    if not phrases:
+        return []
+    texts = [phrase for phrase in phrases if len(phrase) >= 4]
+    numbers = {token for phrase in phrases for token in phrase.split()
+               if token.replace(",", "").replace(".", "").isdigit()}
+    words = page.get_text("words")
+    boxes = []
+    for phrase in texts:
+        unique = _unique_subphrase(normalized, phrase)
+        if unique:
+            boxes.extend(page.search_for(unique))
+    if boxes:
+        return [box for box in boxes if box.width > 0 and box.height > 0]
+    # Repeated work name: disambiguate by the numeric cells sharing its row.
+    longest = max(texts, key=len) if texts else ""
+    if not longest or not numbers:
+        return []
+    candidates = page.search_for(longest)
+    rows = []
+    for candidate in candidates:
+        band = fitz.Rect(0, candidate.y0 - candidate.height,
+                         page.rect.width, candidate.y1 + candidate.height)
+        row_words = [word for word in words
+                     if band.intersects(fitz.Rect(word[:4]))]
+        row_text = " ".join(word[4] for word in row_words)
+        if any(number in row_text for number in numbers):
+            rows.extend(box for box in page.search_for(longest)
+                        if band.intersects(box))
+    return [box for box in rows if box.width > 0 and box.height > 0]
+
+
+def _unique_subphrase(normalized, phrase):
+    """Longest leading word-run occurring exactly once (min 4 chars).
+
+    Table rows repeat across pages (headers, duplicated lines): the full
+    cell text may occur twice while a leading fragment is unique. Never
+    return an ambiguous or trivially short phrase.
+    """
+    words = str(phrase or "").split()
+    for end in range(len(words), 0, -1):
+        candidate = " ".join(words[:end])
+        if len(candidate) < 4:
+            break
+        if normalized.count(candidate.casefold()) == 1:
+            return candidate
+    return ""
+
+
+
 def source_evidence(context, record, index, position):
     stored = next(
         x["result"] for x in record["indexed_results"] if x["position_index"] == index
@@ -243,13 +341,7 @@ def source_evidence(context, record, index, position):
             if not 1 <= page_number <= len(pdf):
                 continue
             page = pdf[page_number - 1]
-            normalized = " ".join(page.get_text().casefold().split())
-            phrase = " ".join(quote.casefold().split())
-            boxes = (
-                page.search_for(quote)
-                if phrase and normalized.count(phrase) == 1
-                else []
-            )
+            boxes = _quote_boxes(page, quote)
             # Repeated or long/multiline ambiguous hits do not become an accepted highlight.
             union = fitz.Rect(boxes[0]) if boxes else None
             for box in boxes[1:]:

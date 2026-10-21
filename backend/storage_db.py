@@ -238,7 +238,8 @@ class Repository:
                      "number": v.version_no, "sha256": v.sha256, "size": v.size,
                      "created_at": v.created_at,
                      "metadata": dict(v.metadata_ or {}),
-                     "metadata_overrides": dict(v.metadata_overrides or {})}
+                     "metadata_overrides": dict(v.metadata_overrides or {}),
+                     "title": d.title or v.filename}
                     for d, v in rows]
 
     def version_project_id(self, version_id: UUID) -> UUID:
@@ -275,6 +276,7 @@ class Repository:
             "created_at": version.created_at, "metadata": metadata,
             "metadata_overrides": overrides,
             "format_status": dict(version.format_status or {}),
+            "title": document.title or version.filename,
         }
 
     def _present_document(self, session, document: Document,

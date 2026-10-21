@@ -158,8 +158,8 @@ class ResponseTests(unittest.TestCase):
         by_id = {c["claim_id"]: c for c in result["checks"]}
         self.assertEqual(by_id["presence"]["state"], "not_found")
         self.assertEqual(by_id["quantity"]["state"], "confirmed")
-        self.assertIn("Неизвестный идентификатор цитаты",
-                      result["discrepancy_details"])
+        # Internal validator messages stay out of user-facing details.
+        self.assertNotIn("Неизвестный идентификатор", result["discrepancy_details"])
 
 
     def test_location_without_work_description_still_binds_quantity(self):
@@ -1242,15 +1242,25 @@ class AdapterTests(unittest.TestCase):
         self.assertIn("response_status=failed", result["discrepancy_details"])
         self.assertIn("ответ модели: <пусто>", result["discrepancy_details"])
 
-    def test_output_token_exhaustion_is_incomplete_not_technical_failure(self):
+    def test_output_token_exhaustion_retries_compact_then_incomplete(self):
         output = SimpleNamespace(
             output_text="", status="incomplete",
             incomplete_details=SimpleNamespace(reason="max_output_tokens"),
             usage=SimpleNamespace(total_tokens=6000))
-        result, calls = self.run_adapter([output])
+        result, calls = self.run_adapter([output, self.valid()])
+        self.assertEqual(result["status"], "ОК")
+        self.assertEqual(result["requests"], 2)
+        self.assertIn("сокращённого пакета", calls[1]["input"])
+
+    def test_repeated_exhaustion_is_incomplete_not_technical_failure(self):
+        def truncated():
+            return SimpleNamespace(
+                output_text="", status="incomplete",
+                incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+                usage=SimpleNamespace(total_tokens=6000))
+        result, _ = self.run_adapter([truncated(), truncated(), truncated()])
         self.assertEqual(result["status"], INCOMPLETE)
         self.assertFalse(result["work_found"])
-        self.assertEqual(result["requests"], 1)
         self.assertIn("обрезан лимитом вывода", result["discrepancy_details"])
 
 

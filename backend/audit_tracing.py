@@ -201,9 +201,15 @@ class TracingRun:
     def __init__(self, public_key="", secret_key="", base_url="https://cloud.langfuse.com",
                  environment="development", audit_run_id="", request_id="",
                  redact_pdf=False, mask_prompts=False):
-        self.session_id = "audit-" + uuid4().hex
         self.audit_run_id = str(audit_run_id or "")
         self.request_id = str(request_id or "")
+        # One audit run = one Langfuse session across all workers. A random
+        # id per TracingRun fragments the session (prepare + every position
+        # land in different sessions) and durations collapse to ~0.
+        self.session_id = (
+            f"audit-{self.audit_run_id}" if self.audit_run_id
+            else "audit-" + uuid4().hex
+        )
         self.redact_pdf = bool(redact_pdf)
         self.mask_prompts = bool(mask_prompts)
         self.client = None
