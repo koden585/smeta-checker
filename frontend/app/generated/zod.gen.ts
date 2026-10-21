@@ -54,6 +54,27 @@ export const zAuditStatusResponse = z.object({
 });
 
 /**
+ * Body_format_report_upload_api_v1_format_report_post
+ */
+export const zBodyFormatReportUploadApiV1FormatReportPost = z.object({
+    file: z.string()
+});
+
+/**
+ * Body_format_word_upload_api_v1_format_word_post
+ */
+export const zBodyFormatWordUploadApiV1FormatWordPost = z.object({
+    file: z.string()
+});
+
+/**
+ * Body_formatting_upload_api_v1_format_checks_post
+ */
+export const zBodyFormattingUploadApiV1FormatChecksPost = z.object({
+    file: z.string()
+});
+
+/**
  * Body_upload_document_api_v1_documents_post
  */
 export const zBodyUploadDocumentApiV1DocumentsPost = z.object({
@@ -135,6 +156,9 @@ export const zFormatIssueDto = z.object({
     coord: z.string(),
     error: z.string(),
     expected: z.string(),
+    group: z.string().optional().default(''),
+    group_hint: z.string().optional().default(''),
+    group_title: z.string().optional().default(''),
     status: z.string(),
     type: z.string()
 });
@@ -143,8 +167,12 @@ export const zFormatIssueDto = z.object({
  * FormatDTO
  */
 export const zFormatDto = z.object({
+    error_count: z.int().optional().default(0),
     issues: z.array(zFormatIssueDto),
-    version_id: z.string()
+    sheet: z.string().optional().default(''),
+    sheets: z.array(z.string()).optional(),
+    version_id: z.string(),
+    warning_count: z.int().optional().default(0)
 });
 
 /**
@@ -430,6 +458,7 @@ export const zVersionDto = z.object({
     created_at: z.iso.datetime(),
     document_id: z.string(),
     filename: z.string(),
+    format_status: z.record(z.string(), z.unknown()).optional(),
     id: z.string(),
     kind: z.enum(['vor', 'pdf']),
     metadata: zDocumentMetadataDto,
@@ -663,6 +692,22 @@ export const zFormattingApiV1DocumentsVersionIdFormatChecksPostQuery = z.object(
  */
 export const zFormattingApiV1DocumentsVersionIdFormatChecksPostResponse = zFormatDto;
 
+export const zFormatReportApiV1DocumentsVersionIdFormatReportGetPath = z.object({
+    version_id: z.string()
+});
+
+export const zFormatReportApiV1DocumentsVersionIdFormatReportGetQuery = z.object({
+    sheet: z.string().max(100).nullish()
+});
+
+export const zFormatWordApiV1DocumentsVersionIdFormatWordGetPath = z.object({
+    version_id: z.string()
+});
+
+export const zFormatWordApiV1DocumentsVersionIdFormatWordGetQuery = z.object({
+    sheet: z.string().max(100).nullish()
+});
+
 export const zUpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchBody = zVersionMetadataPatch;
 
 export const zUpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchPath = z.object({
@@ -691,6 +736,29 @@ export const zDeleteVersionApiV1DocumentsVersionIdVersionDeletePath = z.object({
  * Successful Response
  */
 export const zDeleteVersionApiV1DocumentsVersionIdVersionDeleteResponse = zVersionDeletedDto;
+
+export const zFormattingUploadApiV1FormatChecksPostBody = zBodyFormattingUploadApiV1FormatChecksPost;
+
+export const zFormattingUploadApiV1FormatChecksPostQuery = z.object({
+    sheet: z.string().max(100).nullish()
+});
+
+/**
+ * Successful Response
+ */
+export const zFormattingUploadApiV1FormatChecksPostResponse = zFormatDto;
+
+export const zFormatReportUploadApiV1FormatReportPostBody = zBodyFormatReportUploadApiV1FormatReportPost;
+
+export const zFormatReportUploadApiV1FormatReportPostQuery = z.object({
+    sheet: z.string().max(100).nullish()
+});
+
+export const zFormatWordUploadApiV1FormatWordPostBody = zBodyFormatWordUploadApiV1FormatWordPost;
+
+export const zFormatWordUploadApiV1FormatWordPostQuery = z.object({
+    sheet: z.string().max(100).nullish()
+});
 
 export const zProjectsApiV1ProjectsGetQuery = z.object({
     archived: z.boolean().optional().default(false)

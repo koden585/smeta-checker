@@ -2,7 +2,7 @@
 
 import { type Client, type ClientMeta, formDataBodySerializer, type Options as Options2, type RequestResult, type TDataShape } from './client';
 import { client } from './client.gen';
-import type { CatalogApiV1ProjectsProjectIdCatalogGetData, CatalogApiV1ProjectsProjectIdCatalogGetErrors, CatalogApiV1ProjectsProjectIdCatalogGetResponses, ContentApiV1DocumentsVersionIdContentGetData, ContentApiV1DocumentsVersionIdContentGetErrors, ContentApiV1DocumentsVersionIdContentGetResponses, CreateAuditApiV1AuditsPostData, CreateAuditApiV1AuditsPostErrors, CreateAuditApiV1AuditsPostResponses, CreateProjectApiV1ProjectsPostData, CreateProjectApiV1ProjectsPostErrors, CreateProjectApiV1ProjectsPostResponses, DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteData, DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteErrors, DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteResponses, DeleteProjectApiV1ProjectsProjectIdDeleteData, DeleteProjectApiV1ProjectsProjectIdDeleteErrors, DeleteProjectApiV1ProjectsProjectIdDeleteResponses, DeleteVersionApiV1DocumentsVersionIdVersionDeleteData, DeleteVersionApiV1DocumentsVersionIdVersionDeleteErrors, DeleteVersionApiV1DocumentsVersionIdVersionDeleteResponses, DocumentDetailApiV1DocumentsDocumentIdDetailGetData, DocumentDetailApiV1DocumentsDocumentIdDetailGetErrors, DocumentDetailApiV1DocumentsDocumentIdDetailGetResponses, DocumentsApiV1ProjectsProjectIdDocumentsGetData, DocumentsApiV1ProjectsProjectIdDocumentsGetErrors, DocumentsApiV1ProjectsProjectIdDocumentsGetResponses, DownloadAuditReportApiV1AuditsRunIdReportsKindGetData, DownloadAuditReportApiV1AuditsRunIdReportsKindGetErrors, DownloadAuditReportApiV1AuditsRunIdReportsKindGetResponses, FormattingApiV1DocumentsVersionIdFormatChecksPostData, FormattingApiV1DocumentsVersionIdFormatChecksPostErrors, FormattingApiV1DocumentsVersionIdFormatChecksPostResponses, GetAuditApiV1AuditsRunIdGetData, GetAuditApiV1AuditsRunIdGetErrors, GetAuditApiV1AuditsRunIdGetResponses, GetAuditResultsApiV1AuditsRunIdResultsGetData, GetAuditResultsApiV1AuditsRunIdResultsGetErrors, GetAuditResultsApiV1AuditsRunIdResultsGetResponses, GetProjectApiV1ProjectsProjectIdGetData, GetProjectApiV1ProjectsProjectIdGetErrors, GetProjectApiV1ProjectsProjectIdGetResponses, HealthzHealthzGetData, HealthzHealthzGetResponses, HistoryApiV1ProjectsProjectIdAuditsGetData, HistoryApiV1ProjectsProjectIdAuditsGetErrors, HistoryApiV1ProjectsProjectIdAuditsGetResponses, PreflightDocumentsApiV1DocumentsPreflightPostData, PreflightDocumentsApiV1DocumentsPreflightPostErrors, PreflightDocumentsApiV1DocumentsPreflightPostResponses, ProgressApiV1AuditsRunIdProgressGetData, ProgressApiV1AuditsRunIdProgressGetErrors, ProgressApiV1AuditsRunIdProgressGetResponses, ProjectsApiV1ProjectsGetData, ProjectsApiV1ProjectsGetErrors, ProjectsApiV1ProjectsGetResponses, RowsApiV1AuditsRunIdRowsGetData, RowsApiV1AuditsRunIdRowsGetErrors, RowsApiV1AuditsRunIdRowsGetResponses, StructureApiV1DocumentsVersionIdStructureGetData, StructureApiV1DocumentsVersionIdStructureGetErrors, StructureApiV1DocumentsVersionIdStructureGetResponses, SummaryApiV1AuditsRunIdSummaryGetData, SummaryApiV1AuditsRunIdSummaryGetErrors, SummaryApiV1AuditsRunIdSummaryGetResponses, UpdateDocumentApiV1DocumentsDocumentIdPatchData, UpdateDocumentApiV1DocumentsDocumentIdPatchErrors, UpdateDocumentApiV1DocumentsDocumentIdPatchResponses, UpdateProjectApiV1ProjectsProjectIdPatchData, UpdateProjectApiV1ProjectsProjectIdPatchErrors, UpdateProjectApiV1ProjectsProjectIdPatchResponses, UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchData, UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchErrors, UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchResponses, UploadDocumentApiV1DocumentsPostData, UploadDocumentApiV1DocumentsPostErrors, UploadDocumentApiV1DocumentsPostResponses, WorkspaceApiV1AuditsRunIdPositionsPositionIndexWorkspaceGetData, WorkspaceApiV1AuditsRunIdPositionsPositionIndexWorkspaceGetErrors, WorkspaceApiV1AuditsRunIdPositionsPositionIndexWorkspaceGetResponses } from './types.gen';
+import type { CatalogApiV1ProjectsProjectIdCatalogGetData, CatalogApiV1ProjectsProjectIdCatalogGetErrors, CatalogApiV1ProjectsProjectIdCatalogGetResponses, ContentApiV1DocumentsVersionIdContentGetData, ContentApiV1DocumentsVersionIdContentGetErrors, ContentApiV1DocumentsVersionIdContentGetResponses, CreateAuditApiV1AuditsPostData, CreateAuditApiV1AuditsPostErrors, CreateAuditApiV1AuditsPostResponses, CreateProjectApiV1ProjectsPostData, CreateProjectApiV1ProjectsPostErrors, CreateProjectApiV1ProjectsPostResponses, DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteData, DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteErrors, DeleteDocumentApiV1DocumentsDocumentIdDetailDeleteResponses, DeleteProjectApiV1ProjectsProjectIdDeleteData, DeleteProjectApiV1ProjectsProjectIdDeleteErrors, DeleteProjectApiV1ProjectsProjectIdDeleteResponses, DeleteVersionApiV1DocumentsVersionIdVersionDeleteData, DeleteVersionApiV1DocumentsVersionIdVersionDeleteErrors, DeleteVersionApiV1DocumentsVersionIdVersionDeleteResponses, DocumentDetailApiV1DocumentsDocumentIdDetailGetData, DocumentDetailApiV1DocumentsDocumentIdDetailGetErrors, DocumentDetailApiV1DocumentsDocumentIdDetailGetResponses, DocumentsApiV1ProjectsProjectIdDocumentsGetData, DocumentsApiV1ProjectsProjectIdDocumentsGetErrors, DocumentsApiV1ProjectsProjectIdDocumentsGetResponses, DownloadAuditReportApiV1AuditsRunIdReportsKindGetData, DownloadAuditReportApiV1AuditsRunIdReportsKindGetErrors, DownloadAuditReportApiV1AuditsRunIdReportsKindGetResponses, FormatReportApiV1DocumentsVersionIdFormatReportGetData, FormatReportApiV1DocumentsVersionIdFormatReportGetErrors, FormatReportApiV1DocumentsVersionIdFormatReportGetResponses, FormatReportUploadApiV1FormatReportPostData, FormatReportUploadApiV1FormatReportPostErrors, FormatReportUploadApiV1FormatReportPostResponses, FormattingApiV1DocumentsVersionIdFormatChecksPostData, FormattingApiV1DocumentsVersionIdFormatChecksPostErrors, FormattingApiV1DocumentsVersionIdFormatChecksPostResponses, FormattingUploadApiV1FormatChecksPostData, FormattingUploadApiV1FormatChecksPostErrors, FormattingUploadApiV1FormatChecksPostResponses, FormatWordApiV1DocumentsVersionIdFormatWordGetData, FormatWordApiV1DocumentsVersionIdFormatWordGetErrors, FormatWordApiV1DocumentsVersionIdFormatWordGetResponses, FormatWordUploadApiV1FormatWordPostData, FormatWordUploadApiV1FormatWordPostErrors, FormatWordUploadApiV1FormatWordPostResponses, GetAuditApiV1AuditsRunIdGetData, GetAuditApiV1AuditsRunIdGetErrors, GetAuditApiV1AuditsRunIdGetResponses, GetAuditResultsApiV1AuditsRunIdResultsGetData, GetAuditResultsApiV1AuditsRunIdResultsGetErrors, GetAuditResultsApiV1AuditsRunIdResultsGetResponses, GetProjectApiV1ProjectsProjectIdGetData, GetProjectApiV1ProjectsProjectIdGetErrors, GetProjectApiV1ProjectsProjectIdGetResponses, HealthzHealthzGetData, HealthzHealthzGetResponses, HistoryApiV1ProjectsProjectIdAuditsGetData, HistoryApiV1ProjectsProjectIdAuditsGetErrors, HistoryApiV1ProjectsProjectIdAuditsGetResponses, PreflightDocumentsApiV1DocumentsPreflightPostData, PreflightDocumentsApiV1DocumentsPreflightPostErrors, PreflightDocumentsApiV1DocumentsPreflightPostResponses, ProgressApiV1AuditsRunIdProgressGetData, ProgressApiV1AuditsRunIdProgressGetErrors, ProgressApiV1AuditsRunIdProgressGetResponses, ProjectsApiV1ProjectsGetData, ProjectsApiV1ProjectsGetErrors, ProjectsApiV1ProjectsGetResponses, RowsApiV1AuditsRunIdRowsGetData, RowsApiV1AuditsRunIdRowsGetErrors, RowsApiV1AuditsRunIdRowsGetResponses, StructureApiV1DocumentsVersionIdStructureGetData, StructureApiV1DocumentsVersionIdStructureGetErrors, StructureApiV1DocumentsVersionIdStructureGetResponses, SummaryApiV1AuditsRunIdSummaryGetData, SummaryApiV1AuditsRunIdSummaryGetErrors, SummaryApiV1AuditsRunIdSummaryGetResponses, UpdateDocumentApiV1DocumentsDocumentIdPatchData, UpdateDocumentApiV1DocumentsDocumentIdPatchErrors, UpdateDocumentApiV1DocumentsDocumentIdPatchResponses, UpdateProjectApiV1ProjectsProjectIdPatchData, UpdateProjectApiV1ProjectsProjectIdPatchErrors, UpdateProjectApiV1ProjectsProjectIdPatchResponses, UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchData, UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchErrors, UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchResponses, UploadDocumentApiV1DocumentsPostData, UploadDocumentApiV1DocumentsPostErrors, UploadDocumentApiV1DocumentsPostResponses, WorkspaceApiV1AuditsRunIdPositionsPositionIndexWorkspaceGetData, WorkspaceApiV1AuditsRunIdPositionsPositionIndexWorkspaceGetErrors, WorkspaceApiV1AuditsRunIdPositionsPositionIndexWorkspaceGetResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -123,6 +123,16 @@ export const contentApiV1DocumentsVersionIdContentGet = <ThrowOnError extends bo
 export const formattingApiV1DocumentsVersionIdFormatChecksPost = <ThrowOnError extends boolean = false>(options: Options<FormattingApiV1DocumentsVersionIdFormatChecksPostData, ThrowOnError>): RequestResult<FormattingApiV1DocumentsVersionIdFormatChecksPostResponses, FormattingApiV1DocumentsVersionIdFormatChecksPostErrors, ThrowOnError> => (options.client ?? client).post<FormattingApiV1DocumentsVersionIdFormatChecksPostResponses, FormattingApiV1DocumentsVersionIdFormatChecksPostErrors, ThrowOnError>({ url: '/api/v1/documents/{version_id}/format-checks', ...options });
 
 /**
+ * Format Report
+ */
+export const formatReportApiV1DocumentsVersionIdFormatReportGet = <ThrowOnError extends boolean = false>(options: Options<FormatReportApiV1DocumentsVersionIdFormatReportGetData, ThrowOnError>): RequestResult<FormatReportApiV1DocumentsVersionIdFormatReportGetResponses, FormatReportApiV1DocumentsVersionIdFormatReportGetErrors, ThrowOnError> => (options.client ?? client).get<FormatReportApiV1DocumentsVersionIdFormatReportGetResponses, FormatReportApiV1DocumentsVersionIdFormatReportGetErrors, ThrowOnError>({ url: '/api/v1/documents/{version_id}/format-report', ...options });
+
+/**
+ * Format Word
+ */
+export const formatWordApiV1DocumentsVersionIdFormatWordGet = <ThrowOnError extends boolean = false>(options: Options<FormatWordApiV1DocumentsVersionIdFormatWordGetData, ThrowOnError>): RequestResult<FormatWordApiV1DocumentsVersionIdFormatWordGetResponses, FormatWordApiV1DocumentsVersionIdFormatWordGetErrors, ThrowOnError> => (options.client ?? client).get<FormatWordApiV1DocumentsVersionIdFormatWordGetResponses, FormatWordApiV1DocumentsVersionIdFormatWordGetErrors, ThrowOnError>({ url: '/api/v1/documents/{version_id}/format-word', ...options });
+
+/**
  * Update Version Metadata
  */
 export const updateVersionMetadataApiV1DocumentsVersionIdMetadataPatch = <ThrowOnError extends boolean = false>(options: Options<UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchData, ThrowOnError>): RequestResult<UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchResponses, UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchErrors, ThrowOnError> => (options.client ?? client).patch<UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchResponses, UpdateVersionMetadataApiV1DocumentsVersionIdMetadataPatchErrors, ThrowOnError>({
@@ -143,6 +153,45 @@ export const structureApiV1DocumentsVersionIdStructureGet = <ThrowOnError extend
  * Delete Version
  */
 export const deleteVersionApiV1DocumentsVersionIdVersionDelete = <ThrowOnError extends boolean = false>(options: Options<DeleteVersionApiV1DocumentsVersionIdVersionDeleteData, ThrowOnError>): RequestResult<DeleteVersionApiV1DocumentsVersionIdVersionDeleteResponses, DeleteVersionApiV1DocumentsVersionIdVersionDeleteErrors, ThrowOnError> => (options.client ?? client).delete<DeleteVersionApiV1DocumentsVersionIdVersionDeleteResponses, DeleteVersionApiV1DocumentsVersionIdVersionDeleteErrors, ThrowOnError>({ url: '/api/v1/documents/{version_id}/version', ...options });
+
+/**
+ * Formatting Upload
+ */
+export const formattingUploadApiV1FormatChecksPost = <ThrowOnError extends boolean = false>(options: Options<FormattingUploadApiV1FormatChecksPostData, ThrowOnError>): RequestResult<FormattingUploadApiV1FormatChecksPostResponses, FormattingUploadApiV1FormatChecksPostErrors, ThrowOnError> => (options.client ?? client).post<FormattingUploadApiV1FormatChecksPostResponses, FormattingUploadApiV1FormatChecksPostErrors, ThrowOnError>({
+    ...formDataBodySerializer,
+    url: '/api/v1/format-checks',
+    ...options,
+    headers: {
+        'Content-Type': null,
+        ...options.headers
+    }
+});
+
+/**
+ * Format Report Upload
+ */
+export const formatReportUploadApiV1FormatReportPost = <ThrowOnError extends boolean = false>(options: Options<FormatReportUploadApiV1FormatReportPostData, ThrowOnError>): RequestResult<FormatReportUploadApiV1FormatReportPostResponses, FormatReportUploadApiV1FormatReportPostErrors, ThrowOnError> => (options.client ?? client).post<FormatReportUploadApiV1FormatReportPostResponses, FormatReportUploadApiV1FormatReportPostErrors, ThrowOnError>({
+    ...formDataBodySerializer,
+    url: '/api/v1/format-report',
+    ...options,
+    headers: {
+        'Content-Type': null,
+        ...options.headers
+    }
+});
+
+/**
+ * Format Word Upload
+ */
+export const formatWordUploadApiV1FormatWordPost = <ThrowOnError extends boolean = false>(options: Options<FormatWordUploadApiV1FormatWordPostData, ThrowOnError>): RequestResult<FormatWordUploadApiV1FormatWordPostResponses, FormatWordUploadApiV1FormatWordPostErrors, ThrowOnError> => (options.client ?? client).post<FormatWordUploadApiV1FormatWordPostResponses, FormatWordUploadApiV1FormatWordPostErrors, ThrowOnError>({
+    ...formDataBodySerializer,
+    url: '/api/v1/format-word',
+    ...options,
+    headers: {
+        'Content-Type': null,
+        ...options.headers
+    }
+});
 
 /**
  * Projects

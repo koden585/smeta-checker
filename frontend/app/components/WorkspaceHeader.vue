@@ -22,6 +22,7 @@ const onProjects = computed(() => props.active !== 'create')
         icon="i-lucide-layout-dashboard"
         ><span class="header-project-label">Проекты</span></UButton
       >
+      <VorFormatProbe />
       <UColorModeButton
         class="theme-button"
         aria-label="Переключить светлую и тёмную тему"
@@ -80,6 +81,7 @@ const onProjects = computed(() => props.active !== 'create')
 .header-navigation {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .theme-button {

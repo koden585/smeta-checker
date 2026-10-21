@@ -5,7 +5,7 @@ import type {
   VersionDto,
   StructureDto,
   StructureNodeDto,
-  FormatIssueDto,
+  FormatDto,
 } from '~/generated/types.gen'
 import { queueColor, queueLabel, quantityWithUnit } from '~/utils/presentation'
 const props = defineProps<{
@@ -27,7 +27,7 @@ const props = defineProps<{
   error = ref(''),
   structureError = ref(''),
   busy = ref(true),
-  formatting = ref<FormatIssueDto[] | null>(null),
+  formatting = ref<FormatDto | null>(null),
   formatOpen = ref(false),
   formatError = ref(''),
   checking = ref(false),
@@ -146,8 +146,7 @@ async function checkFormat() {
   checking.value = true
   formatError.value = ''
   try {
-    const data = await backend.formatting(workspace.value.vor_version_id, sheetName.value)
-    formatting.value = data.issues.filter((i) => i.status !== 'ОК')
+    formatting.value = await backend.formatting(workspace.value.vor_version_id, sheetName.value)
   } catch (e) {
     formatError.value = readableError(e)
   } finally {
@@ -250,8 +249,8 @@ onBeforeUnmount(() => {
             Оформление
             <UBadge
               v-if="formatting"
-              :label="String(formatting.length)"
-              :color="formatting.length ? 'warning' : 'success'"
+              :label="String(formatting.issues.length)"
+              :color="formatting.issues.length ? 'warning' : 'success'"
               variant="solid"
               size="sm"
             />
@@ -618,33 +617,16 @@ onBeforeUnmount(() => {
         {{ formatError }}
         <UButton variant="link" @click="checkFormat">Повторить</UButton>
       </p>
-      <p v-else-if="formatting && !formatting.length" class="empty" role="status">
-        Замечаний нет. Шапка, ячейки и формулы соответствуют шаблону.
-      </p>
-      <div v-else-if="formatting" class="aw-format-table">
-        <table class="results">
-          <thead>
-            <tr>
-              <th scope="col">Ячейка</th>
-              <th scope="col">Тип</th>
-              <th scope="col">Ожидалось</th>
-              <th scope="col">Факт</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="issue in formatting" :key="issue.coord + issue.type">
-              <td class="numbers">{{ issue.coord }}</td>
-              <td>{{ issue.type }}</td>
-              <td>{{ issue.expected || issue.error }}</td>
-              <td>{{ issue.actual || '—' }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <FormatCheckResult
+        v-else-if="formatting"
+        :result="formatting"
+        :version-id="workspace?.vor_version_id"
+        filename="Ведомость"
+      />
     </template>
     <template #footer>
       <div class="aw-format-footer">
-        <span v-if="formatting" class="muted">Замечаний: {{ formatting.length }}</span>
+        <span v-if="formatting" class="muted">Замечаний: {{ formatting.issues.length }}</span>
         <UButton color="neutral" variant="outline" :loading="checking" @click="checkFormat">
           Проверить снова
         </UButton>
