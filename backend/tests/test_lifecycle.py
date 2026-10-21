@@ -434,6 +434,52 @@ class LifecycleTests(unittest.TestCase):
                 repeated = list(executor.map(duplicate, range(2)))
             self.assertEqual(repeated[0].id, repeated[1].id)
             self.assertEqual(repeated[0].version_no, 4)
+    def test_delete_project_cascades_runs_documents_and_pins(self):
+        with tempfile.TemporaryDirectory(prefix="smeta-lifecycle-") as tmp:
+            client, app = self._open_app(tmp)
+            project_id = self._project(client, "Под снос")
+            vor = self._upload(
+                client, "Под снос", "vor", "vor.csv",
+                fixtures._fake_vor_bytes(), "text/csv",
+                project_id=project_id, new_document=True,
+            )
+            pdf = self._upload(
+                client, "Под снос", "pdf", "project.pdf",
+                fixtures._fake_pdf_bytes(), "application/pdf",
+                project_id=project_id, new_document=True,
+            )
+            created = client.post(
+                "/api/v1/audits",
+                json={
+                    "project_id": project_id,
+                    "vor_version_id": vor["version_id"],
+                    "pdf_version_ids": [pdf["version_id"]],
+                },
+            )
+            self.assertEqual(created.status_code, 202, created.text)
+            run_id = created.json()["run_id"]
+            self._wait_for_run(client, run_id)
+            archived = client.patch(
+                f"/api/v1/projects/{project_id}", json={"archived": True}
+            )
+            self.assertEqual(archived.status_code, 200, archived.text)
+            deleted = client.delete(f"/api/v1/projects/{project_id}")
+            self.assertEqual(deleted.status_code, 200, deleted.text)
+            self.assertEqual(deleted.json()["id"], project_id)
+            self.assertEqual(
+                client.get(f"/api/v1/projects/{project_id}").status_code, 404
+            )
+            self.assertEqual(
+                client.get(
+                    f"/api/v1/projects/{project_id}/catalog"
+                ).status_code,
+                404,
+            )
+            self.assertEqual(
+                client.get(f"/api/v1/audits/{run_id}").status_code, 404
+            )
+            names = [p["name"] for p in client.get("/api/v1/projects").json()]
+            self.assertNotIn("Под снос", names)
 
     def test_migration_backfills_pins_without_moving_uuids(self):
         from storage_blobs import FileBlobStore

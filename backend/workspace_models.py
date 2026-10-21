@@ -1,7 +1,7 @@
 """Public contracts for the Nuxt audit workspace."""
 
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -65,6 +65,7 @@ class VersionDTO(DTO):
     created_at: datetime
     metadata: DocumentMetadataDTO
     metadata_overrides: dict[str, str]
+    format_status: dict[str, Any] = Field(default_factory=dict)
 
 
 class RunDTO(DTO):
@@ -245,10 +246,17 @@ class FormatIssueDTO(DTO):
     actual: str
     status: str
     error: str
+    group: str = ""
+    group_title: str = ""
+    group_hint: str = ""
 
 
 class FormatDTO(DTO):
     version_id: str
+    sheet: str = ""
+    sheets: list[str] = Field(default_factory=list)
+    error_count: int = 0
+    warning_count: int = 0
     issues: list[FormatIssueDTO]
 
 

@@ -66,6 +66,7 @@ class VersionRef:
     size: int
     metadata: dict[str, Any] | None = None
     metadata_overrides: dict[str, Any] | None = None
+    format_status: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +80,7 @@ class DocumentVersionRow:
     filename: str = ""
     metadata: dict[str, Any] | None = None
     metadata_overrides: dict[str, Any] | None = None
+    format_status: dict[str, Any] | None = None
 
 @dataclass(frozen=True, slots=True)
 class RunRow:
@@ -272,6 +274,7 @@ class Repository:
             "sha256": version.sha256, "size": version.size,
             "created_at": version.created_at, "metadata": metadata,
             "metadata_overrides": overrides,
+            "format_status": dict(version.format_status or {}),
         }
 
     def _present_document(self, session, document: Document,
@@ -423,6 +426,16 @@ class Repository:
             session.refresh(version)
             return self._present_version(session, version, document)
 
+    def record_format_status(self, version_id: UUID,
+                             status: dict[str, Any]) -> None:
+        """Persist the latest formatting verdict for one revision."""
+        with Session(self._engine) as session:
+            version = session.get(DocumentVersion, version_id)
+            if version is None:
+                raise KeyError(str(version_id))
+            version.format_status = dict(status or {})
+            session.commit()
+
     def persist_vor_run(
         self,
         *,
@@ -524,6 +537,7 @@ class Repository:
                 size=version.size,
                 metadata=dict(version.metadata_ or {}),
                 metadata_overrides=dict(version.metadata_overrides or {}),
+                format_status=dict(version.format_status or {}),
             )
 
     def _extract_metadata(self, data: bytes, filename: str, kind: str) -> dict[str, Any]:
@@ -711,25 +725,26 @@ class Repository:
             return True
 
     def delete_project(self, project_id: UUID) -> bool:
-        """Hard-delete only when the project holds no used objects."""
+        """Hard-delete a project with every owned row.
+
+        Runs, position jobs/results, artifacts and PDF pins go first
+        (children cascade from runs); versions, documents and the project
+        follow. Blobs are content-addressed and stay in the store.
+        """
         with Session(self._engine) as session:
             project = session.get(Project, project_id)
             if project is None:
                 raise KeyError(str(project_id))
             documents = session.scalars(select(Document).where(
                 Document.project_id == project.id)).all()
-            runs = session.scalar(select(func.count()).select_from(Run).where(
-                Run.project_id == project.id))
-            if runs:
-                raise LookupError("project has runs")
-            for document in documents:
-                for version in session.scalars(select(DocumentVersion).where(
-                        DocumentVersion.document_id == document.id)).all():
-                    pinned = session.scalar(
-                        select(func.count()).select_from(RunPdfVersion).where(
-                            RunPdfVersion.version_id == version.id))
-                    if pinned:
-                        raise LookupError("project has pinned snapshots")
+            runs = session.scalars(select(Run).where(
+                Run.project_id == project.id)).all()
+            for run in runs:
+                for pin in session.scalars(select(RunPdfVersion).where(
+                        RunPdfVersion.run_id == run.id)).all():
+                    session.delete(pin)
+                session.delete(run)
+            session.flush()
             for document in documents:
                 for version in session.scalars(select(DocumentVersion).where(
                         DocumentVersion.document_id == document.id)).all():
