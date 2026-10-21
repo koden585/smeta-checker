@@ -238,12 +238,23 @@ class PDFTextSource:
                         if self._progress:
                             self._progress(idx + 1, len(doc))
                         continue
-                    is_scan = (
-                        len(natives[idx]) < NATIVE_MIN_CHARS
-                        and bool(page.get_images()
-                                 or PDFTextSource._has_vector_drawings(page)))
+                    # Vector drawings are expensive to enumerate: only scan
+                    # candidates (short text + images) pay for the check.
+                    short = len(natives[idx]) < NATIVE_MIN_CHARS
+                    images = page.get_images() if short else []
+                    is_scan = short and bool(
+                        images or (PDFTextSource._has_vector_drawings(page)
+                                   if not images else False))
                     if is_scan:
+                        # to_markdown with use_ocr=False returns '' on scans
+                        # after ~2s of work; OCR lands separately via
+                        # for_position. Keep the short digital text, if any.
                         scans.append(idx)
+                        texts[idx] = natives[idx]
+                        self._write_cached_extraction(idx, natives[idx], True)
+                        if self._progress:
+                            self._progress(idx + 1, len(doc))
+                        continue
                     pending.append(idx)
                 except Exception as exc:
                     errors[idx] = "Сбой чтения PDF (PyMuPDF4LLM): %s" % str(exc)[:200]
