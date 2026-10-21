@@ -158,11 +158,14 @@ services:
       - "1000000"
       - -n
       - pdf-worker@%h
+      - --pidfile
+      - /tmp/celery-pdf.pid
     healthcheck:
-      # No celery http endpoint: liveness = process answers inspect ping.
-      test: ["CMD-SHELL", "celery -A audit_tasks:worker inspect ping -d pdf-worker@$$(hostname) | grep -q pong"]
+      # Cheap liveness: pidfile exists and the process is alive.
+      # celery inspect ping costs a full interpreter boot every 60s.
+      test: ["CMD-SHELL", "kill -0 $(cat /tmp/celery-pdf.pid)"]
       interval: 60s
-      timeout: 15s
+      timeout: 5s
       retries: 3
       start_period: 60s
 
@@ -202,13 +205,15 @@ services:
       - -Q
       - llm
       - -c
-      - ${AUDIT_LLM_CONCURRENCY:-8}
+      - ${AUDIT_LLM_CONCURRENCY:-2}
       - -n
       - llm-worker@%h
+      - --pidfile
+      - /tmp/celery-llm.pid
     healthcheck:
-      test: ["CMD-SHELL", "celery -A audit_tasks:worker inspect ping -d llm-worker@$$(hostname) | grep -q pong"]
+      test: ["CMD-SHELL", "kill -0 $(cat /tmp/celery-llm.pid)"]
       interval: 60s
-      timeout: 15s
+      timeout: 5s
       retries: 3
       start_period: 60s
 
