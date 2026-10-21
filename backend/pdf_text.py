@@ -29,6 +29,8 @@ TOP_CANDIDATES_PER_POSITION = 5
 MAX_TABLE_PAGES_PER_POSITION = 8
 MAX_TABLE_CELL_CHARS = 200
 MAX_VECTOR_PATHS = 5000
+# Pages per to_markdown call: one pipeline init per batch, not per page.
+_MARKDOWN_BATCH = 8
 # Persistent native grid cache schema; v2 stores locator grids, not joined rows.
 # OCR TSV envelopes carry their own format/schema and settings key, so the
 # string-only legacy OCR records are never reused.
@@ -211,6 +213,9 @@ class PDFTextSource:
             markdown_doc = pymupdf.open(
                 stream=doc.tobytes(no_new_id=True), filetype="pdf")
         with markdown_doc:
+            # Pass 1 (cheap): cache hits, native text, scan/complex flags.
+            natives: dict[int, str] = {}
+            pending: list[int] = []
             for idx in range(len(doc)):
                 cached = self._read_cached_extraction(idx)
                 if cached is not None:
@@ -222,33 +227,73 @@ class PDFTextSource:
                     if self._progress:
                         self._progress(idx + 1, len(doc))
                     continue
+                texts.append("")  # placeholder, filled in pass 2
                 try:
                     page = markdown_doc[idx]
                     # Scan eligibility uses compacted source text, not Markdown markup.
-                    native = _compact_text(page.get_text(sort=True))
+                    natives[idx] = _compact_text(page.get_text(sort=True))
                     if self._too_complex(page):
-                        texts.append(native)
+                        texts[idx] = natives[idx]
                         errors[idx] = "Сложный векторный чертёж: анализ разметки ограничен; требуется ручная проверка страницы"
                         if self._progress:
                             self._progress(idx + 1, len(doc))
                         continue
                     is_scan = (
-                        len(native) < NATIVE_MIN_CHARS
+                        len(natives[idx]) < NATIVE_MIN_CHARS
                         and bool(page.get_images()
                                  or PDFTextSource._has_vector_drawings(page)))
                     if is_scan:
                         scans.append(idx)
-                    self.extraction_misses += 1
-                    chunks = pymupdf4llm.to_markdown(
-                        markdown_doc, pages=[idx], **_MARKDOWN_KWARGS)
-                    text = _compact_text(chunks[0]["text"])
-                    texts.append(text)
-                    self._write_cached_extraction(idx, text, is_scan)
+                    pending.append(idx)
                 except Exception as exc:
-                    texts.append("")
                     errors[idx] = "Сбой чтения PDF (PyMuPDF4LLM): %s" % str(exc)[:200]
-                if self._progress:
-                    self._progress(idx + 1, len(doc))
+                    if self._progress:
+                        self._progress(idx + 1, len(doc))
+            # Pass 2 (expensive): one pipeline init per batch, not per page.
+            for start in range(0, len(pending), _MARKDOWN_BATCH):
+                batch = pending[start:start + _MARKDOWN_BATCH]
+                self.extraction_misses += len(batch)
+                try:
+                    chunks = pymupdf4llm.to_markdown(
+                        markdown_doc, pages=batch, **_MARKDOWN_KWARGS)
+                    by_page = dict(zip(batch, chunks))
+                except Exception:
+                    # One rotten page must not kill its batch neighbours:
+                    # retry the batch page by page, isolating the failure.
+                    by_page = {}
+                    for idx in batch:
+                        try:
+                            single = pymupdf4llm.to_markdown(
+                                markdown_doc, pages=[idx], **_MARKDOWN_KWARGS)
+                            by_page[idx] = single[0] if single else None
+                        except Exception as exc:
+                            texts[idx] = ""
+                            errors[idx] = ("Сбой чтения PDF (PyMuPDF4LLM): %s"
+                                           % str(exc)[:200])
+                            if self._progress:
+                                self._progress(idx + 1, len(doc))
+                    for idx in batch:
+                        if idx in errors:
+                            continue
+                        chunk = by_page.get(idx)
+                        text = (_compact_text(chunk["text"]) if chunk
+                                else natives.get(idx, ""))
+                        texts[idx] = text
+                        self._write_cached_extraction(idx, text, idx in scans)
+                        if self._progress:
+                            self._progress(idx + 1, len(doc))
+                    continue
+                # Chunks come back in pages order; metadata.page is empty.
+                by_page = dict(zip(batch, chunks))
+                for idx in batch:
+                    chunk = by_page.get(idx)
+                    text = (_compact_text(chunk["text"]) if chunk
+                            else natives.get(idx, ""))
+                    texts[idx] = text
+                    self._write_cached_extraction(
+                        idx, text, idx in scans)
+                    if self._progress:
+                        self._progress(idx + 1, len(doc))
         return tuple(texts), errors, scans
 
     @staticmethod

@@ -32,10 +32,8 @@ from audit_service import (
 from audit_snapshot import load_snapshot, store_snapshot
 from audit_tracing import TracingRun
 from pdf_binding import resolve_position_pdfs
-from pdf_text import PDFTextSource
 from storage_blobs import BlobStore, open_blob_store
 from storage_db import Repository, open_repository
-from vor_parse import load_vor_frame_positions
 
 logger = get_logger(__name__)
 
@@ -212,6 +210,9 @@ def prepare_run(
     finished ``done`` so finalize still merges it.
     """
     import fitz
+
+    from pdf_text import PDFTextSource
+    from vor_parse import load_vor_frame_positions
 
     started = time.monotonic()
     token = bind(
@@ -766,6 +767,8 @@ def finalize_run(
     gap). Uses the shared ``build_run_artifacts`` so the export matches the
     in-process runner byte-for-shape.
     """
+    from vor_parse import load_vor_frame_positions
+
     started = time.monotonic()
     record = context.repository.load_run(run_id)
     config = record.get("config") or {}

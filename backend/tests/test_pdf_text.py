@@ -147,12 +147,11 @@ def make_doc(native_texts, ocr_texts=None, **kwargs):
 
 
 def _fake_to_markdown(doc, pages=None, **kwargs):
-    """Per-page Markdown chunk derived from the FakeDoc native text."""
-    idx = list(pages or [0])[0]
+    """Per-page Markdown chunks derived from the FakeDoc native text."""
     return [{"text": doc[idx].get_text(sort=True),
              "metadata": {"page": idx},
              "toc_items": [],
-             "page_boxes": []}]
+             "page_boxes": []} for idx in list(pages or [0])]
 
 
 def _fake_open_pdf(*args, **kwargs):
@@ -641,7 +640,7 @@ class CacheTests(FakeSourceTests):
             real_markdown = _fake_to_markdown
 
             def failing_markdown(markdown_doc, pages=None, **kwargs):
-                if list(pages or [0])[0] == 1:
+                if 1 in list(pages or [0]):
                     raise RuntimeError("broken page")
                 return real_markdown(markdown_doc, pages=pages, **kwargs)
 
