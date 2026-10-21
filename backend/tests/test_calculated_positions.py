@@ -173,7 +173,7 @@ class OperationEvidenceTests(unittest.TestCase):
         report = ReportTests().make_report([("Ошибка", {
             "technology": {"status": "different", "expected": "обжимными втулками",
                            "actual": "талрепными стяжками"}})])
-        row = report.iloc[0]
+        row = report[0]
         self.assertIn("обжимными втулками", row["Что не так"])
         self.assertIn("талрепными стяжками", row["Что не так"])
         self.assertNotIn("не на тех страницах", row["Что не так"])

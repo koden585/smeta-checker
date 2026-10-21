@@ -40,7 +40,9 @@ services:
       retries: 5
 
   migrate:
-    build: ./backend
+    build:
+      context: ./backend
+      target: full
     restart: "no"
     depends_on:
       db:
@@ -50,7 +52,9 @@ services:
     command: ["alembic", "upgrade", "head"]
 
   api:
-    build: ./backend
+    build:
+      context: ./backend
+      target: full
     restart: unless-stopped
     depends_on:
       migrate:
@@ -118,7 +122,9 @@ services:
     security_opt: [no-new-privileges:true]
 
   worker-pdf:
-    build: ./backend
+    build:
+      context: ./backend
+      target: full
     restart: unless-stopped
     depends_on:
       migrate:
@@ -156,6 +162,8 @@ services:
       - ${AUDIT_PDF_CONCURRENCY:-2}
       - --max-memory-per-child
       - "1000000"
+      - --max-tasks-per-child
+      - ${AUDIT_MAX_TASKS_PER_CHILD:-50}
       - -n
       - pdf-worker@%h
       - --pidfile
@@ -170,7 +178,9 @@ services:
       start_period: 60s
 
   worker-llm:
-    build: ./backend
+    build:
+      context: ./backend
+      target: llm-slim
     restart: unless-stopped
     depends_on:
       migrate:
@@ -206,6 +216,8 @@ services:
       - llm
       - -c
       - ${AUDIT_LLM_CONCURRENCY:-2}
+      - --max-tasks-per-child
+      - ${AUDIT_MAX_TASKS_PER_CHILD:-50}
       - -n
       - llm-worker@%h
       - --pidfile

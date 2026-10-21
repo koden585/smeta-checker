@@ -5,29 +5,33 @@ description = "Аудит ведомости объемов работ (ВОР) 
 readme = "README.md"
 requires-python = "==3.14.*"
 dependencies = [
-    "alembic==1.20.0",
+    # LLM worker set: queue + db + model client + tracing. No PDF/VOR/HTTP.
     "celery==5.6.3",
-    "fastapi==0.143.5",
     "langfuse==5.0.1",
-    "lxml==6.1.3",
     "openai==3.24.0",
+    "psycopg[binary]==3.3.6",
+    "pydantic==2.14.1",
+    "python-dotenv==1.2.4",
+    "redis==8.1.0",
+    "sqlalchemy==2.1.5",
+]
+
+[dependency-groups]
+full = [
+    # API + PDF worker: HTTP, migrations, VOR parsing, PDF, Word export.
+    "alembic==1.20.0",
+    "fastapi==0.143.5",
+    "lxml==6.1.3",
     "openpyxl==3.1.5",
     "pandas==3.0.6",
     "pillow==12.3.0",
-    "psycopg[binary]==3.3.6",
-    "pydantic==2.14.1",
     "pymupdf==1.28.2",
     "pymupdf-layout==1.28.2",
     "pymupdf4llm==1.28.2",
     "python-docx==1.2.0",
-    "python-dotenv==1.2.4",
     "python-multipart==0.0.32",
-    "redis==8.1.0",
-    "sqlalchemy==2.1.5",
     "uvicorn==0.54.0",
 ]
-
-[dependency-groups]
 dev = [
     "pytest==9.1.1",
     "ruff==0.17.1",

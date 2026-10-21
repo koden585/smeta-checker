@@ -2,6 +2,7 @@
 
 import io
 import re
+from collections import Counter
 from decimal import Decimal
 from urllib.parse import quote
 
@@ -11,7 +12,6 @@ from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import nsdecls, qn
 from docx.opc.constants import RELATIONSHIP_TYPE
 from docx.shared import Inches, Pt
-import pandas as pd
 
 from audit_core import INCOMPLETE, TECHNICAL_ERROR
 from audit_measurements import format_ru
@@ -150,14 +150,32 @@ def _as_source_dict(source):
     return source
 
 
+def _df_rows(df):
+    """Normalize a DataFrame (or row-dict list) to plain row dicts."""
+    if hasattr(df, "iterrows"):
+        rows = []
+        for _, row in df.iterrows():
+            data = dict(row.to_dict())
+            data.setdefault("№", row.iloc[0])
+            rows.append(data)
+        return rows
+    return [dict(r) for r in df]
+
+
 def build_user_report(df, tracking, tasks):
-    """Project explicit presentation fields; align tracking by position, not df index."""
+    """Project explicit presentation fields; align tracking by position, not df index.
+
+    Accepts a DataFrame or a list of row dicts; always returns a list of
+    record dicts sorted by status severity (stable). Pandas-free: callers
+    on the read path pass plain dicts and never import pandas.
+    """
     tracking = [_as_source_dict(source) for source in tracking]
     tasks = [_as_task_dict(task) for task in tasks]
-    if len(df) != len(tracking) or len(df) != len(tasks):
+    rows = (_df_rows(df) if hasattr(df, "iterrows") else [dict(r) for r in df])
+    if len(rows) != len(tracking) or len(rows) != len(tasks):
         raise ValueError("Данные позиций и источников отчёта не согласованы")
     records = []
-    for (_, row), source, task in zip(df.iterrows(), tracking, tasks):
+    for row, source, task in zip(rows, tracking, tasks):
         files = [_basename(ref) for ref in split_pdf_refs(task.get("file_refs", ""))]
         if source.get("pdf_name"):
             resolved = _basename(source["pdf_name"])
@@ -378,11 +396,10 @@ def build_user_report(df, tracking, tasks):
                         continue
                     seen_comment = True
                 notes.append(_human_claim_note(check))
-        records.append(dict(zip(REPORT_COLUMNS, [row.iloc[0], task["w_name"], status,
+        records.append(dict(zip(REPORT_COLUMNS, [row.get("№"), task["w_name"], status,
             " ".join(remarks + notes) if remarks or notes else "Расхождений не обнаружено.",
             "\n".join(files) or "Не указан", location])))
-    report = pd.DataFrame(records, columns=REPORT_COLUMNS)
-    return report.sort_values("Статус аудита", key=lambda col: col.map(STATUS_ORDER), kind="stable").reset_index(drop=True)
+    return sorted(records, key=lambda r: STATUS_ORDER.get(r["Статус аудита"], 9))
 
 
 def _source_link(row):
@@ -394,14 +411,15 @@ def _source_link(row):
 
 
 def generate_word_report(report, meta):
+    rows = _df_rows(report) if hasattr(report, "iterrows") else [dict(r) for r in report]
     doc = docx.Document()
     for section in doc.sections:
         section.top_margin = section.bottom_margin = section.left_margin = section.right_margin = Inches(0.6)
     doc.styles["Normal"].font.size = Pt(9)
     doc.add_heading("Результаты аудита ВОР и ПД", 0)
     doc.add_paragraph(f"Объект: {meta.get('object_name', 'Не указано')}\nОснование: {meta.get('basis_code', 'ПД')}")
-    counts = report["Статус аудита"].value_counts()
-    doc.add_paragraph(f"Всего позиций: {len(report)}. " + "; ".join(f"{status}: {counts.get(status, 0)}" for status in STATUS_ORDER))
+    counts = Counter(r["Статус аудита"] for r in rows)
+    doc.add_paragraph(f"Всего позиций: {len(rows)}. " + "; ".join(f"{status}: {counts.get(status, 0)}" for status in STATUS_ORDER))
     table = doc.add_table(rows=1, cols=4)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.style = "Table Grid"
@@ -410,7 +428,7 @@ def generate_word_report(report, meta):
         cell.paragraphs[0].runs[0].bold = True
     repeat = OxmlElement("w:tblHeader")
     table.rows[0]._tr.get_or_add_trPr().append(repeat)
-    for _, row in report.iterrows():
+    for row in rows:
         cells = table.add_row().cells
         cells[0].text = str(row["№"])
         cells[1].text = str(row["Наименование работ"])

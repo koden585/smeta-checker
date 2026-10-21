@@ -58,19 +58,19 @@ class ReportTests(unittest.TestCase):
                             {"kind": "display-operand-mismatch", "display_cell": "E32",
                              "message": "в тексте расчёта E32 показано число 992"}]}),
             ("ОК", {})])
-        self.assertEqual(report["№"].tolist(), [3, 5, 2, 4, 1, 6])
-        self.assertEqual(report["Статус аудита"].tolist(), [DISCREPANCY, DISCREPANCY, MANUAL, NOT_CHECKED, "ОК", "ОК"])
-        mismatch = report.iloc[0]
+        self.assertEqual([r["№"] for r in report], [3, 5, 2, 4, 1, 6])
+        self.assertEqual([r["Статус аудита"] for r in report], [DISCREPANCY, DISCREPANCY, MANUAL, NOT_CHECKED, "ОК", "ОК"])
+        mismatch = report[0]
         self.assertIn("120 м³", mismatch["Что не так"])
         self.assertIn("95 м³", mismatch["Что не так"])
         self.assertIn("25 м³", mismatch["Что не так"])
         self.assertEqual(mismatch["Наименование файла"], "КР.pdf")
         self.assertEqual(mismatch["Где проверить"], "стр. 18, 19")
-        for text in report["Что не так"]:
-            self.assertNotIn("found_volume", text)
-            self.assertNotIn("OCR", text)
-        self.assertNotIn("Идентификатор", report.columns)
-        contradiction = report.loc[report["№"] == 5].iloc[0]
+        for row in report:
+            self.assertNotIn("found_volume", row["Что не так"])
+            self.assertNotIn("OCR", row["Что не так"])
+        self.assertNotIn("Идентификатор", report[0])
+        contradiction = next(r for r in report if r["№"] == 5)
         self.assertIn("E32", contradiction["Что не так"])
         self.assertIn("992", contradiction["Что не так"])
 
@@ -90,8 +90,8 @@ class ReportTests(unittest.TestCase):
                             "state": "review_required",
                             "reasons": ["ambiguous_measurements"],
                             "required": True}]})])
-        self.assertEqual(report["Статус аудита"].tolist(), [DISCREPANCY, MANUAL, MANUAL, MANUAL])
-        by_num = {num: text for num, text in zip(report["№"], report["Что не так"])}
+        self.assertEqual([r["Статус аудита"] for r in report], [DISCREPANCY, MANUAL, MANUAL, MANUAL])
+        by_num = {r["№"]: r["Что не так"] for r in report}
         self.assertIn("не на тех страницах", by_num[1])
         self.assertIn("неполная", by_num[2])
         self.assertNotIn("Разница", by_num[4])
@@ -105,12 +105,12 @@ class ReportTests(unittest.TestCase):
                                     "state": "contradiction",
                                     "reasons": ["value_mismatch"],
                                     "required": True}]})])
-        mismatch, advisory = report.iloc[0], report.iloc[1]
+        mismatch, advisory = report[0], report[1]
         self.assertEqual(mismatch["Статус аудита"], DISCREPANCY)
         self.assertEqual(advisory["Статус аудита"], "ОК")
         self.assertIn("Примечание из ВОР", advisory["Что не так"])
         self.assertIn("рядом", advisory["Что не так"])
-        self.assertNotIn("Что сделать", report.columns)
+        self.assertNotIn("Что сделать", report[0])
 
     def test_derived_volume_is_not_presented_as_printed_quantity(self):
         report = self.make_report([("Ошибка", {
@@ -120,7 +120,7 @@ class ReportTests(unittest.TestCase):
                         "required": True}],
             "volume_calculation": {"area": {"value": "950", "unit": "м2"},
                                    "thickness": {"value": "0,1", "unit": "м"}}})])
-        description = report.iloc[0]["Что не так"]
+        description = report[0]["Что не так"]
         self.assertIn("по расчёту", description)
         self.assertIn("25 м³", description)
 
@@ -136,7 +136,7 @@ class ReportTests(unittest.TestCase):
                             "state": "not_found", "reasons": ["no_proposal"],
                             "required": True}]}),
             ("Технический сбой", {"work_found": False, "found_pages": [], "found_page": None})])
-        report.loc[0, "Наименование работ"] = "=1+1"
+        report[0]["Наименование работ"] = "=1+1"
         word = docx.Document(io.BytesIO(generate_word_report(report, {})))
         table = word.tables[0]
         self.assertEqual(len(table.columns), 4)
@@ -152,11 +152,11 @@ class ReportTests(unittest.TestCase):
         frame = pd.DataFrame([{"№": 1, "Статус аудита": "Ошибка"}])
         task = {"w_name": "Работа", "file_refs": "/storage/КР.pdf;..\\АР.pdf", "bind_error": "internal error"}
         report = build_user_report(frame, [{"pdf_name": "", "found_pages": []}], [task])
-        self.assertEqual(report.iloc[0]["Наименование файла"], "КР.pdf\nАР.pdf")
-        self.assertEqual(report.iloc[0]["Статус аудита"], NOT_CHECKED)
+        self.assertEqual(report[0]["Наименование файла"], "КР.pdf\nАР.pdf")
+        self.assertEqual(report[0]["Статус аудита"], NOT_CHECKED)
         word = docx.Document(io.BytesIO(generate_word_report(report, {})))
         self.assertEqual(len([rel for rel in word.part.rels.values() if rel.reltype.endswith("/hyperlink")]), 0)
-        self.assertEqual(report.iloc[0]["Где проверить"], "Место не установлено")
+        self.assertEqual(report[0]["Где проверить"], "Место не установлено")
 
 
 class RemarkTests(unittest.TestCase):
@@ -174,8 +174,8 @@ class RemarkTests(unittest.TestCase):
                 "file_refs": r"C:\project\КР.pdf"}
         task.update(task_overrides or {})
         report = build_user_report(frame, [source], [task])
-        self.assertNotIn("Что сделать", report.columns)
-        return report.iloc[0]
+        self.assertNotIn("Что сделать", report[0])
+        return report[0]
 
     def test_quantity_mismatch_names_numbers_and_place(self):
         row = self._remark("Ошибка", {"found_volume": "95", "volume_confirmed": False,

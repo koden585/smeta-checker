@@ -212,7 +212,7 @@ class WorkerReferenceTests(unittest.TestCase):
                 report = build_user_report(
                     pd.DataFrame([{"№": 1, "Статус аудита": row["Статус аудита"]}]),
                     [tracking], [task])
-                self.assertEqual(report.iloc[0]["Статус аудита"],
+                self.assertEqual(report[0]["Статус аудита"],
                                  "Обнаружено расхождение" if expected == "Ошибка" else "ОК")
 
     def test_truncated_answer_with_only_workbook_checks_is_not_ok(self):
