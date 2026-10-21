@@ -1,43 +1,42 @@
-# issue 22: CPU-only production image for API + Celery workers.
-# One image, three commands: uvicorn (api), celery pdf worker, celery llm worker.
-FROM python:3.14-slim-bookworm
+# CPU-only production images: full (api + pdf worker) and llm-slim.
+# llm-slim drops PDF/VOR/HTTP/OCR deps: -200MB RAM, -500MB disk.
+# Base deps in [project], full-only in [dependency-groups.full].
 
+FROM python:3.14-slim-bookworm AS base
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+WORKDIR /srv/smeta
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project --no-group full
+COPY alembic.ini ./
+COPY alembic ./alembic
+COPY scripts ./scripts
+COPY *.py ./
+RUN useradd --create-home --uid 10001 app \
+  && mkdir -p /srv/smeta/.audit_blobs /srv/smeta/.audit_cache \
+  && chown -R app:app /srv/smeta
+ENV PATH="/srv/smeta/.venv/bin:$PATH" \
+    BLOB_STORE_URL="file:///srv/smeta/.audit_blobs"
 
-# Tesseract + tessdata for OCR (see packages.txt); pg_isready/redis-cli come
-# from the db/redis images themselves, workers need only TCP reachability.
+# LLM worker: queue + db + model client + tracing only.
+FROM base AS llm-slim
+USER app
+CMD ["celery", "-A", "audit_tasks:worker", "worker", "-Q", "llm"]
+
+# API + PDF worker + migrate: everything incl. PDF/VOR/Word/OCR.
+FROM base AS full
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-rus \
     tesseract-ocr-eng \
     curl \
   && rm -rf /var/lib/apt/lists/*
-
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-
-WORKDIR /srv/smeta
-
-# Dependencies first: uv.lock pins every package, layer survives code edits.
-COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project
-
-COPY alembic.ini ./
-COPY alembic ./alembic
-COPY scripts ./scripts
-COPY *.py ./
-
-# Non-root at runtime; blobs/cache volumes are mounted writable.
-RUN useradd --create-home --uid 10001 app \
-  && mkdir -p /srv/smeta/.audit_blobs /srv/smeta/.audit_cache \
-  && chown -R app:app /srv/smeta
+    uv sync --frozen --no-dev --no-install-project --group full
 USER app
-
-ENV PATH="/srv/smeta/.venv/bin:$PATH" \
-    BLOB_STORE_URL="file:///srv/smeta/.audit_blobs"
-
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD curl -fsS http://127.0.0.1:8000/healthz || exit 1

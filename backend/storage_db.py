@@ -17,8 +17,6 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from alembic import command
-from alembic.config import Config
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
@@ -105,7 +103,9 @@ class PositionJobRow:
     error: str | None = None
 
 
-def _alembic_config(database_url: str) -> Config:
+def _alembic_config(database_url: str):
+    from alembic.config import Config
+
     root = Path(__file__).resolve().parent
     config = Config(str(root / "alembic.ini"))
     config.set_main_option("script_location", str(root / "alembic"))
@@ -115,11 +115,15 @@ def _alembic_config(database_url: str) -> Config:
 
 def migrate(database_url: str, revision: str = "head") -> None:
     """Apply Alembic migrations; the single schema-change entry point."""
+    from alembic import command
+
     command.upgrade(_alembic_config(database_url), revision)
 
 
 def downgrade(database_url: str, revision: str = "base") -> None:
     """Revert Alembic migrations; used by migration tests only."""
+    from alembic import command
+
     command.downgrade(_alembic_config(database_url), revision)
 
 

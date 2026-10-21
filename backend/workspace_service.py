@@ -79,8 +79,6 @@ def _provenance(position: VorPosition) -> tuple[str, int | None, dict[str, str]]
 
 
 def present_results(context, record) -> list[ResultDTO]:
-    import pandas as pd
-
     positions = {p.index: p for p in inputs_for_run(context, record)}
     jobs = {
         j.position_index: j for j in context.repository.list_position_jobs(record["id"])
@@ -111,10 +109,10 @@ def present_results(context, record) -> list[ResultDTO]:
         from audit_reports import build_user_report
 
         report = build_user_report(
-            pd.DataFrame([{0: position.number, "Статус аудита": stored["status"]}]),
+            [{"№": position.number, "Статус аудита": stored["status"]}],
             [tracking],
             [task],
-        ).iloc[0]
+        )[0]
         report_status = report["Статус аудита"]
         queue = {
             "Обнаружено расхождение": "fix",

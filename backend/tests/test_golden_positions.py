@@ -193,7 +193,7 @@ class GoldenReportTests(unittest.TestCase):
         task = {"w_name": "Анкеры", "w_vol": "231", "w_unit": "шт.",
                 "w_comment": "", "w_page": "88", "target_indices": [87],
                 "loc_desc": "Стр. 88", "file_refs": "пд.pdf"}
-        return build_user_report(frame, [source], [task]).iloc[0]
+        return build_user_report(frame, [source], [task])[0]
 
     def test_no3_wording_names_workbook_contradiction(self):
         row = self._row("Ошибка", {"workbook_notes": [
@@ -226,7 +226,7 @@ class GoldenReportTests(unittest.TestCase):
                 "w_comment": "Расход щебня 0,15 м3/м2", "w_page": "84",
                 "target_indices": [83], "loc_desc": "Стр. 84",
                 "file_refs": "пд.pdf"}
-        row = build_user_report(frame, [source], [task]).iloc[0]
+        row = build_user_report(frame, [source], [task])[0]
         self.assertEqual(row["Статус аудита"], MANUAL)
         self.assertIn("Потребность в материале сходится", row["Что не так"])
         self.assertIn("Обоснованность нормы", row["Что не так"])
