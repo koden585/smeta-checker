@@ -47,6 +47,10 @@ _MARKDOWN_KWARGS = {
     # Otherwise every single-page call rescans the entire document for font
     # sizes: 303 pages become 303 full-document scans.
     "hdr_info": False,
+    # Ignore vector graphics past the complexity budget: borderline pages
+    # (2-5K paths) extract ~2x faster with identical text; true monsters
+    # are still diverted by _too_complex before reaching markdown.
+    "graphics_limit": MAX_VECTOR_PATHS,
 }
 
 def _compact_text(text):
@@ -120,11 +124,25 @@ class PDFTextSource:
             raise ValueError(
                 "PDF-документ закрыт: переоткройте файл и повторите подготовку позиции")
         self._pdf_bytes = b""
+        self._tmp_path = None
         if getattr(doc, "name", "") and not getattr(doc, "is_dirty", False):
             self._doc = pymupdf.open(doc.name)
         else:
-            self._pdf_bytes = doc.tobytes(no_new_id=True)
-            self._doc = pymupdf.open(stream=self._pdf_bytes, filetype="pdf")
+            # Nameless (stream) docs: spill to a temp file once instead of
+            # holding tobytes() copies in RAM (78MB PDF -> 234MB peak).
+            import tempfile
+
+            fd, self._tmp_path = tempfile.mkstemp(
+                prefix="smeta-pdf-", suffix=".pdf",
+                dir=str(Path(cache_dir).parent))
+            try:
+                with open(fd, "wb") as tmp:
+                    tmp.write(doc.tobytes(no_new_id=True))
+            except BaseException:
+                Path(self._tmp_path).unlink(missing_ok=True)
+                self._tmp_path = None
+                raise
+            self._doc = pymupdf.open(self._tmp_path)
         try:
             self._pdf_hash = self._pdf_sha256(self._doc)
         except BaseException:
@@ -173,6 +191,20 @@ class PDFTextSource:
         try:
             if self._doc is not None and not getattr(self._doc, "is_closed", False):
                 self._doc.close()
+        except Exception:
+            pass
+        tmp = getattr(self, "_tmp_path", None)
+        if tmp:
+            try:
+                Path(tmp).unlink(missing_ok=True)
+            except Exception:
+                pass
+            self._tmp_path = None
+
+    def __del__(self):
+        # Tests and error paths may skip close(): never leak the spill file.
+        try:
+            self.close()
         except Exception:
             pass
 
