@@ -1,7 +1,10 @@
-.PHONY: help up down build logs ps backup restore verify test lint
+.PHONY: help dev up down build logs ps backup restore verify test lint
 
 help: ## показать команды
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
+
+dev: ## поднять стек (пустая БД + есть бэкап = автовосстановление)
+	./backend/scripts/dev.sh
 
 up: ## поднять стек
 	docker compose up -d
