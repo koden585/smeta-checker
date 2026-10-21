@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import fitz
+import pymupdf
 import test_api as fixtures
 from openpyxl import Workbook
 
@@ -47,9 +47,9 @@ def _vor_with_headers(meta_rows=(), number=1, quantity=45):
 
 
 def _pdf_with_text(text="Шифр 123. Наименование объекта Тест."):
-    with fitz.open() as pdf:
+    with pymupdf.open() as pdf:
         page = pdf.new_page()
-        page.insert_textbox(fitz.Rect(50, 50, 500, 200), text)
+        page.insert_textbox(pymupdf.Rect(50, 50, 500, 200), text)
         return bytes(pdf.tobytes())
 
 

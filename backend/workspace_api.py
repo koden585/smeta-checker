@@ -408,14 +408,14 @@ def workspace_router(get_context) -> APIRouter:
 
     @router.get("/api/v1/documents/{version_id}/structure", response_model=StructureDTO)
     def structure(version_id: str, context=Depends(guarded)):
-        import fitz
+        import pymupdf
 
         from document_structure import build_structure, native_records
 
         ref = version(context, version_id)
         if ref.kind != "pdf":
             raise ApiError(400, "not_pdf_version", "Выберите PDF")
-        with fitz.open(
+        with pymupdf.open(
             stream=context.blob_store.get(ref.blob_key), filetype="pdf"
         ) as doc:
             return build_structure(

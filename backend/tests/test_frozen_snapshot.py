@@ -27,9 +27,9 @@ from storage_blobs import FileBlobStore
 
 
 def _fake_pdf_bytes(pages=("Copper cable 45 m", "second page")):
-    import fitz
+    import pymupdf
 
-    doc = fitz.open()
+    doc = pymupdf.open()
     for text in pages:
         page = doc.new_page()
         page.insert_text((72, 72), text)
@@ -227,7 +227,7 @@ class FrozenPropagationTests(unittest.TestCase):
             )
             with (
                 patch("audit_tracing._configured_client", return_value=None),
-                patch("fitz.open", side_effect=AssertionError("worker opened PDF")),
+                patch("pymupdf.open", side_effect=AssertionError("worker opened PDF")),
             ):
                 result = audit_position(context, run.id, 0, worker="llm-test")
             self.assertFalse(result["duplicate"])

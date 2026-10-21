@@ -135,9 +135,9 @@ def _scan_rows(rows: list[list], sheet: str, result: dict, conflicts: set):
 
 
 def _scan_pdf(data: bytes, result: dict, conflicts: set):
-    import fitz
+    import pymupdf
 
-    with fitz.open(stream=data, filetype="pdf") as document:
+    with pymupdf.open(stream=data, filetype="pdf") as document:
         for page_index in range(min(3, document.page_count)):
             lines = document[page_index].get_text("text").splitlines()[:300]
             for index, line in enumerate(lines):

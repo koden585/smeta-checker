@@ -333,10 +333,10 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
 
     def test_table_quote_highlights_row_with_matching_quantity(self):
-        import fitz
+        import pymupdf
         from workspace_service import _quote_boxes
 
-        with fitz.open() as pdf:
+        with pymupdf.open() as pdf:
             page = pdf.new_page()
             page.insert_text((72, 100), "2.2 Gruntovye ankery Aker sht. 827")
             page.insert_text((72, 200), "1.2 Gruntovye ankery Aker sht. 231")
@@ -350,10 +350,10 @@ class WorkspaceTests(unittest.TestCase):
             self.assertGreater(boxes[0].y0, 150)
 
     def test_table_quote_without_numbers_stays_unhighlighted(self):
-        import fitz
+        import pymupdf
         from workspace_service import _quote_boxes
 
-        with fitz.open() as pdf:
+        with pymupdf.open() as pdf:
             page = pdf.new_page()
             page.insert_text((72, 100), "Gruntovye ankery Aker")
             page.insert_text((72, 200), "Gruntovye ankery Aker")

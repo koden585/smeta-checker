@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import fitz
+import pymupdf
 
 from api import ApiContext, create_app
 from audit_models import AuditSettings
@@ -32,9 +32,9 @@ def _postgres_url():
 
 
 def _fake_pdf_bytes():
-    with fitz.open() as pdf:
+    with pymupdf.open() as pdf:
         page = pdf.new_page()
-        page.insert_textbox(fitz.Rect(50, 50, 500, 600), "Copper cable 45 m. " * 40)
+        page.insert_textbox(pymupdf.Rect(50, 50, 500, 600), "Copper cable 45 m. " * 40)
         return bytes(pdf.tobytes())
 
 
@@ -51,10 +51,10 @@ def _designation_pdf_bytes(*texts):
     # fitz insert_textbox without an embedded TTF renders Cyrillic as "?",
     # so fixtures use Latin designations; Cyrillic matching is covered by
     # test_pdf_binding unit tests against real extracted strings.
-    with fitz.open() as pdf:
+    with pymupdf.open() as pdf:
         for text in texts:
             page = pdf.new_page()
-            page.insert_textbox(fitz.Rect(50, 50, 500, 600), text)
+            page.insert_textbox(pymupdf.Rect(50, 50, 500, 600), text)
         return bytes(pdf.tobytes())
 
 

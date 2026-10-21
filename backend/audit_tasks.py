@@ -209,7 +209,7 @@ def prepare_run(
     failure never aborts the rest: it is recorded as a technical payload and
     finished ``done`` so finalize still merges it.
     """
-    import fitz
+    import pymupdf
 
     from pdf_text import PDFTextSource
     from vor_parse import load_vor_frame_positions
@@ -235,7 +235,7 @@ def prepare_run(
     failed: list[int] = []
     try:
         for name, data in pdf_files.items():
-            pool[name] = fitz.open(stream=bytes(data), filetype="pdf")
+            pool[name] = pymupdf.open(stream=bytes(data), filetype="pdf")
         df_works, positions, meta = load_vor_frame_positions(vor_bytes, vor_filename)
         from vor_consistency import check_scheme_divisors
         scheme_notes: dict = {}
