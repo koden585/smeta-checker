@@ -59,7 +59,7 @@ AI-именование удалено. Реквизиты документа и
                                           └→ Celery / отдельный PDF+LLM worker
 ```
 
-API token хранится только на сервере Nitro; браузер получает подписанную HttpOnly-сессию. BFF проверяет локальный адрес, Host и same-origin для записи. Это локальное приложение; публичный многопользовательский доступ с ролями пока не реализован.
+API token хранится только на сервере Nitro; браузер получает случайный идентификатор HttpOnly-сессии, данные сессии — на сервере (в Compose — Redis). Все BFF API и скачивания требуют сессию. Вход в workspace обязателен везде, анонимного доступа нет: `WORKSPACE_AUTH_MODE=local` (по умолчанию, пустое — тоже `local`) входит по паре `WORKSPACE_LOGIN` + `WORKSPACE_PASSWORD` из `.env` (оба обязательны, логин чувствителен к регистру с обрезкой краевых пробелов, пароль — точный), без них вход отвечает 503, неверный или пустой логин/пароль — общий 401. Лимиты входа — 3 попытки на учётную запись и 20 с IP за 15 минут, включая успешные попытки; в local LDAP-вызовов нет. Учётная запись сессии — настроенный `WORKSPACE_LOGIN`. Корпоративный вход AD включается отдельно через `WORKSPACE_AUTH_MODE=ldap` и по умолчанию требует защищённого TLS к AD (пустой `LDAP_TLS_MODE`: `ldaps://` → LDAPS, `ldap://` → обязательный STARTTLS) и HTTPS сайта; явный `LDAP_TLS_MODE=none` — только для `ldap://` как сознательный opt-in внутренней сети (как Bitrix) с незашифрованными паролями на участке ПК/сервер → AD, третьего режима входа не добавляет. Политика авторизации — `LDAP_ACCESS_MODE` (пусто = `group`, безопасное значение по умолчанию): `group` требует `LDAP_GROUP_DN` и пускает только членов этой группы с учётом вложенных групп AD, `all` пускает любую активную/разблокированную/неистёкшую учётную запись-пользователя в `LDAP_BASE_DN`, кроме служебной записи поиска (роли сотрудников не выводятся, прочие служебные записи с верным паролем тоже проходят). Пустой `LDAP_GROUP_DN` — не «все»: в `group` он обязателен, в `all` игнорируется (оставьте пустым). Для `all` нужен полный DN в `LDAP_BIND_DN` (`CN=smeta,CN=Users,DC=kdfp,DC=ru`), не UPN/короткое имя; в `group` допустимы полный DN и UPN. Режимов входа ровно два, проверки цепочки/имени не отключаются, ошибка TLS никогда не откатывается в `none`; опечатка в режиме и недоступность AD отвечают 503 без fallback на local. Это единое рабочее пространство, без разграничения проектов между сотрудниками, без базы пользователей/ролей и регистрации. Защита Host/CSRF сохраняется. Параметры, отзыв сессий и приёмка из Docker: [инструкция запуска](docs/docker-quickstart.md#корпоративный-вход-active-directory).
 
 История и progress читают метаданные и сгруппированные счётчики одним SQL-запросом с пагинацией в БД, без содержимого результатов и payload задач. Без Celery настоящий аудит выполняется в отдельном процессе: тяжёлый PDF parser не блокирует HTTP-сервер. Supervisor останавливает worker при отсутствии продвижения дольше `AUDIT_TASK_TIME_LIMIT` (по умолчанию 600 секунд).
 
@@ -71,7 +71,7 @@ API token хранится только на сервере Nitro; браузе�
 (подробно: [инструкция для чайника](docs/docker-quickstart.md)):
 
 ```powershell
-Copy-Item .env.example .env   # заполнить POSTGRES_PASSWORD, AUDIT_API_TOKEN
+Copy-Item .env.example .env   # заполнить POSTGRES_PASSWORD, AUDIT_API_TOKEN, WORKSPACE_LOGIN, WORKSPACE_PASSWORD
 docker compose up -d --build
 ```
 
@@ -301,7 +301,7 @@ uv run uvicorn api:get_app --factory
 (`alembic upgrade head`) до старта api, ui и воркеров.
 
 ```bash
-cp .env.example .env  # заполнить POSTGRES_PASSWORD, AUDIT_API_TOKEN, LLM-ключи
+cp .env.example .env  # заполнить POSTGRES_PASSWORD, AUDIT_API_TOKEN, WORKSPACE_LOGIN, WORKSPACE_PASSWORD, LLM-ключи
 docker compose up -d --build
 docker compose ps     # все healthy
 curl -s http://localhost:8000/healthz  # {"status":"ok"}

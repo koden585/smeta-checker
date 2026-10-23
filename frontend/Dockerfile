@@ -10,5 +10,6 @@ FROM node:24-bookworm-slim
 ENV NODE_ENV=production HOST=127.0.0.1 PORT=3000
 WORKDIR /app
 COPY --from=build --chown=node:node /app/.output ./.output
+COPY --chown=node:node scripts/verify-ad.mjs ./scripts/verify-ad.mjs
 USER node
 CMD ["node", ".output/server/index.mjs"]

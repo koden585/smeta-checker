@@ -102,6 +102,10 @@ jobs:
           NUXT_BACKEND_TOKEN: synthetic-e2e-only
           HOST: 127.0.0.1
           PORT: 3016
+          # Synthetic credentials for the isolated loopback-only fixture, never deployment values.
+          WORKSPACE_AUTH_MODE: local
+          WORKSPACE_LOGIN: e2e-workspace
+          WORKSPACE_PASSWORD: synthetic-workspace-only
         run: |
           uv --project backend run python -c "import psycopg; psycopg.connect('postgresql://postgres:postgres@localhost:5432/postgres', autocommit=True).execute('CREATE DATABASE smeta_test_ui')"
           mkdir -p .audit_cache
@@ -118,6 +122,9 @@ jobs:
         env:
           FRONTEND_URL: http://127.0.0.1:3016
           E2E_FIXTURE_ROOT: ${{ github.workspace }}/.audit_cache/e2e-fixture
+          WORKSPACE_AUTH_MODE: local
+          WORKSPACE_LOGIN: e2e-workspace
+          WORKSPACE_PASSWORD: synthetic-workspace-only
 
       - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         if: failure()
