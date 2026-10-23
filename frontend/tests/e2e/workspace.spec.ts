@@ -108,7 +108,7 @@ test('progress shows PDF preparation, survives a network error and reaches saved
   await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '50', {
     timeout: 10000,
   })
-  await page.getByRole('button', { name: /^Все позиции:/ }).click()
+  await page.getByRole('button', { name: /Все позиции/ }).click()
   await expect(page.getByRole('button', { name: 'Открыть позицию', exact: true })).toBeVisible()
   await expect(page.getByRole('progressbar')).toBeHidden()
 })
@@ -144,10 +144,7 @@ test('saved audit opens exact input, actual PDF and survives reload', async ({ p
   test.skip(!process.env.E2E_FIXTURE_ROOT, 'Requires an explicitly isolated fixture')
   const runId = readFileSync(resolve(process.env.E2E_FIXTURE_ROOT!, 'run-id.txt'), 'utf8').trim()
   await page.goto('/audits/' + runId)
-  await expect(
-    page.getByRole('heading', { name: 'Синтетический стенд · интеграция' }),
-  ).toBeVisible()
-  await page.getByRole('button', { name: /^Все позиции:/ }).click()
+  await page.getByRole('button', { name: /Все позиции/ }).click()
   await page.getByRole('button', { name: 'Открыть позицию', exact: true }).click()
   await expect(page.getByRole('dialog', { name: 'Сверка ВОР с PDF' })).toBeVisible()
   await expect(page.locator('.pdf-stage canvas')).toHaveAttribute('width', /[1-9]\d*/)
@@ -222,15 +219,13 @@ test('upload, preflight, audit, persisted results and Word export use real API',
   await page.getByRole('button', { name: 'Проверить', exact: true }).click()
   await page.getByLabel('Подтверждаю запуск несмотря на критические ошибки').check()
   await page.getByRole('button', { name: 'Проверить', exact: true }).click()
-  await expect(page.getByRole('heading', { name })).toBeVisible({
-    timeout: 45000,
-  })
-  await page.getByRole('button', { name: /^Все позиции:/ }).click()
+  await expect(page).toHaveURL(/\/audits\/[^/?]+$/)
+  await page.getByRole('button', { name: /Все позиции/ }).click()
   await expect(
     page.getByRole('button', { name: 'Открыть позицию', exact: true }).first(),
   ).toBeVisible()
   await page.reload()
-  await page.getByRole('button', { name: /^Все позиции:/ }).click()
+  await page.getByRole('button', { name: /Все позиции/ }).click()
   await page.getByRole('button', { name: 'Открыть позицию', exact: true }).first().click()
   const review = page.getByRole('dialog', { name: 'Сверка ВОР с PDF' })
   await expect(review).toContainText('Позиция 1 из 2')

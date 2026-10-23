@@ -1,16 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createEvent } from 'h3'
+import type * as StoreModule from '../../server/utils/store'
 
 const LDAP_PATH = '../../server/utils/ldap'
 const STORE_PATH = '../../server/utils/store'
 const ACCESS_PATH = '../../server/utils/access'
 
-function mockLdap(
-  overrides: {
-    authenticate?: (login: string, password: string) => Promise<{ dn: string; account: string }>
-    check?: (dn: string) => Promise<boolean>
-  } = {},
-) {
+// Keep one module mock: queued doUnmock/doMock pairs can race during dynamic
+// imports and occasionally expose the real LDAP client to a unit test.
+const ldapMock = vi.hoisted(() => ({
+  authenticate: undefined as
+    | undefined
+    | ((login: string, password: string) => Promise<{ dn: string; account: string }>),
+  check: undefined as undefined | ((dn: string) => Promise<boolean>),
+}))
+
+vi.mock('../../server/utils/ldap', () => {
   class AuthDeniedError extends Error {
     constructor(message = 'denied') {
       super(message)
@@ -23,14 +28,24 @@ function mockLdap(
       this.name = 'DirectoryUnavailableError'
     }
   }
-  vi.doMock(LDAP_PATH, () => ({
+  return {
     AuthDeniedError,
     DirectoryUnavailableError,
-    authenticateLdap:
-      overrides.authenticate ?? (async () => ({ dn: 'cn=test,dc=x', account: 'test' })),
-    checkLdapAccess: overrides.check ?? (async () => true),
-  }))
-  return { AuthDeniedError, DirectoryUnavailableError }
+    authenticateLdap: (login: string, password: string) =>
+      ldapMock.authenticate?.(login, password) ??
+      Promise.resolve({ dn: 'cn=test,dc=x', account: 'test' }),
+    checkLdapAccess: (dn: string) => ldapMock.check?.(dn) ?? Promise.resolve(true),
+  }
+})
+
+function mockLdap(
+  overrides: {
+    authenticate?: (login: string, password: string) => Promise<{ dn: string; account: string }>
+    check?: (dn: string) => Promise<boolean>
+  } = {},
+) {
+  ldapMock.authenticate = overrides.authenticate
+  ldapMock.check = overrides.check
 }
 
 interface NodeRes {
@@ -149,7 +164,7 @@ async function ldapSetup(
   const savedUrl = process.env.WORKSPACE_REDIS_URL
   delete process.env.WORKSPACE_AUTH_MODE
   delete process.env.WORKSPACE_REDIS_URL
-  const real = await import(STORE_PATH)
+  const real = await vi.importActual<typeof StoreModule>(STORE_PATH)
   const mem = real.getSessionStore()
   if (savedMode === undefined) delete process.env.WORKSPACE_AUTH_MODE
   else process.env.WORKSPACE_AUTH_MODE = savedMode
@@ -162,7 +177,7 @@ async function ldapSetup(
 
 beforeEach(() => {
   vi.resetModules()
-  vi.doUnmock(LDAP_PATH)
+  mockLdap()
   vi.doUnmock(STORE_PATH)
 })
 

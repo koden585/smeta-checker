@@ -28,11 +28,84 @@ from pdf_binding import (
     resolve_position_pdfs,
     verify_designations,
 )
+_SHEET_STAMP_RE = None
+_SHEET_MAP_CACHE: dict[int, dict[int, int]] = {}
+
+
+def _volume_sheet_map(doc) -> dict[int, int]:
+    """Map printed volume sheet numbers to physical PDF pages (1-based).
+
+    VOR page references cite the bound volume ("9" = sheet 9 of the report),
+    while the PDF file starts with covers/registers, so physical page 9 is
+    a different sheet. Each body page carries a header stamp ``N из M``;
+    the most frequent total M identifies the volume, and the first
+    occurrence of each sheet builds the map. Returns {} when no usable
+    stamps exist, in which case callers keep the legacy 1:1 numbering.
+    """
+    global _SHEET_STAMP_RE
+    import re
+    from collections import Counter
+
+    if _SHEET_STAMP_RE is None:
+        _SHEET_STAMP_RE = re.compile(r"(?m)^\s*(\d+)\s+из\s+(\d+)\s*$")
+    key = id(doc)
+    if key in _SHEET_MAP_CACHE:
+        return _SHEET_MAP_CACHE[key]
+    per_page: dict[int, tuple[int, int]] = {}
+    totals: Counter[int] = Counter()
+    for number in range(1, len(doc) + 1):
+        try:
+            head = doc[number - 1].get_text()[:600]
+        except Exception:
+            continue
+        match = _SHEET_STAMP_RE.findall(head)
+        if not match:
+            continue
+        sheet, total = int(match[0][0]), int(match[0][1])
+        totals[total] += 1
+        per_page[number] = (sheet, total)
+    sheet_map: dict[int, int] = {}
+    if totals:
+        main_total = totals.most_common(1)[0][0]
+        # A real volume stamp repeats on most pages; a couple of stray
+        # "N из M" lines inside body text must not rewire pagination.
+        if totals[main_total] >= min(5, max(1, len(doc) // 3)):
+            for phys, (sheet, total) in sorted(per_page.items()):
+                if total == main_total and sheet not in sheet_map:
+                    sheet_map[sheet] = phys
+    if len(_SHEET_MAP_CACHE) > 64:
+        _SHEET_MAP_CACHE.clear()
+    _SHEET_MAP_CACHE[key] = sheet_map
+    return sheet_map
 
 
 def get_optimized_page_indices(doc, page_str):
-    # «9» в ВОР — девятая страница в PDF, независимо от колонтитула и штампа.
-    return parse_page_reference(page_str, len(doc))
+    """Resolve a VOR page reference to physical PDF indices (0-based).
+
+    Prefers volume sheet numbers from the ``N из M`` header stamps when the
+    document carries them; otherwise falls back to legacy file-order pages.
+    """
+    indices, description, pages = parse_page_reference(page_str, len(doc))
+    sheet_map = _volume_sheet_map(doc)
+    if not sheet_map:
+        return indices, description, pages
+    mapped: list[int] = []
+    unmapped: list[int] = []
+    for number in pages:
+        phys = sheet_map.get(number)
+        if phys is None:
+            unmapped.append(number)
+        elif phys - 1 not in mapped:
+            mapped.append(phys - 1)
+    if not mapped:
+        return indices, description, pages
+    note = f"Стр. {', '.join(map(str, pages))} тома → стр. PDF {', '.join(map(str, sorted(p + 1 for p in mapped)))}"
+    if unmapped:
+        note += f"; без штампа тома: {', '.join(map(str, unmapped))} (взяты как есть)"
+        for number in unmapped:
+            if 1 <= number <= len(doc) and number - 1 not in mapped:
+                mapped.append(number - 1)
+    return mapped, note, pages
 
 
 def preflight_bindings(loaded_vors, target_vor_selection, pdf_pool_keys):

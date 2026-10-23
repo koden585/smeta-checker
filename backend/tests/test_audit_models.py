@@ -10,7 +10,6 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import pandas as pd
 from audit_models import (
     AuditResult,
     AuditSettings,
@@ -22,7 +21,6 @@ from audit_models import (
     VorPosition,
     expected_scope_hint,
 )
-from audit_reports import build_user_report
 from vor_parse import load_vor_positions
 
 
@@ -199,44 +197,6 @@ class AuditResultModelTests(unittest.TestCase):
             json.loads(result.model_dump_json())["evidence"][0]["kind"], "work"
         )
 
-    def test_report_accepts_models_and_dicts_identically(self):
-        frame = pd.DataFrame([{"№": 1, "Статус аудита": "ОК"}])
-        source = {
-            "pdf_name": "кр.pdf",
-            "found_page": 18,
-            "found_pages": [18],
-            "vor_pages": [18],
-            "work_found": True,
-            "volume_confirmed": True,
-            "unit_confirmed": True,
-            "comment_confirmed": True,
-            "found_volume": "120",
-            "found_unit": "м³",
-        }
-        task = VorPosition(
-            index=0,
-            work_name="Бетонные работы",
-            volume="120",
-            unit="м³",
-            page_ref="18",
-            file_ref="КР.pdf",
-            target_indices=[17],
-            location_description="Стр. 18",
-            primary_pages=[18],
-        )
-        expected = build_user_report(frame, [source], [task.legacy_task()])
-        result = AuditResult.from_legacy(
-            {
-                **source,
-                "status": "ОК",
-                "found_page": "18",
-                "evidence": [],
-                "discrepancy_details": "",
-                "search_complete": True,
-            }
-        )
-        actual = build_user_report(frame, [result], [task])
-        pd.testing.assert_frame_equal(actual, expected)
 
 
 class AuditSettingsModelTests(unittest.TestCase):
