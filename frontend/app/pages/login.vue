@@ -3,33 +3,32 @@ const backend = useBackend(),
   route = useRoute(),
   password = ref(''),
   showPassword = ref(false),
+  loginName = ref(''),
+  mode = ref<'local' | 'ldap' | null>(null),
   error = ref(''),
   busy = ref(false),
-  locked = ref(true),
   checking = ref(true)
-const back = computed(() =>
-  typeof route.query.back === 'string' && route.query.back.startsWith('/') ? route.query.back : '/',
-)
+const corporate = computed(() => mode.value === 'ldap')
+const back = computed(() => safeInternalRedirect(route.query.back))
 async function login() {
-  if (busy.value) return
+  if (busy.value || !mode.value) return
+  if (!loginName.value.trim() || !password.value) return
   busy.value = true
   error.value = ''
   try {
-    await backend.connect(password.value)
+    await backend.connect(password.value, loginName.value.trim())
     await navigateTo(back.value, { replace: true })
   } catch (e) {
     error.value = readableError(e)
   } finally {
     busy.value = false
+    password.value = ''
   }
 }
 onMounted(async () => {
   try {
-    locked.value = (await backend.gate()).locked
-    if (!locked.value) {
-      await backend.connect()
-      await navigateTo(back.value, { replace: true })
-    }
+    const gate = await backend.gate()
+    mode.value = gate.mode
   } catch (e) {
     error.value = readableError(e)
   } finally {
@@ -44,21 +43,29 @@ onMounted(async () => {
         <div class="page-heading">
           <div>
             <h1>Вход в рабочее пространство</h1>
-            <p class="muted">Проверка ВОР и сохранённые результаты доступны по паролю стенда.</p>
+            <p class="muted">
+              {{
+                corporate
+                  ? 'Войдите с корпоративным логином и паролем.'
+                  : 'Войдите с логином и паролем стенда.'
+              }}
+            </p>
           </div>
         </div>
         <p v-if="checking" class="empty" role="status">Проверяем доступ…</p>
         <template v-else>
           <p v-if="error" class="error-box" role="alert">{{ error }}</p>
-          <form v-if="locked" class="panel login-form" @submit.prevent="login">
-            <UFormField label="Пароль стенда" name="password" required>
+          <form v-if="mode" class="panel login-form" @submit.prevent="login">
+            <UFormField :label="corporate ? 'Корпоративная почта' : 'Логин'" name="login" required>
               <UInput
-                v-model="password"
-                :type="showPassword ? 'text' : 'password'"
-                name="password"
-                aria-label="Пароль стенда"
-                autocomplete="current-password"
+                v-model="loginName"
+                name="username"
+                :aria-label="corporate ? 'Корпоративная почта' : 'Логин'"
+                :autocomplete="corporate ? 'email' : 'username'"
+                autocapitalize="none"
+                :spellcheck="false"
                 :disabled="busy"
+                required
                 class="w-full"
               >
                 <template #trailing>
@@ -74,7 +81,35 @@ onMounted(async () => {
                 </template>
               </UInput>
             </UFormField>
-            <UButton type="submit" :loading="busy" :disabled="!password || busy" block>
+            <UFormField label="Пароль" name="password" required>
+              <UInput
+                v-model="password"
+                :type="showPassword ? 'text' : 'password'"
+                aria-label="Пароль"
+                autocomplete="current-password"
+                :disabled="busy"
+                required
+                class="w-full"
+              >
+                <template #trailing>
+                  <UButton
+                    color="neutral"
+                    variant="ghost"
+                    size="xs"
+                    :icon="showPassword ? 'i-lucide-eye-off' : 'i-lucide-eye'"
+                    :aria-label="showPassword ? 'Скрыть пароль' : 'Показать пароль'"
+                    type="button"
+                    @click="showPassword = !showPassword"
+                  />
+                </template>
+              </UInput>
+            </UFormField>
+            <UButton
+              type="submit"
+              :loading="busy"
+              :disabled="!loginName.trim() || !password || busy"
+              block
+            >
               Войти
             </UButton>
           </form>

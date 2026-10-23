@@ -38,6 +38,7 @@ class FakePage:
         self.rect = FakeRect(*rect)
         self._calls = calls if calls is not None else []
         self._idx = idx
+        self.number = idx
         self._images = images
         self._drawings = drawings
         self._tables = tables
@@ -48,7 +49,11 @@ class FakePage:
         self._cell_queue = list(queue)
         self._cell_pos = 0
 
-    def get_text(self, sort=True, textpage=None):
+    def get_text(self, option="text", sort=True, textpage=None):
+        if option == "words":
+            return []
+        if option == "dict":
+            return {"blocks": []}
         if textpage is not None:
             return textpage
         if isinstance(self._native, Exception):
@@ -78,15 +83,16 @@ class FakePage:
             return queue[pos]
         return self._native
 
-    def find_tables(self):
+    def find_tables(self, **kwargs):
         from types import SimpleNamespace
         self._table_calls.append(self._idx)
         tables = []
         for rows in self._tables:
             grid_rows = []
-            for cells in rows:
+            for row_number, cells in enumerate(rows):
                 grid_rows.append(SimpleNamespace(
-                    cells=[(0, 0, 10, 10) for _ in cells]))
+                    cells=[(column * 100, row_number * 30, (column + 1) * 100, (row_number + 1) * 30)
+                           for column in range(len(cells))]))
             tables.append(SimpleNamespace(rows=grid_rows))
         return SimpleNamespace(tables=tables)
 
@@ -249,6 +255,9 @@ class FakeSourceTests(unittest.TestCase):
                        side_effect=fake_recognize_page)
         engine.start()
         self.addCleanup(engine.stop)
+        tables = patch("pdf_tables.raster_tables", return_value=[])
+        tables.start()
+        self.addCleanup(tables.stop)
 
     def test_preparation_reports_every_page_including_cache_hits(self):
         with TemporaryDirectory() as tmp:
@@ -447,9 +456,9 @@ class NativeGridTests(unittest.TestCase):
         cells = [item for item in locators if item["role"] == "cell"]
         headers = [item for item in locators if item["role"] == "header"]
         kns = [item for item in cells if item["text"] == "165"
-               and item["group_id"] == "r2"]
+               and item["group_id"] == "t1:r2"]
         los = [item for item in cells if item["text"] == "165"
-               and item["group_id"] == "r4"]
+               and item["group_id"] == "t1:r4"]
         self.assertEqual(len(headers), 3)
         self.assertEqual(len(kns), 1)
         self.assertEqual(len(los), 1)
@@ -772,6 +781,16 @@ class NativeDetectionTests(FakeSourceTests):
         self.assertEqual([c["idx"] for c in calls], [0])
         self.assertEqual(snapshot.pending_ocr, ())
 
+    def test_header_only_scan_page_detected_despite_long_running_header(self):
+        header = "ООО ПК Ноострой\nТехнический отчет по результатам изысканий " + "x" * 120
+        pages = [FakePage(header, ocr_text="Сканированный текст", idx=i) for i in range(4)]
+        doc = FakeDoc(pages)
+        with TemporaryDirectory() as cache:
+            source = PDFTextSource(doc, cache_dir=cache)
+            pending = pending_of(source.native_index)
+            self.assertEqual(pending, (0, 1, 2, 3))
+            self.assertTrue(source.native_index.repeated_lines)
+
 
 class RealPDFTests(unittest.TestCase):
     def test_short_native_page_does_not_need_ocr(self):
@@ -950,6 +969,70 @@ class PrivateOwnershipTests(unittest.TestCase):
                     source.close()
                 if not doc.is_closed:
                     doc.close()
+
+
+class CmapShiftTests(unittest.TestCase):
+    def test_shifted_cyrillic_decodes_by_font(self):
+        from pdf_text import _fix_cmap_shifts
+
+        class FakePage:
+            def get_text(self, kind, sort=False):
+                return {"blocks": [{"lines": [{"spans": [
+                    {"font": "ISOCPEURItalic", "text": "ǓНС"},
+                    {"font": "ISOCPEUR", "text": "ОБОǒНАǢǐНИǪ"},
+                ]}]}]}
+
+        fixed, count = _fix_cmap_shifts(
+            FakePage(), "насос ǓНС ОБОǒНАǢǐНИǪ конец")
+        self.assertEqual(fixed, "насос КНС ОБОЗНАЧЕНИЯ конец")
+        self.assertEqual(count, 2)
+
+    def test_clean_text_passes_through(self):
+        from pdf_text import _fix_cmap_shifts
+
+        class FakePage:
+            def get_text(self, kind, sort=False):
+                raise AssertionError("must not parse dict on clean text")
+
+        fixed, count = _fix_cmap_shifts(FakePage(), "КНС обычная")
+        self.assertEqual((fixed, count), ("КНС обычная", 0))
+
+    def test_adjacent_digit_words_split(self):
+        from pdf_text import _deglue_numbers
+
+        class FakePage:
+            def get_text(self, kind, sort=False):
+                return [
+                    (2230, 624, 2237, 630, "137,12"),
+                    (2237, 623, 2244, 645, "4+01,65"),
+                    (100, 100, 200, 110, "текст"),
+                ]
+
+        fixed, count = _deglue_numbers(FakePage(), "отм 137,124+01,65 м")
+        self.assertEqual(fixed, "отм 137,12 4+01,65 м")
+        self.assertEqual(count, 1)
+
+    def test_spaced_words_untouched(self):
+        from pdf_text import _deglue_numbers
+
+        class FakePage:
+            def get_text(self, kind, sort=False):
+                return [
+                    (100, 100, 150, 110, "137,12"),
+                    (200, 100, 250, 110, "4+01,65"),
+                ]
+
+        fixed, count = _deglue_numbers(FakePage(), "137,12 4+01,65")
+        self.assertEqual((fixed, count), ("137,12 4+01,65", 0))
+
+
+class RuDecimalTests(unittest.TestCase):
+    def test_points_become_commas_dates_and_versions_kept(self):
+        from pdf_text import _ru_decimal_point
+
+        self.assertEqual(
+            _ru_decimal_point("113.36 м, 108.0, 22.03.2024, v2.0"),
+            "113,36 м, 108,0, 22.03.2024, v2.0")
 
 
 if __name__ == "__main__":

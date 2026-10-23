@@ -1,7 +1,8 @@
+import { createError, defineEventHandler, proxyRequest, setHeader } from 'h3'
 import { requireSession } from '../utils/access'
 
 export default defineEventHandler(async (event) => {
-  requireSession(event)
+  await requireSession(event)
   const config = useRuntimeConfig(event)
   if (!config.backendToken)
     throw createError({ statusCode: 503, statusMessage: 'Сервер проверки не подключён' })

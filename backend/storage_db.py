@@ -1177,7 +1177,8 @@ class Repository:
         return self._blobs.get(blob_key)
 
 
-def open_repository(database_url: str, blob_store: BlobStore) -> Repository:
-    """Open the repository; applies pending migrations before first use."""
-    migrate(database_url)
+def open_repository(database_url: str, blob_store: BlobStore, *, migrate_schema: bool = True) -> Repository:
+    """Open the repository; migrations run only where Alembic is available."""
+    if migrate_schema:
+        migrate(database_url)
     return Repository(database_url, blob_store)

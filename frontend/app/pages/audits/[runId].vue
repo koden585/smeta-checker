@@ -1,6 +1,14 @@
 <script setup lang="ts">
 import type { RunDto, SummaryDto, RowsDto } from '~/generated/types.gen'
-import { queueColor, queueLabel, quantityWithUnit, runLabel } from '~/utils/presentation'
+import {
+  formatFileName,
+  queueColor,
+  queueLabel,
+  quantityWithUnit,
+  runLabel,
+  runStatusColor,
+  truncateMiddle,
+} from '~/utils/presentation'
 const route = useRoute(),
   router = useRouter(),
   backend = useBackend(),
@@ -19,16 +27,19 @@ const position = computed(() =>
     ? Number(route.query.position)
     : null,
 )
-const queues = [
+type QueueId = 'fix' | 'review' | 'missing' | 'ok' | 'all'
+const queues: { id: QueueId; label: string }[] = [
   { id: 'fix', label: 'Исправить' },
-  { id: 'review', label: 'Проверить вручную' },
+  { id: 'review', label: queueLabel('review') },
+  { id: 'missing', label: queueLabel('missing') },
+  { id: 'ok', label: queueLabel('ok') },
   { id: 'all', label: 'Все позиции' },
 ]
-const vorDocument = computed(
-  () => summary.value?.documents.find((d) => d.id === summary.value?.run.vor_version_id) || null,
-)
-const vorTitle = computed(() => vorDocument.value?.title || run.value?.vor_filename || '')
-function queueCount(id: string) {
+const vorFileName = computed(() => formatFileName(run.value?.vor_filename || ''))
+const auditHeading = computed(() => summary.value?.project.name || 'Проверка документов')
+const vorShortName = computed(() => truncateMiddle(vorFileName.value))
+const runStatus = computed(() => run.value?.status || '')
+function queueCount(id: QueueId) {
   if (!summary.value) return 0
   if (id === 'all')
     return summary.value.run.total ?? Object.values(summary.value.queues).reduce((a, b) => a + b, 0)
@@ -170,13 +181,19 @@ onBeforeUnmount(() => {
           >Редакция ведомости</UButton
         >
       </nav>
-      <div class="page-heading">
-        <div>
-          <h1>{{ vorTitle || summary?.project.name || 'Проверка документов' }}</h1>
-          <p class="muted">
-            {{ summary?.project.name }} · {{ run?.vor_filename }} ·
-            {{ runLabel(run?.status || '') }}
+      <div class="page-heading audit-heading">
+        <div class="audit-title">
+          <h1>{{ auditHeading }}</h1>
+          <p v-if="vorFileName" class="muted audit-eyebrow" :title="vorFileName">
+            {{ vorShortName }}
           </p>
+          <UBadge
+            v-if="runStatus"
+            :color="runStatusColor(runStatus)"
+            variant="subtle"
+            :aria-label="`Статус проверки: ${runLabel(runStatus)}`"
+            >{{ runLabel(runStatus) }}</UBadge
+          >
         </div>
         <div class="heading-actions">
           <UButton v-if="summary" variant="outline" icon="i-lucide-download" @click="download()">
@@ -255,9 +272,10 @@ onBeforeUnmount(() => {
               type="button"
               class="filter"
               :aria-pressed="focus === item.id"
+              :aria-label="`${item.label}: ${queueCount(item.id)}`"
               @click="focus = item.id"
             >
-              <span class="filter-count">{{ queueCount(item.id) }}</span>
+              <span class="filter-count" aria-hidden="true">{{ queueCount(item.id) }}</span>
               <span>{{ item.label }}</span>
             </button>
           </div>
@@ -346,6 +364,32 @@ onBeforeUnmount(() => {
   </div>
 </template>
 <style scoped>
+.audit-heading {
+  align-items: flex-start;
+}
+.audit-title {
+  min-width: 0;
+  max-width: 68ch;
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+.audit-eyebrow {
+  margin: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audit-title h1 {
+  margin: 0;
+}
+@media (max-width: 700px) {
+  .audit-eyebrow {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
 .heading-actions {
   display: flex;
   gap: 12px;

@@ -1,6 +1,24 @@
 <script setup lang="ts">
 const props = defineProps<{ active?: 'projects' | 'create' }>()
 const onProjects = computed(() => props.active !== 'create')
+const route = useRoute()
+const backend = useBackend()
+const connected = useState('workspace-connected', () => false)
+const signingOut = ref(false)
+const logoutError = ref('')
+async function logout() {
+  if (signingOut.value) return
+  signingOut.value = true
+  logoutError.value = ''
+  try {
+    await backend.disconnect()
+    await navigateTo('/login', { replace: true })
+  } catch {
+    logoutError.value = 'Не удалось выйти. Повторите попытку.'
+  } finally {
+    signingOut.value = false
+  }
+}
 </script>
 
 <template>
@@ -28,8 +46,17 @@ const onProjects = computed(() => props.active !== 'create')
         aria-label="Переключить светлую и тёмную тему"
         title="Переключить тему"
       />
+      <UButton
+        v-if="connected && route.path !== '/login'"
+        color="neutral"
+        variant="ghost"
+        :loading="signingOut"
+        @click="logout"
+        >Выйти</UButton
+      >
     </nav>
   </header>
+  <p v-if="logoutError" class="error-box shell" role="alert">{{ logoutError }}</p>
 </template>
 
 <style scoped>

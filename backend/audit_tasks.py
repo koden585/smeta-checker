@@ -13,11 +13,19 @@ and tests call the ``*_run`` functions directly with injected fakes.
 
 from __future__ import annotations
 
+import os
+import sys
 import time
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from typing import Any, Callable
 from uuid import UUID
+
+_APP_ROOT = str(Path(__file__).resolve().parent)
+if _APP_ROOT not in sys.path:
+    # Celery prefork children do not inherit the '' cwd entry reliably.
+    sys.path.insert(0, _APP_ROOT)
 
 from audit_core import build_claim_specs, technical_error
 from audit_llm import audit_position_hybrid
@@ -82,9 +90,13 @@ def open_task_context(settings: AuditSettings | None = None) -> TaskContext:
     if not resolved.database_url or not resolved.blob_store_url:
         raise RuntimeError("DATABASE_URL and BLOB_STORE_URL are required")
     blobs = open_blob_store(resolved.blob_store_url)
+    # Compose runs migrations in a dedicated container before workers start.
+    # The llm-slim image has no Alembic by design; workers must not migrate.
+    migrate_schema = os.environ.get("AUDIT_WORKER_MIGRATE", "") == "1"
     return TaskContext(
         settings=resolved,
-        repository=open_repository(resolved.database_url, blob_store=blobs),
+        repository=open_repository(resolved.database_url, blob_store=blobs,
+                                   migrate_schema=migrate_schema),
         blob_store=blobs,
     )
 

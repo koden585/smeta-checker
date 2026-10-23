@@ -12,14 +12,16 @@ _THOUSANDS_RE = re.compile(r"(?<!\w)(\d{1,3}(?:[ \u00a0\u2009]\d{3})+)(?!\w)")
 _NUMBER_RE = re.compile(r"(?<!\w)[+-]?\d+(?:[.,]\d+)?")
 _MEASUREMENT_RE = re.compile(
     r"(?<![\w.,])(\d+(?:[.,]\d+)?)\s+"
-    r"(м3|м³|м2|м²|мм|см|м|mm|m|шт\.?|pcs|кг|т|н|кн|л/с|л|компл|пог\.?\s*м|"
+    r"(м3|м³|м2|м²|мм|см|км|м|mm|m|шт\.?|pcs|кг|т|н|кн|л/с|л|компл|пог\.?\s*м|"
+    r"точк[аи]|пункт[а-я]*|наблюден(?:ие|ия|ий)|"
     r"г/м2|г/м²|кг/м2|кг/м²|м3/м2|м³/м²|кн/м)\b"
     r"|(?<![\w.,])(\d+(?:[.,]\d+)?)"
-    r"(м3|м³|м2|м²|мм|см|шт\.?|pcs|кг|т|н|кн|л/с|л|компл|пог\.?\s*м|"
+    r"(м3|м³|м2|м²|мм|см|км|шт\.?|pcs|кг|т|н|кн|л/с|л|компл|пог\.?\s*м|"
     r"г/м2|г/м²|кг/м2|кг/м²|м3/м2|м³/м²|кн/м)\b",
     re.IGNORECASE)
 _UNIT_FIRST_RE = re.compile(
-    r"\b(м3|м³|м2|м²|мм|см|шт\.?|pcs|кг|т|н|кн|л/с|л|компл|пог\.?\s*м|"
+    r"\b(м3|м³|м2|м²|мм|см|км|шт\.?|pcs|кг|т|н|кн|л/с|л|компл|пог\.?\s*м|"
+    r"точк[аи]|пункт[а-я]*|наблюден(?:ие|ия|ий)|"
     r"г/м2|г/м²|кг/м2|кг/м²|м3/м2|м³/м²|кн/м)\s*"
     r"(\d+(?:[.,]\d+)?)(?![\w.,])"
     r"|\b(м|mm|m)\s+(\d+(?:[.,]\d+)?)(?![\w.,])",
@@ -39,6 +41,7 @@ _VARIANT_RE = re.compile(
 
 _UNIT_ALIASES = {
     "мм": ("мм", "length"), "см": ("см", "length"), "м": ("м", "length"),
+    "км": ("км", "length"),
     "mm": ("мм", "length"), "m": ("м", "length"),
     "см2": ("см2", "area"), "м2": ("м2", "area"),
     "см3": ("см3", "volume"), "м3": ("м3", "volume"), "л": ("л", "volume"),
@@ -48,11 +51,18 @@ _UNIT_ALIASES = {
     "н": ("н", "force"), "кн": ("кн", "force"),
     "г/м2": ("г/м2", "areal_density"), "кг/м2": ("кг/м2", "areal_density"),
     "м3/м2": ("м3/м2", "consumption"), "кн/м": ("кн/м", "line_load"),
+    # Geophysics observation points: точка/пункт/наблюдение are one unit.
+    "точка": ("точка", "observation"), "точки": ("точка", "observation"),
+    "пункт": ("точка", "observation"),
+    "наблюдение": ("точка", "observation"),
+    "наблюдения": ("точка", "observation"),
+    "наблюдений": ("точка", "observation"),
 }
 _UNIT_FACTORS = {
     ("мм", "length"): (Decimal("0.001"), "м"),
     ("см", "length"): (Decimal("0.01"), "м"),
     ("м", "length"): (Decimal(1), "м"),
+    ("км", "length"): (Decimal(1000), "м"),
     ("см2", "area"): (Decimal("0.0001"), "м2"),
     ("м2", "area"): (Decimal(1), "м2"),
     ("см3", "volume"): (Decimal("0.000001"), "м3"),
@@ -69,6 +79,7 @@ _UNIT_FACTORS = {
     ("кг/м2", "areal_density"): (Decimal(1), "кг/м2"),
     ("м3/м2", "consumption"): (Decimal(1), "м3/м2"),
     ("кн/м", "line_load"): (Decimal(1), "кн/м"),
+    ("точка", "observation"): (Decimal(1), "точка"),
 }
 _KIND_DIMENSIONS = {
     "item_count": {"count"},
@@ -77,7 +88,7 @@ _KIND_DIMENSIONS = {
     "supplied_need": {"count", "mass", "volume", "area", "length"},
     "geometric_envelope": {"volume", "area"},
     "material_volume": {"volume"},
-    "measured_work": {"volume", "area", "length", "mass", "count", "flow"},
+    "measured_work": {"volume", "area", "length", "mass", "count", "flow", "observation"},
 }
 _AMOUNT_TOLERANCE = Decimal("1e-9")
 
@@ -144,6 +155,11 @@ def normalize_unit_text(text: str) -> str:
     cleaned = re.sub(r"\bм\s+([23])\b", r"м\1", cleaned)
     cleaned = re.sub(r"\bпог\s*м\b", "пог. м", cleaned)
     cleaned = re.sub(r"\bпог\.?\s*м\b", "м", cleaned)
+    # "точка наблюдения/наблюдений" is the same observation unit.
+    cleaned = re.sub(r"^точк[аи]\s+наблюдени[йя]\s*$", "точка", cleaned)
+    cleaned = re.sub(r"^пункт[а-я]*\s+наблюдени[йя]\s*$", "точка", cleaned)
+    if re.fullmatch(r"пункт[а-я]*", cleaned):
+        return "пункт"
     return cleaned
 
 
@@ -333,6 +349,26 @@ def compare_measurements(expected: Measurement, actual: Measurement) -> dict[str
     if expected.status == "directed_pair" or actual.status == "directed_pair":
         expected_parts = expected.parts or (expected,)
         actual_parts = actual.parts or (actual,)
+        if len(actual_parts) == 2 and len(expected_parts) == 1:
+            # Points/measurements pair (9/45): parts carry no unit, so
+            # compare by value. A second-part hit means the VOR number
+            # counts measurements, not points — needs estimator review.
+            from decimal import Decimal as _Decimal
+            expected_value = getattr(expected_parts[0], "value", None)
+            hits = [
+                pos for pos, part in enumerate(actual_parts)
+                if isinstance(getattr(part, "value", None), _Decimal)
+                and isinstance(expected_value, _Decimal)
+                and close_amounts(expected_value, part.value)
+            ]
+            if hits == [0]:
+                return {"state": "confirmed", "reason": "directed_pair_equal"}
+            if hits == [1]:
+                return {"state": "review_required",
+                        "reason": "directed_pair_second_matches"}
+            if set(hits) == {0, 1}:
+                return {"state": "confirmed", "reason": "directed_pair_equal"}
+            return {"state": "contradiction", "reason": "value_mismatch"}
         if len(expected_parts) != 2 or len(actual_parts) != 2:
             return {"state": "review_required", "reason": "directed_pair_mismatch"}
         states = [compare_measurements(item_expected, item_actual)["state"]

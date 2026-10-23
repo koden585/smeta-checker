@@ -76,3 +76,36 @@ export function runLabel(status: string) {
 export function clampPage(page: number, count: number) {
   return Math.max(1, Math.min(count, page || 1))
 }
+export function formatFileName(value: string | null | undefined): string {
+  if (value === null || value === undefined) return ''
+  const raw = String(value).trim()
+  if (!raw) return ''
+  const dot = raw.lastIndexOf('.')
+  let stem = dot > 0 ? raw.slice(0, dot) : raw
+  const ext = dot > 0 ? raw.slice(dot) : ''
+  // Drop OS duplicate-copy suffixes like ' (1)' before the extension.
+  stem = stem.replace(/(\s\(\d+\))+$/, '').trim()
+  // Underscores separate words in exported filenames, not readable text.
+  stem = stem.replace(/_+/g, ' ').replace(/\s+/g, ' ').trim()
+  return stem + ext || raw
+}
+export function truncateMiddle(value: string, max = 64): string {
+  const text = String(value ?? '')
+  if (max < 8 || text.length <= max) return text
+  const head = Math.ceil((max - 1) / 2),
+    tail = Math.floor((max - 1) / 2)
+  return (
+    text.slice(0, head).replace(/\s+$/, '') +
+    '…' +
+    text.slice(text.length - tail).replace(/^\s+/, '')
+  )
+}
+export function runStatusColor(status: string): 'success' | 'error' | 'warning' | 'neutral' {
+  return status === 'done'
+    ? 'success'
+    : status === 'failed'
+      ? 'error'
+      : status === 'running'
+        ? 'warning'
+        : 'neutral'
+}
