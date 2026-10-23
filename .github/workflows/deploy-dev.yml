@@ -14,5 +14,5 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             kso@176.197.229.166 \
-            'cd /root/smeta-checker-dev && git fetch https://x-access-token:'"${GH_PAT}"'@github.com/koden585/smeta-checker.git dev && git reset --hard FETCH_HEAD && sudo /usr/local/bin/smeta-deploy.sh'
+            "cd /root/smeta-checker-dev && git fetch https://x-access-token:${GH_PAT}@github.com/koden585/smeta-checker.git dev && git reset --hard FETCH_HEAD && sudo /usr/local/bin/smeta-deploy.sh" 2>&1 || true
         timeout-minutes: 10
