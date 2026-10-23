@@ -186,6 +186,7 @@ export function useBackend() {
         method: 'POST',
         body: JSON.stringify(payload),
       }),
+    cancelAudit: (id: string) => json(audit(id) + '/cancel', zRunDto, { method: 'POST' }),
     runs: (id: string, offset = 0) =>
       json(
         `${root}/projects/${encodeURIComponent(id)}/audits?offset=${offset}&limit=50`,

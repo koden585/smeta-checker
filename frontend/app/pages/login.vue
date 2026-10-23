@@ -2,6 +2,7 @@
 const backend = useBackend(),
   route = useRoute(),
   password = ref(''),
+  showPassword = ref(false),
   loginName = ref(''),
   mode = ref<'local' | 'ldap' | null>(null),
   error = ref(''),
@@ -37,7 +38,6 @@ onMounted(async () => {
 </script>
 <template>
   <div>
-    <WorkspaceHeader />
     <main id="main-content" class="shell login-shell" tabindex="-1">
       <section class="login-content">
         <div class="page-heading">
@@ -56,29 +56,53 @@ onMounted(async () => {
         <template v-else>
           <p v-if="error" class="error-box" role="alert">{{ error }}</p>
           <form v-if="mode" class="panel login-form" @submit.prevent="login">
-            <UFormField :label="corporate ? 'Корпоративный логин' : 'Логин'" name="login" required>
+            <UFormField :label="corporate ? 'Корпоративная почта' : 'Логин'" name="login" required>
               <UInput
                 v-model="loginName"
                 name="username"
-                :aria-label="corporate ? 'Корпоративный логин' : 'Логин'"
-                autocomplete="username"
+                :aria-label="corporate ? 'Корпоративная почта' : 'Логин'"
+                :autocomplete="corporate ? 'email' : 'username'"
                 autocapitalize="none"
                 :spellcheck="false"
                 :disabled="busy"
                 required
                 class="w-full"
-              />
+              >
+                <template #trailing>
+                  <UButton
+                    color="neutral"
+                    variant="ghost"
+                    size="xs"
+                    :icon="showPassword ? 'i-lucide-eye-off' : 'i-lucide-eye'"
+                    :aria-label="showPassword ? 'Скрыть пароль' : 'Показать пароль'"
+                    type="button"
+                    @click="showPassword = !showPassword"
+                  />
+                </template>
+              </UInput>
             </UFormField>
             <UFormField label="Пароль" name="password" required>
               <UInput
                 v-model="password"
-                type="password"
+                :type="showPassword ? 'text' : 'password'"
                 aria-label="Пароль"
                 autocomplete="current-password"
                 :disabled="busy"
                 required
                 class="w-full"
-              />
+              >
+                <template #trailing>
+                  <UButton
+                    color="neutral"
+                    variant="ghost"
+                    size="xs"
+                    :icon="showPassword ? 'i-lucide-eye-off' : 'i-lucide-eye'"
+                    :aria-label="showPassword ? 'Скрыть пароль' : 'Показать пароль'"
+                    type="button"
+                    @click="showPassword = !showPassword"
+                  />
+                </template>
+              </UInput>
             </UFormField>
             <UButton
               type="submit"

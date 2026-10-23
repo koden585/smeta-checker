@@ -540,10 +540,12 @@ def _canonical_page_map(data):
 
 class PageTextIndex:
     def __init__(self, texts, errors=None, pending_ocr=(), table_rows=None, locators=None,
-                 *, quality=None, metadata=None):
+                 *, quality=None, metadata=None, repeated_lines=None, tables=None):
         self.texts = tuple(texts)
         self.errors = dict(errors or {})
         self.pending_ocr = tuple(sorted(set(pending_ocr)))
+        if tables is not None:
+            table_rows = tables
         self.table_rows = tuple(tuple(row) for row in table_rows) if table_rows is not None else None
         # Plain-data source locators per page (SourceLocator-compatible dicts);
         # None means unknown provenance (historical snapshots), never fabricated.
@@ -551,6 +553,7 @@ class PageTextIndex:
                          if locators is not None else None)
         self.quality = dict(quality or {})
         self.metadata = dict(metadata or {})
+        self.repeated_lines = tuple(repeated_lines or ())
         self.terms = tuple(_terms(text) for text in self.texts)
         frequency = Counter(term for terms in self.terms for term in terms)
         self.weights = {term: math.log(1 + len(self.texts) / count) for term, count in frequency.items()}
