@@ -16,3 +16,4 @@ jobs:
           git reset --hard origin/dev
           sudo /usr/local/bin/smeta-deploy.sh
 
+
