@@ -15,7 +15,7 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
       - name: deploy
         run: |
-          ssh -i ~/.ssh/deploy_key -vvv -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             kso@176.197.229.166 \
-            'cd /root/smeta-checker-dev && git fetch origin && git reset --hard origin/dev && sudo /usr/local/bin/smeta-deploy.sh' 2>&1 | tail -40
+            'cd /root/smeta-checker-dev && git fetch origin && git reset --hard origin/dev && sudo /usr/local/bin/smeta-deploy.sh'
         timeout-minutes: 10
