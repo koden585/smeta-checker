@@ -81,3 +81,14 @@ cd /root/smeta-checker-dev
 git reset --hard <previous_commit>
 docker compose up -d --no-build
 ```
+
+## Опциональные стеки на production
+
+По умолчанию автодеплой поднимает также `compose.monitoring.yaml` и
+`compose.glitchtip.yaml` (Grafana/Prometheus/Loki и self-hosted GlitchTip).
+Отключить: `SMETA_COMPOSE_FILES=""` в окружении systemd-юнита.
+
+GlitchTip при первом деплое автоматически создаёт пользователя/организацию/проект
+и записывает `GLITCHTIP_DSN` и `NUXT_PUBLIC_SENTRY_DSN` в `.env`, затем
+перезапускает `api` и `workspace`. Логин/пароль bootstrap-пользователя:
+`admin@localhost` / `change-me` (смените в БД при необходимости).
