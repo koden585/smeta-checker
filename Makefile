@@ -1,4 +1,4 @@
-.PHONY: help dev up down build logs ps backup restore verify test lint clean
+.PHONY: help dev up down build logs ps backup restore verify test lint clean monitoring monitoring-down
 
 help: ## показать команды
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
@@ -8,6 +8,12 @@ dev: ## поднять стек (пустая БД + есть бэкап = ав�
 
 up: ## поднять стек
 	docker compose up -d
+
+monitoring: ## поднять стек с Grafana/Prometheus/Loki
+	docker compose -f compose.yaml -f compose.monitoring.yaml up -d
+
+monitoring-down: ## остановить мониторинг
+	docker compose -f compose.yaml -f compose.monitoring.yaml stop grafana prometheus loki promtail
 
 down: ## остановить стек
 	docker compose down

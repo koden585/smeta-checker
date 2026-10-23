@@ -32,6 +32,8 @@ full = [
     "python-multipart==0.0.32",
     "rapid-table==3.0.2",
     "rapidocr==3.10.0",
+    "prometheus-client==0.21.1",
+    "sentry-sdk[fastapi,celery,sqlalchemy]==2.19.2",
     "onnxruntime==1.31.0",
     "opencv-python==4.11.0.86",
     "uvicorn==0.54.0",

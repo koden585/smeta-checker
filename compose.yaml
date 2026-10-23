@@ -82,6 +82,10 @@ services:
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
       LANGFUSE_ENVIRONMENT: ${LANGFUSE_ENVIRONMENT:-production}
+      GLITCHTIP_DSN: ${GLITCHTIP_DSN:-${SENTRY_DSN:-}}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+      SENTRY_RELEASE: ${SENTRY_RELEASE:-}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.05}
     volumes:
       - blobs:/srv/smeta/.audit_blobs
     ports:
@@ -119,6 +123,8 @@ services:
       WORKSPACE_AUTH_MODE: ${WORKSPACE_AUTH_MODE:-local}
       WORKSPACE_ORIGIN: ${WORKSPACE_ORIGIN:-}
       WORKSPACE_REDIS_URL: redis://redis:6379/1
+      NUXT_PUBLIC_SENTRY_DSN: ${NUXT_PUBLIC_SENTRY_DSN:-${GLITCHTIP_DSN:-}}
+      NUXT_PUBLIC_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
       LDAP_URL: ${LDAP_URL:-}
       LDAP_BASE_DN: ${LDAP_BASE_DN:-}
       LDAP_DOMAIN: ${LDAP_DOMAIN:-}
@@ -165,6 +171,10 @@ services:
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
       LANGFUSE_ENVIRONMENT: ${LANGFUSE_ENVIRONMENT:-production}
+      GLITCHTIP_DSN: ${GLITCHTIP_DSN:-${SENTRY_DSN:-}}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+      SENTRY_RELEASE: ${SENTRY_RELEASE:-}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.05}
     volumes:
       - blobs:/srv/smeta/.audit_blobs
       - pdfcache:/srv/smeta/.audit_cache
@@ -221,6 +231,10 @@ services:
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
       LANGFUSE_ENVIRONMENT: ${LANGFUSE_ENVIRONMENT:-production}
+      GLITCHTIP_DSN: ${GLITCHTIP_DSN:-${SENTRY_DSN:-}}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+      SENTRY_RELEASE: ${SENTRY_RELEASE:-}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.05}
     volumes:
       - blobs:/srv/smeta/.audit_blobs
       - pdfcache:/srv/smeta/.audit_cache

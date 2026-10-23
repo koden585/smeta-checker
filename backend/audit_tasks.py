@@ -31,6 +31,8 @@ from audit_core import build_claim_specs, technical_error
 from audit_llm import audit_position_hybrid
 from audit_models import AuditSettings, VorPosition, expected_scope_hint, position_source_dict, serialize_position_result
 from audit_observability import RunMetrics, bind, estimate_cost, get_logger, reset
+from metrics import AUDIT_RUNS_TOTAL
+from sentry_setup import init_sentry
 from audit_service import (
     build_run_artifacts,
     get_optimized_page_indices,
@@ -87,6 +89,7 @@ def celery_app(settings: AuditSettings):  # type: ignore[no-untyped-def]
 def open_task_context(settings: AuditSettings | None = None) -> TaskContext:
     """Open repository + blobs from settings; worker entry point."""
     resolved = settings or AuditSettings.load()
+    init_sentry("worker")
     if not resolved.database_url or not resolved.blob_store_url:
         raise RuntimeError("DATABASE_URL and BLOB_STORE_URL are required")
     blobs = open_blob_store(resolved.blob_store_url)
@@ -456,6 +459,15 @@ def audit_position(
         request_id=resolved_request or None, stage="audit",
         worker=worker, queue=LLM_QUEUE,
     )
+    try:
+        import sentry_sdk
+        sentry_sdk.set_tag("audit_run_id", str(run_id))
+        sentry_sdk.set_tag("position_index", str(position_index))
+        sentry_sdk.set_tag("worker", worker)
+        if resolved_request:
+            sentry_sdk.set_tag("request_id", resolved_request)
+    except Exception:
+        pass
     stored: dict[str, Any] | None = None
     try:
         payload = job.payload
@@ -821,6 +833,14 @@ def finalize_run(
         stage="finalize", worker=worker, queue=PDF_QUEUE,
     )
     try:
+        import sentry_sdk
+        sentry_sdk.set_tag("audit_run_id", str(run_id))
+        sentry_sdk.set_tag("worker", worker)
+        if resolved_request:
+            sentry_sdk.set_tag("request_id", resolved_request)
+    except Exception:
+        pass
+    try:
         vor_name = vor_filename or config.get("vor_filename") or record.get("vor_filename")
         if vor_bytes is None:
             ref = context.repository.load_version(record["vor_version_id"])
@@ -897,6 +917,10 @@ def finalize_run(
                 metrics.record_error(job.error or "technical")
         summary = metrics.finish()
         context.repository.finish_run(run_id, "done", metrics=summary)
+        try:
+            AUDIT_RUNS_TOTAL.labels("done").inc()
+        except Exception:
+            pass
         logger.info(
             "finalize finished",
             extra={
