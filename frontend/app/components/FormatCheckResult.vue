@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { TableColumn } from '@nuxt/ui'
 import type { FormatDto, FormatIssueDto } from '~/generated/types.gen'
 
 const props = defineProps<{
@@ -103,6 +104,10 @@ async function download(kind: 'excel' | 'word') {
   }
 }
 
+const formatColumns: TableColumn<FormatIssueDto>[] = [
+  { accessorKey: 'coord', header: 'Ячейка' },
+  { accessorKey: 'error', header: 'Что не так' },
+]
 const canDownload = computed(() => Boolean(props.versionId || props.uploadFile))
 
 watch(
@@ -199,22 +204,23 @@ watch(
         />
       </button>
       <p class="muted format-group-hint">{{ group.hint }}</p>
-      <table v-if="openGroups.has(group.key)" class="results">
-        <thead>
-          <tr>
-            <th scope="col">Ячейка</th>
-            <th scope="col">Что не так</th>
-            <th scope="col">Как исправить</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="issue in group.items" :key="issue.coord + issue.type + issue.error">
-            <td class="numbers">{{ issue.coord }}</td>
-            <td class="format-cell">{{ issue.error || '—' }}</td>
-            <td class="format-cell">{{ issue.expected || '—' }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <UTable
+        sticky="header"
+        v-if="openGroups.has(group.key)"
+        :data="group.items"
+        :columns="formatColumns"
+        class="results max-h-[60vh] overflow-auto"
+      >
+        <template #coord-cell="{ row }">
+          <span class="numbers">{{ row.original.coord }}</span>
+        </template>
+        <template #error-cell="{ row }">
+          {{ row.original.error || '—' }}
+        </template>
+        <template #expected-cell="{ row }">
+          {{ row.original.expected || '—' }}
+        </template>
+      </UTable>
     </div>
     <p v-if="!visibleGroups.length" class="empty" role="status">
       По фильтру ничего не найдено. Ослабьте условия поиска.

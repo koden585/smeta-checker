@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import type { PreflightResponse, RunDto } from '~/generated/types.gen'
-
+import type { PreflightResponse, PreflightRow, RunDto } from '~/generated/types.gen'
+import type { TableColumn } from '@nuxt/ui'
 const backend = useBackend()
 const route = useRoute()
 const router = useRouter()
@@ -65,6 +65,18 @@ const historyRuns = ref<RunDto[]>([])
 const historyBusy = ref(false)
 const historyError = ref('')
 const historyHasMore = ref(false)
+const preflightColumns: TableColumn<PreflightRow>[] = [
+  { accessorKey: 'vor', header: 'ВОР' },
+  { accessorKey: 'pdf', header: 'PDF' },
+  { accessorKey: 'refs', header: 'Ссылки' },
+  { accessorKey: 'status', header: 'Статус' },
+]
+const historyColumns: TableColumn<RunDto>[] = [
+  { id: 'run', header: 'Запуск' },
+  { id: 'status', header: 'Статус' },
+  { id: 'count', header: 'Позиций' },
+  { id: 'action', header: 'Действие' },
+]
 const historyLimit = 50
 const locksMutations = computed(() => projectArchived.value || document.value?.archived)
 const kindLabel = computed(() => (document.value?.kind === 'pdf' ? 'ПД' : 'ВОР'))
@@ -700,24 +712,25 @@ onBeforeUnmount(() => {
                 "
               />
               <div class="table-wrap">
-                <table class="results">
-                  <thead>
-                    <tr>
-                      <th scope="col">ВОР</th>
-                      <th scope="col">PDF</th>
-                      <th scope="col">Ссылки</th>
-                      <th scope="col">Статус</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="row in preflight.rows" :key="`${row.vor}-${row.pdf}-${row.refs}`">
-                      <td class="cell-wrap">{{ row.vor }}</td>
-                      <td class="cell-wrap">{{ row.pdf }}</td>
-                      <td class="cell-wrap">{{ row.refs }}</td>
-                      <td>{{ row.status }}</td>
-                    </tr>
-                  </tbody>
-                </table>
+                <UTable
+                  sticky="header"
+                  :data="preflight.rows"
+                  :columns="preflightColumns"
+                  class="results max-h-[60vh] overflow-auto"
+                >
+                  <template #vor-cell="{ row }">
+                    <span class="cell-wrap">{{ row.original.vor }}</span>
+                  </template>
+                  <template #pdf-cell="{ row }">
+                    <span class="cell-wrap">{{ row.original.pdf }}</span>
+                  </template>
+                  <template #refs-cell="{ row }">
+                    <span class="cell-wrap">{{ row.original.refs }}</span>
+                  </template>
+                  <template #status-cell="{ row }">
+                    {{ row.original.status }}
+                  </template>
+                </UTable>
               </div>
               <label v-if="preflight.has_critical_error" class="ack-row">
                 <input
@@ -870,46 +883,46 @@ onBeforeUnmount(() => {
             }}
           </p>
           <div v-else class="table-wrap">
-            <table class="results">
-              <thead>
-                <tr>
-                  <th scope="col">Запуск</th>
-                  <th scope="col">Статус</th>
-                  <th scope="col">Позиций</th>
-                  <th scope="col">Действие</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="run in historyRuns" :key="run.run_id">
-                  <td class="cell-wrap" :title="run.vor_filename">
-                    {{ run.vor_filename }} · {{ formatDate(run.created_at) }}
-                  </td>
-                  <td>
-                    <UBadge
-                      :color="
-                        run.status === 'done'
-                          ? 'success'
-                          : run.status === 'failed'
-                            ? 'error'
-                            : 'warning'
-                      "
-                      variant="soft"
-                      :label="run.status"
-                    />
-                  </td>
-                  <td class="numbers">{{ run.done + run.failed }} / {{ run.total ?? '…' }}</td>
-                  <td>
-                    <UButton
-                      variant="link"
-                      :to="`/audits/${run.run_id}`"
-                      :aria-label="`Открыть запуск ${run.vor_filename}`"
-                    >
-                      Открыть
-                    </UButton>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+            <UTable
+              sticky="header"
+              :data="historyRuns"
+              :columns="historyColumns"
+              class="results max-h-[60vh] overflow-auto"
+            >
+              <template #run-cell="{ row }">
+                <span class="cell-wrap" :title="row.original.vor_filename">
+                  {{ row.original.vor_filename }} · {{ formatDate(row.original.created_at) }}
+                </span>
+              </template>
+              <template #status-cell="{ row }">
+                <UBadge
+                  :color="
+                    row.original.status === 'done'
+                      ? 'success'
+                      : row.original.status === 'failed'
+                        ? 'error'
+                        : 'warning'
+                  "
+                  variant="soft"
+                  :label="row.original.status"
+                />
+              </template>
+              <template #count-cell="{ row }">
+                <span class="numbers"
+                  >{{ row.original.done + row.original.failed }} /
+                  {{ row.original.total ?? '…' }}</span
+                >
+              </template>
+              <template #action-cell="{ row }">
+                <UButton
+                  variant="link"
+                  :to="`/audits/${row.original.run_id}`"
+                  :aria-label="`Открыть запуск ${row.original.vor_filename}`"
+                >
+                  Открыть
+                </UButton>
+              </template>
+            </UTable>
           </div>
           <div v-if="historyOffset || historyHasMore" class="toolbar pagination">
             <UButton

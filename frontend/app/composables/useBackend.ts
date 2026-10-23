@@ -144,6 +144,10 @@ export function useBackend() {
       json(`${root}/projects/${encodeURIComponent(id)}`, zProjectDto, {
         method: 'DELETE',
       }),
+    deleteDocument: (id: string) =>
+      json(`${root}/documents/${encodeURIComponent(id)}/detail`, zDocumentDto, {
+        method: 'DELETE',
+      }),
     catalog: (id: string, archived = false) =>
       json(
         `${root}/projects/${encodeURIComponent(id)}/catalog${archived ? '?archived=true' : ''}`,

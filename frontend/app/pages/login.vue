@@ -62,27 +62,17 @@ onMounted(async () => {
                 name="username"
                 :aria-label="corporate ? 'Корпоративная почта' : 'Логин'"
                 :autocomplete="corporate ? 'email' : 'username'"
+                :leading-icon="corporate ? 'i-lucide-mail' : 'i-lucide-user'"
                 autocapitalize="none"
                 :spellcheck="false"
                 :disabled="busy"
                 required
                 class="w-full"
-              >
-                <template #trailing>
-                  <UButton
-                    color="neutral"
-                    variant="ghost"
-                    size="xs"
-                    :icon="showPassword ? 'i-lucide-eye-off' : 'i-lucide-eye'"
-                    :aria-label="showPassword ? 'Скрыть пароль' : 'Показать пароль'"
-                    type="button"
-                    @click="showPassword = !showPassword"
-                  />
-                </template>
-              </UInput>
+              />
             </UFormField>
             <UFormField label="Пароль" name="password" required>
               <UInput
+                id="password"
                 v-model="password"
                 :type="showPassword ? 'text' : 'password'"
                 aria-label="Пароль"
@@ -90,14 +80,17 @@ onMounted(async () => {
                 :disabled="busy"
                 required
                 class="w-full"
+                :ui="{ trailing: 'pe-1' }"
               >
                 <template #trailing>
                   <UButton
                     color="neutral"
-                    variant="ghost"
-                    size="xs"
+                    variant="link"
+                    size="sm"
                     :icon="showPassword ? 'i-lucide-eye-off' : 'i-lucide-eye'"
                     :aria-label="showPassword ? 'Скрыть пароль' : 'Показать пароль'"
+                    :aria-pressed="showPassword"
+                    aria-controls="password"
                     type="button"
                     @click="showPassword = !showPassword"
                   />
@@ -128,6 +121,10 @@ onMounted(async () => {
   padding: 28px;
   display: grid;
   gap: 24px;
+}
+/* Hide the native password reveal button in Edge/IE. */
+::-ms-reveal {
+  display: none;
 }
 @media (max-width: 640px) {
   .login-content {

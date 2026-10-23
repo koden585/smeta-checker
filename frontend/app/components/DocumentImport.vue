@@ -7,6 +7,9 @@ interface PendingFile {
   file: File
   kind: 'vor' | 'pdf'
   target: string
+  status: 'pending' | 'uploading' | 'done' | 'error'
+  progress: number
+  errorMessage?: string
 }
 
 const props = withDefaults(
@@ -104,10 +107,24 @@ function addFiles(incoming: File[]) {
         errors.value.push(`${file.name}: новая ревизия — один файл за раз.`)
         continue
       }
-      pending.value.push({ key: `locked-${seq++}`, file, kind, target: props.targetDocumentId })
+      pending.value.push({
+        key: `locked-${seq++}`,
+        file,
+        kind,
+        target: props.targetDocumentId,
+        status: 'pending',
+        progress: 0,
+      })
       continue
     }
-    pending.value.push({ key: `file-${seq++}-${fileKey(file)}`, file, kind, target: 'new' })
+    pending.value.push({
+      key: `file-${seq++}-${fileKey(file)}`,
+      file,
+      kind,
+      target: 'new',
+      status: 'pending',
+      progress: 0,
+    })
   }
 }
 
@@ -164,8 +181,10 @@ async function save() {
   errors.value = []
   let savedId: string | undefined
   try {
-    const queue = [...pending.value]
+    const queue = [...pending.value].filter((item) => item.status !== 'done')
     for (const item of queue) {
+      item.status = 'uploading'
+      item.progress = 30
       status.value = `Сохраняем ${item.file.name}…`
       const form = new FormData()
       form.append('project_id', props.projectId)
@@ -174,11 +193,18 @@ async function save() {
       if (item.target === 'new') form.append('new_document', 'true')
       else form.append('document_id', item.target)
       try {
+        item.progress = 70
         const reply = await backend.upload(form)
         savedId = reply.document_id
-        pending.value = pending.value.filter((p) => p !== item)
+        item.status = 'done'
+        item.progress = 100
         emit('changed')
+        window.setTimeout(() => {
+          pending.value = pending.value.filter((p) => p !== item)
+        }, 900)
       } catch (e) {
+        item.status = 'error'
+        item.errorMessage = readableError(e)
         errors.value.push(`${item.file.name}: ${readableError(e)}`)
       }
     }
@@ -186,7 +212,9 @@ async function save() {
     status.value = ''
     saving.value = false
   }
-  if (pending.value.length === 0) emit('saved', savedId)
+  if (pending.value.every((item) => item.status === 'done' || item.status === 'error')) {
+    if (pending.value.filter((item) => item.status !== 'done').length === 0) emit('saved', savedId)
+  }
 }
 </script>
 
@@ -277,7 +305,7 @@ async function save() {
     <ul v-if="pending.length" class="import-docs" aria-label="Файлы к сохранению">
       <li v-for="item in pending" :key="item.key" class="import-doc">
         <UIcon
-          :name="item.kind === 'pdf' ? 'i-lucide-file-text' : 'i-lucide-table'"
+          :name="item.kind === 'pdf' ? 'i-lucide-file-text' : 'i-lucide-file-spreadsheet'"
           aria-hidden="true"
         />
         <div class="import-doc-main">
@@ -285,6 +313,16 @@ async function save() {
           <span class="muted import-doc-meta"
             >{{ kindLabel(item.kind) }} · {{ formatSize(item.file.size) }}</span
           >
+          <UProgress
+            v-if="item.status === 'uploading'"
+            :model-value="item.progress"
+            size="xs"
+            class="import-progress"
+          />
+          <span v-if="item.status === 'done'" class="muted import-status">Сохранено</span>
+          <span v-if="item.status === 'error'" class="error-text import-status">{{
+            item.errorMessage
+          }}</span>
           <USelect
             v-if="!targetDocumentId"
             v-model="item.target"
