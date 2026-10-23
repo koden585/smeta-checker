@@ -9,11 +9,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+      - name: setup ssh key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H 176.197.229.166 >> ~/.ssh/known_hosts 2>/dev/null || true
       - name: deploy
         run: |
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             kso@176.197.229.166 \
             'cd /root/smeta-checker-dev && git fetch origin && git reset --hard origin/dev && sudo /usr/local/bin/smeta-deploy.sh'
