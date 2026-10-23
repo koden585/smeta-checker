@@ -6,13 +6,12 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, smeta-dev]
     steps:
-      - name: deploy to server
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
+      - uses: actions/checkout@v4
+      - name: deploy
         run: |
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            kso@176.197.229.166 \
-            "cd /root/smeta-checker-dev && git fetch https://x-access-token:${GH_PAT}@github.com/koden585/smeta-checker.git dev && git reset --hard FETCH_HEAD && sudo /usr/local/bin/smeta-deploy.sh"
-        timeout-minutes: 10
+          cd /root/smeta-checker-dev
+          git fetch origin
+          git reset --hard origin/dev
+          sudo /usr/local/bin/smeta-deploy.sh
