@@ -1,6 +1,7 @@
 # issue 22: minimal production system on a CPU-only server.
 # One file starts api + workspace (Nuxt) + postgres + redis + pdf/llm workers.
 # Secrets: copy .env.example to .env and fill POSTGRES_PASSWORD, AUDIT_API_TOKEN,
+# WORKSPACE_LOGIN + WORKSPACE_PASSWORD (local mode) or LDAP settings (ldap mode),
 # LLM keys (YANDEX_* or ANYMODEL_*). Compose reads .env automatically.
 name: smeta-checker
 
@@ -98,6 +99,8 @@ services:
     depends_on:
       api:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       HOST: 0.0.0.0
       PORT: 3000
@@ -108,9 +111,23 @@ services:
       # but keeps Host allowlist, same-origin and session checks.
       NUXT_TRUST_PROXY: "1"
       # Empty = localhost only. LAN IP/hostname = intranet (plain HTTP).
-      # Domain = world-facing, requires WORKSPACE_PASSWORD + TLS proxy.
+      # Domain = world-facing, requires TLS proxy.
+      # Workspace login is always required: local login+password or LDAP.
       NUXT_PUBLIC_HOST: ${NUXT_PUBLIC_HOST:-}
+      WORKSPACE_LOGIN: ${WORKSPACE_LOGIN:-}
       WORKSPACE_PASSWORD: ${WORKSPACE_PASSWORD:-}
+      WORKSPACE_AUTH_MODE: ${WORKSPACE_AUTH_MODE:-local}
+      WORKSPACE_ORIGIN: ${WORKSPACE_ORIGIN:-}
+      WORKSPACE_REDIS_URL: redis://redis:6379/1
+      LDAP_URL: ${LDAP_URL:-}
+      LDAP_BASE_DN: ${LDAP_BASE_DN:-}
+      LDAP_DOMAIN: ${LDAP_DOMAIN:-}
+      LDAP_BIND_DN: ${LDAP_BIND_DN:-}
+      LDAP_BIND_PASSWORD: ${LDAP_BIND_PASSWORD:-}
+      LDAP_GROUP_DN: ${LDAP_GROUP_DN:-}
+      LDAP_ACCESS_MODE: ${LDAP_ACCESS_MODE:-}
+      LDAP_CA_FILE: ${LDAP_CA_FILE:-}
+      LDAP_TLS_MODE: ${LDAP_TLS_MODE:-}
     ports:
       - "${WORKSPACE_BIND:-127.0.0.1}:${WORKSPACE_PORT:-3000}:3000"
     healthcheck:

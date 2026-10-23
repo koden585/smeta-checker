@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './auth'
 import type { Page } from '@playwright/test'
 import { resolve } from 'node:path'
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
@@ -108,7 +108,8 @@ test('progress shows PDF preparation, survives a network error and reaches saved
   await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '50', {
     timeout: 10000,
   })
-  await expect(page.locator('table.results tbody tr')).toHaveCount(1, { timeout: 10000 })
+  await page.getByRole('button', { name: /^Все позиции:/ }).click()
+  await expect(page.getByRole('button', { name: 'Открыть позицию', exact: true })).toBeVisible()
   await expect(page.getByRole('progressbar')).toBeHidden()
 })
 
@@ -119,7 +120,10 @@ test('BFF keeps the token on the server and enforces its session', async ({ requ
       await request.post('/api/session', { headers: { Origin: 'https://unrelated.invalid' } })
     ).status(),
   ).toBe(403)
-  const session = await request.post('/api/session', { headers: { Origin: baseURL! } })
+  const session = await request.post('/api/session', {
+    headers: { Origin: baseURL! },
+    data: { login: process.env.WORKSPACE_LOGIN, password: process.env.WORKSPACE_PASSWORD },
+  })
   expect(session.ok()).toBe(true)
   expect(session.headers()['set-cookie']).toContain('HttpOnly')
   const response = await request.get('/api/v1/projects')
@@ -143,7 +147,7 @@ test('saved audit opens exact input, actual PDF and survives reload', async ({ p
   await expect(
     page.getByRole('heading', { name: 'Синтетический стенд · интеграция' }),
   ).toBeVisible()
-  await expect(page.locator('table.results tbody tr')).toHaveCount(1)
+  await page.getByRole('button', { name: /^Все позиции:/ }).click()
   await page.getByRole('button', { name: 'Открыть позицию', exact: true }).click()
   await expect(page.getByRole('dialog', { name: 'Сверка ВОР с PDF' })).toBeVisible()
   await expect(page.locator('.pdf-stage canvas')).toHaveAttribute('width', /[1-9]\d*/)
@@ -221,9 +225,12 @@ test('upload, preflight, audit, persisted results and Word export use real API',
   await expect(page.getByRole('heading', { name })).toBeVisible({
     timeout: 45000,
   })
-  await expect(page.locator('table.results tbody tr')).toHaveCount(2)
+  await page.getByRole('button', { name: /^Все позиции:/ }).click()
+  await expect(
+    page.getByRole('button', { name: 'Открыть позицию', exact: true }).first(),
+  ).toBeVisible()
   await page.reload()
-  await expect(page.locator('table.results tbody tr')).toHaveCount(2)
+  await page.getByRole('button', { name: /^Все позиции:/ }).click()
   await page.getByRole('button', { name: 'Открыть позицию', exact: true }).first().click()
   const review = page.getByRole('dialog', { name: 'Сверка ВОР с PDF' })
   await expect(review).toContainText('Позиция 1 из 2')

@@ -21,14 +21,16 @@ export function readableError(error: unknown): string {
 export function backendError(value: unknown): string {
   const parsed = z
     .object({
-      error: z.object({ message: z.string(), code: z.string().optional() }).optional(),
+      error: z
+        .union([z.boolean(), z.object({ message: z.string(), code: z.string().optional() })])
+        .optional(),
       detail: z.string().optional(),
       statusMessage: z.string().optional(),
       message: z.string().optional(),
     })
     .safeParse(value)
   return parsed.success
-    ? parsed.data.error?.message ||
+    ? (typeof parsed.data.error === 'object' ? parsed.data.error.message : undefined) ||
         parsed.data.detail ||
         parsed.data.statusMessage ||
         parsed.data.message ||
@@ -37,6 +39,7 @@ export function backendError(value: unknown): string {
 }
 export function useBackend() {
   const route = useRoute()
+  const connected = useState('workspace-connected', () => false)
   async function json<T>(url: string, schema: z.ZodType<T>, options: RequestInit = {}): Promise<T> {
     const headers = new Headers(options.headers)
     if (options.body && !(options.body instanceof FormData))
@@ -92,12 +95,36 @@ export function useBackend() {
     contentUrl,
     download,
     downloadPost,
-    connect: (password = '') =>
-      json('/api/session', z.object({ connected: z.literal(true) }), {
+    connect: async (password = '', login = '') => {
+      const schema = z.object({ connected: z.literal(true) })
+      if (!password && !login) {
+        const status = await fetch('/api/session', {
+          credentials: 'same-origin',
+          cache: 'no-store',
+        })
+        if (status.ok) {
+          const result = schema.parse(await status.json())
+          connected.value = true
+          return result
+        }
+        connected.value = false
+        if (route.path !== '/login')
+          await navigateTo({ path: '/login', query: { back: route.fullPath } }, { replace: true })
+        throw Error('Требуется вход')
+      }
+      const result = await json('/api/session', z.object({ connected: z.literal(true) }), {
         method: 'POST',
-        body: JSON.stringify({ password }),
-      }),
-    gate: () => json('/api/gate', z.object({ locked: z.boolean() })),
+        body: JSON.stringify({ login, password }),
+      })
+      connected.value = true
+      return result
+    },
+    disconnect: async () => {
+      await json('/api/session', z.object({ connected: z.literal(false) }), { method: 'DELETE' })
+      connected.value = false
+    },
+    gate: () =>
+      json('/api/gate', z.object({ locked: z.boolean(), mode: z.enum(['local', 'ldap']) })),
     projects: (archived = false) =>
       json(root + '/projects' + (archived ? '?archived=true' : ''), z.array(zProjectDto)),
     project: (id: string) => json(`${root}/projects/${encodeURIComponent(id)}`, zProjectDto),
