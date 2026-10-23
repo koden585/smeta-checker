@@ -53,6 +53,16 @@ class MeasurementParsingTests(unittest.TestCase):
     def test_closed_units_and_quantity_kinds(self):
         self.assertEqual(canonical_unit("м 2"), ("м2", "area"))
         self.assertIsNone(canonical_unit("ведро"))
+        for spelling in ("точка", "точки", "пункт", "пункта",
+                         "наблюдение", "наблюдения", "наблюдений",
+                         "точка наблюдения", "точка наблюдений"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(canonical_unit(spelling), ("точка", "observation"))
+        self.assertEqual(
+            compare_measurements(
+                parse_measurement("8", unit="наблюдение"),
+                parse_measurement("8", unit="точка")).get("state"),
+            "confirmed")
         self.assertEqual(
             compare_measurements(
                 parse_measurement("10", unit="м3", kind="material_volume"),

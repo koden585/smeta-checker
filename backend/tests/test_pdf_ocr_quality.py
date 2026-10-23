@@ -227,5 +227,29 @@ class CacheIdentityTests(unittest.TestCase):
         self.assertIn("orientations", identity)
 
 
+class GlueLineTests(unittest.TestCase):
+    def test_date_fragments_join_pk_keeps_space(self):
+        def w(t, x0, x1):
+            return {"text": t, "bbox": [x0, 100, x1, 112]}
+
+        self.assertEqual(
+            ocr_engine._glue_line([w("22.03.20", 0, 40), w("24", 41, 55)]),
+            "22.03.2024")
+        self.assertEqual(
+            ocr_engine._glue_line([w("ПК", 0, 20), w("5+90,00", 21, 70)]),
+            "ПК 5+90,00")
+        self.assertEqual(
+            ocr_engine._glue_line([w("113,36", 0, 40), w("м", 60, 70)]),
+            "113,36 м")
+
+    def test_enhance_upscales_small_crops_only(self):
+        from PIL import Image
+
+        small = Image.new("RGB", (400, 300), "white")
+        big = Image.new("RGB", (2000, 1500), "white")
+        self.assertEqual(ocr_engine._enhance_crop(small).size, (800, 600))
+        self.assertEqual(ocr_engine._enhance_crop(big).size, (2000, 1500))
+
+
 if __name__ == "__main__":
     unittest.main()
