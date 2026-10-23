@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { ProjectDto, RunDto } from '~/generated/types.gen'
-import { runLabel } from '~/utils/presentation'
+import type { TableColumn } from '@nuxt/ui'
 
 type Queue = 'fix' | 'review' | 'missing' | 'ok'
 
@@ -35,6 +35,9 @@ const renamingId = ref<string | null>(null)
 const renamingName = ref('')
 const renamingBusy = ref(false)
 const confirmArchiveId = ref<string | null>(null)
+const deleteProjectId = ref<string | null>(null)
+const deleteProjectName = ref('')
+const deleteProjectBusy = ref(false)
 const archiveBusy = ref(false)
 const actionError = ref('')
 const restoringId = ref<string | null>(null)
@@ -48,6 +51,9 @@ const attention = (p: DashboardProject) =>
 
 const confirmArchiveProject = computed(
   () => projects.value.find((p) => p.id === confirmArchiveId.value) || null,
+)
+const deleteProjectTarget = computed(
+  () => projects.value.find((p) => p.id === deleteProjectId.value) || null,
 )
 
 const filtered = computed(() => {
@@ -68,7 +74,12 @@ const filtered = computed(() => {
     )
   return list
 })
-
+const indexColumns: TableColumn<DashboardProject>[] = [
+  { id: 'project', header: 'Проект' },
+  { id: 'lastCheck', header: 'Последняя проверка' },
+  { id: 'result', header: 'Результат' },
+  { id: 'actions', header: '' },
+]
 function formatDate(value: string | null) {
   return value
     ? new Date(value).toLocaleString('ru-RU', {
@@ -129,6 +140,12 @@ const archiveModalOpen = computed({
   get: () => confirmArchiveId.value !== null,
   set: (open: boolean) => {
     if (!open) confirmArchiveId.value = null
+  },
+})
+const deleteProjectOpen = computed({
+  get: () => deleteProjectId.value !== null,
+  set: (open: boolean) => {
+    if (!open) deleteProjectId.value = null
   },
 })
 
@@ -193,6 +210,27 @@ async function confirmArchive() {
     actionError.value = readableError(e)
   } finally {
     archiveBusy.value = false
+  }
+}
+
+function askDeleteProject(p: DashboardProject) {
+  deleteProjectId.value = p.id
+  deleteProjectName.value = ''
+}
+
+async function confirmDeleteProject() {
+  const target = deleteProjectTarget.value
+  if (!target || deleteProjectBusy.value) return
+  if (deleteProjectName.value.trim() !== target.name) return
+  deleteProjectBusy.value = true
+  try {
+    await backend.deleteProject(target.id)
+    deleteProjectId.value = null
+    await load()
+  } catch (e) {
+    actionError.value = readableError(e)
+  } finally {
+    deleteProjectBusy.value = false
   }
 }
 
@@ -324,221 +362,208 @@ onBeforeUnmount(() => {
       </p>
 
       <section class="dashboard-panel" aria-label="Список проектов" :aria-busy="busy">
-        <table class="dashboard-table">
-          <caption class="visually-hidden">
+        <div v-if="busy && !projects.length && !error" class="dashboard-loading" aria-hidden="true">
+          <USkeleton v-for="n in 3" :key="n" class="dashboard-skeleton skeleton-name" />
+        </div>
+        <div v-else-if="error && !projects.length" class="dashboard-empty">
+          <h2>Не удалось загрузить проекты</h2>
+          <p>Проверьте соединение с сервером и попробуйте ещё раз.</p>
+          <UButton color="neutral" variant="outline" @click="load()">Повторить</UButton>
+        </div>
+        <div v-else-if="!projects.length" class="dashboard-empty">
+          <h2>{{ showArchived ? 'Архив проектов пуст' : 'Пока нет проектов' }}</h2>
+          <p>
             {{
-              showArchived ? 'Архив проектов' : 'Активные проекты'
+              showArchived
+                ? 'Архивированные проекты появятся здесь. Вернуться можно вкладкой «Активные».'
+                : 'Создайте проект кнопкой «Новый проект», затем добавьте ведомость и проектные PDF.'
             }}
-          </caption>
-          <colgroup>
-            <col class="project-column" />
-            <col class="last-check-column" />
-            <col />
-            <col class="actions-column" />
-          </colgroup>
-          <thead>
-            <tr>
-              <th scope="col">Проект</th>
-              <th scope="col">Последняя проверка</th>
-              <th scope="col">Результат</th>
-              <th scope="col"><span class="visually-hidden">Действия</span></th>
-            </tr>
-          </thead>
-          <tbody v-if="busy && !projects.length && !error">
-            <tr v-for="n in 3" :key="n" class="dashboard-loading-row" aria-hidden="true">
-              <td>
-                <USkeleton class="dashboard-skeleton skeleton-name" />
-                <USkeleton class="dashboard-skeleton skeleton-meta" />
-              </td>
-              <td>
-                <USkeleton class="dashboard-skeleton skeleton-date" />
-                <USkeleton class="dashboard-skeleton skeleton-meta" />
-              </td>
-              <td><USkeleton class="dashboard-skeleton skeleton-result" /></td>
-              <td></td>
-            </tr>
-          </tbody>
-          <tbody v-else-if="error && !projects.length">
-            <tr>
-              <td colspan="4" class="dashboard-empty">
-                <h2>Не удалось загрузить проекты</h2>
-                <p>Проверьте соединение с сервером и попробуйте ещё раз.</p>
-                <UButton color="neutral" variant="outline" @click="load()">Повторить</UButton>
-              </td>
-            </tr>
-          </tbody>
-          <tbody v-else-if="!projects.length">
-            <tr>
-              <td colspan="4" class="dashboard-empty">
-                <h2>{{ showArchived ? 'Архив проектов пуст' : 'Пока нет проектов' }}</h2>
-                <p>
-                  {{
-                    showArchived
-                      ? 'Архивированные проекты появятся здесь. Вернуться можно вкладкой «Активные».'
-                      : 'Создайте проект кнопкой «Новый проект», затем добавьте ведомость и проектные PDF.'
-                  }}
+          </p>
+        </div>
+        <div v-else-if="!filtered.length" class="dashboard-empty">
+          <h2>Ничего не найдено</h2>
+          <p>По запросу «{{ query }}» нет проектов или ведомостей.</p>
+          <UButton color="neutral" variant="outline" @click="query = ''">Сбросить поиск</UButton>
+        </div>
+        <UTable
+          sticky="header"
+          v-else
+          :data="filtered"
+          :columns="indexColumns"
+          :on-select="
+            (e, row) => {
+              const target = e.target as HTMLElement | null
+              if (target && target.closest('button,input,a')) return
+              openProject(row.original)
+            }
+          "
+          class="dashboard-table max-h-[60vh] overflow-auto"
+        >
+          <template #caption>
+            {{ showArchived ? 'Архив проектов' : 'Активные проекты' }}
+          </template>
+          <template #project-cell="{ row }">
+            <div class="dashboard-identity">
+              <div
+                v-if="renamingId === row.original.id"
+                class="dashboard-rename"
+                @click.stop
+                @keydown.enter.stop
+              >
+                <UInput
+                  v-model="renamingName"
+                  aria-label="Новое название проекта"
+                  :disabled="renamingBusy"
+                  autofocus
+                  class="rename-input"
+                  @keydown.enter="saveRename(row.original)"
+                  @keydown.escape="cancelRename"
+                />
+                <UButton
+                  icon="i-lucide-check"
+                  aria-label="Сохранить название"
+                  color="neutral"
+                  variant="outline"
+                  :disabled="!renamingName.trim()"
+                  :loading="renamingBusy"
+                  @click="saveRename(row.original)"
+                />
+                <UButton
+                  icon="i-lucide-x"
+                  aria-label="Отменить переименование"
+                  color="neutral"
+                  variant="ghost"
+                  :disabled="renamingBusy"
+                  @click="cancelRename"
+                />
+              </div>
+              <NuxtLink
+                v-else
+                :to="`/projects/${row.original.id}`"
+                class="dashboard-name"
+                :aria-label="`Открыть проект ${row.original.name}`"
+                @click.stop
+                >{{ row.original.name }}</NuxtLink
+              >
+              <p
+                class="dashboard-meta"
+                role="group"
+                :aria-label="`Документов: ${row.original.documents}, проверок: ${row.original.runs}`"
+              >
+                <span>ВОР {{ row.original.vorCount }}</span>
+                <span>ПД {{ row.original.pdfCount }}</span>
+                <span>Проверок: {{ row.original.runs }}</span>
+              </p>
+            </div>
+          </template>
+          <template #lastCheck-cell="{ row }">
+            <div class="dashboard-last-check" :class="{ 'no-check': !row.original.lastRun }">
+              <template v-if="row.original.lastRun">
+                <p class="dashboard-date">{{ formatDate(row.original.lastRun.created_at) }}</p>
+                <p class="dashboard-file" :title="row.original.lastRun.vor_filename">
+                  {{ row.original.lastRun.vor_filename }}
                 </p>
-              </td>
-            </tr>
-          </tbody>
-          <tbody v-else-if="!filtered.length">
-            <tr>
-              <td colspan="4" class="dashboard-empty">
-                <h2>Ничего не найдено</h2>
-                <p>По запросу «{{ query }}» нет проектов или ведомостей.</p>
-                <UButton color="neutral" variant="outline" @click="query = ''"
-                  >Сбросить поиск</UButton
-                >
-              </td>
-            </tr>
-          </tbody>
-          <tbody v-else>
-            <tr v-for="p in filtered" :key="p.id" class="dashboard-row" @click="openProject(p)">
-              <td class="dashboard-identity">
-                <div
-                  v-if="renamingId === p.id"
-                  class="dashboard-rename"
-                  @click.stop
-                  @keydown.enter.stop
-                >
-                  <UInput
-                    v-model="renamingName"
-                    aria-label="Новое название проекта"
-                    :disabled="renamingBusy"
-                    autofocus
-                    class="rename-input"
-                    @keydown.enter="saveRename(p)"
-                    @keydown.escape="cancelRename"
-                  />
-                  <UButton
-                    icon="i-lucide-check"
-                    aria-label="Сохранить название"
-                    color="neutral"
-                    variant="outline"
-                    :disabled="!renamingName.trim()"
-                    :loading="renamingBusy"
-                    @click="saveRename(p)"
-                  />
-                  <UButton
-                    icon="i-lucide-x"
-                    aria-label="Отменить переименование"
-                    color="neutral"
-                    variant="ghost"
-                    :disabled="renamingBusy"
-                    @click="cancelRename"
-                  />
-                </div>
-                <NuxtLink
-                  v-else
-                  :to="`/projects/${p.id}`"
-                  class="dashboard-name"
-                  :aria-label="`Открыть проект ${p.name}`"
-                  @click.stop
-                  >{{ p.name }}</NuxtLink
-                >
-                <p
-                  class="dashboard-meta"
-                  role="group"
-                  :aria-label="`Документов: ${p.documents}, проверок: ${p.runs}`"
-                >
-                  <span>ВОР {{ p.vorCount }}</span>
-                  <span>ПД {{ p.pdfCount }}</span>
-                  <span>Проверок: {{ p.runs }}</span>
-                </p>
-              </td>
-              <td class="dashboard-last-check" :class="{ 'no-check': !p.lastRun }">
-                <template v-if="p.lastRun">
-                  <p class="dashboard-date">{{ formatDate(p.lastRun.created_at) }}</p>
-                  <p class="dashboard-file" :title="p.lastRun.vor_filename">
-                    {{ p.lastRun.vor_filename }}
-                  </p>
-                </template>
-                <span v-else class="dashboard-muted" aria-label="Проверок ещё не было">-</span>
-              </td>
-              <td class="dashboard-result">
-                <template v-if="!p.lastRun">
-                  <p class="dashboard-muted">Проверок пока нет</p>
-                  <p class="dashboard-detail">Откройте проект для подготовки проверки</p>
-                </template>
-                <template v-else-if="p.lastRun.status === 'done'">
-                  <div v-if="p.queues" class="dashboard-queues">
-                    <template v-for="q in ['fix', 'review', 'missing'] as const" :key="q">
-                      <p v-if="p.queues[q]" :class="`result-${q}`">
-                        {{ queueLabels[q] }}: {{ positionCount(p.queues[q]) }}
-                      </p>
-                    </template>
-                    <p v-if="p.queues.ok" class="result-ok">{{ confirmedLabel(p.queues.ok) }}</p>
-                    <p v-if="!Object.values(p.queues).some(Boolean)" class="dashboard-muted">
-                      Проверка без позиций
+              </template>
+              <span v-else class="dashboard-muted" aria-label="Проверок ещё не было">-</span>
+            </div>
+          </template>
+          <template #result-cell="{ row }">
+            <div class="dashboard-result">
+              <template v-if="!row.original.lastRun">
+                <p class="dashboard-muted">Проверок пока нет</p>
+                <p class="dashboard-detail">Откройте проект для подготовки проверки</p>
+              </template>
+              <template v-else-if="row.original.lastRun.status === 'done'">
+                <div v-if="row.original.queues" class="dashboard-queues">
+                  <template v-for="q in ['fix', 'review', 'missing'] as const" :key="q">
+                    <p v-if="row.original.queues[q]" :class="`result-${q}`">
+                      {{ queueLabels[q] }}: {{ positionCount(row.original.queues[q]) }}
                     </p>
-                  </div>
-                  <div v-else class="dashboard-summary-error" @click.stop>
-                    <p>Результат недоступен</p>
-                    <UButton
-                      color="neutral"
-                      variant="link"
-                      :loading="p.summaryBusy"
-                      :aria-label="`Повторить загрузку результата ${p.name}`"
-                      @click="retrySummary(p)"
-                      >Повторить</UButton
-                    >
-                  </div>
-                </template>
-                <template v-else>
-                  <p :class="{ 'result-fix': p.lastRun.status === 'failed' }">
-                    {{ runLabel(p.lastRun.status) }}
-                  </p>
-                  <template v-if="p.lastRun.status === 'running'">
-                    <p class="dashboard-detail">
-                      {{
-                        p.lastRun.total
-                          ? `Обработано ${p.lastRun.done + p.lastRun.failed} из ${p.lastRun.total}`
-                          : 'Подготовка проверки'
-                      }}
-                    </p>
-                    <UProgress
-                      v-if="p.lastRun.total"
-                      :model-value="
-                        Math.floor(((p.lastRun.done + p.lastRun.failed) / p.lastRun.total) * 100)
-                      "
-                      color="neutral"
-                      size="xs"
-                      class="dashboard-progress"
-                      :get-value-label="progressLabel"
-                    />
                   </template>
-                </template>
-              </td>
-              <td class="dashboard-actions" @click.stop>
-                <UDropdownMenu
-                  :items="[
-                    {
-                      label: 'Переименовать',
-                      icon: 'i-lucide-pencil',
-                      disabled: renamingBusy,
-                      onSelect: () => startRename(p),
-                    },
-                    {
-                      label: p.archived ? 'Восстановить' : 'Архивировать',
-                      icon: p.archived ? 'i-lucide-archive-restore' : 'i-lucide-archive',
-                      disabled: archiveBusy || restoringId !== null,
-                      onSelect: () => (p.archived ? restore(p) : askArchive(p)),
-                    },
-                  ]"
-                  :content="{ align: 'end' }"
-                >
+                  <p v-if="row.original.queues.ok" class="result-ok">
+                    {{ confirmedLabel(row.original.queues.ok) }}
+                  </p>
+                  <p
+                    v-if="!Object.values(row.original.queues).some(Boolean)"
+                    class="dashboard-muted"
+                  >
+                    Проверка без позиций
+                  </p>
+                </div>
+                <div v-else class="dashboard-summary-error" @click.stop>
+                  <p>Результат недоступен</p>
                   <UButton
                     color="neutral"
-                    variant="ghost"
-                    icon="i-lucide-ellipsis"
-                    :loading="restoringId === p.id"
-                    :aria-label="`Действия проекта ${p.name}`"
+                    variant="link"
+                    :loading="row.original.summaryBusy"
+                    :aria-label="`Повторить загрузку результата ${row.original.name}`"
+                    @click="retrySummary(row.original)"
+                    >Повторить</UButton
+                  >
+                </div>
+              </template>
+              <template v-else>
+                <p :class="{ 'result-fix': row.original.lastRun.status === 'failed' }">
+                  {{ runLabel(row.original.lastRun.status) }}
+                </p>
+                <template v-if="row.original.lastRun.status === 'running'">
+                  <p class="dashboard-detail">
+                    {{
+                      row.original.lastRun.total
+                        ? `Обработано ${row.original.lastRun.done + row.original.lastRun.failed} из ${row.original.lastRun.total}`
+                        : 'Подготовка проверки'
+                    }}
+                  </p>
+                  <UProgress
+                    v-if="row.original.lastRun.total"
+                    :model-value="
+                      Math.floor(
+                        ((row.original.lastRun.done + row.original.lastRun.failed) /
+                          row.original.lastRun.total) *
+                          100,
+                      )
+                    "
+                    color="neutral"
+                    size="xs"
+                    class="dashboard-progress"
+                    :get-value-label="progressLabel"
                   />
-                </UDropdownMenu>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+                </template>
+              </template>
+            </div>
+          </template>
+          <template #actions-cell="{ row }">
+            <div class="dashboard-actions" @click.stop>
+              <UDropdownMenu
+                :items="[
+                  {
+                    label: 'Переименовать',
+                    icon: 'i-lucide-pencil',
+                    disabled: renamingBusy,
+                    onSelect: () => startRename(row.original),
+                  },
+                  {
+                    label: row.original.archived ? 'Восстановить' : 'Архивировать',
+                    icon: row.original.archived ? 'i-lucide-archive-restore' : 'i-lucide-archive',
+                    disabled: archiveBusy || restoringId !== null,
+                    onSelect: () =>
+                      row.original.archived ? restore(row.original) : askArchive(row.original),
+                  },
+                ]"
+                :content="{ align: 'end' }"
+              >
+                <UButton
+                  color="neutral"
+                  variant="ghost"
+                  icon="i-lucide-ellipsis"
+                  :loading="restoringId === row.original.id"
+                  :aria-label="`Действия проекта ${row.original.name}`"
+                />
+              </UDropdownMenu>
+            </div>
+          </template>
+        </UTable>
+
         <p v-if="busy && !projects.length && !error" class="visually-hidden" role="status">
           Загружаем проекты…
         </p>
@@ -562,6 +587,38 @@ onBeforeUnmount(() => {
             <UButton color="primary" :loading="archiveBusy" @click="confirmArchive"
               >Архивировать</UButton
             >
+          </div>
+        </template>
+      </UModal>
+      <UModal v-model:open="deleteProjectOpen" title="Удалить проект?">
+        <template #body>
+          <p class="modal-text">
+            Проект «{{ deleteProjectTarget?.name }}» и все его документы будут удалены без
+            восстановления.
+          </p>
+          <UInput
+            v-model="deleteProjectName"
+            placeholder="Введите название проекта"
+            aria-label="Название проекта для подтверждения удаления"
+            class="w-full"
+          />
+          <div class="toolbar spread modal-footer">
+            <UButton
+              color="neutral"
+              variant="ghost"
+              :disabled="deleteProjectBusy"
+              @click="deleteProjectId = null"
+            >
+              Отмена
+            </UButton>
+            <UButton
+              color="error"
+              :loading="deleteProjectBusy"
+              :disabled="deleteProjectName.trim() !== deleteProjectTarget?.name"
+              @click="confirmDeleteProject"
+            >
+              Удалить
+            </UButton>
           </div>
         </template>
       </UModal>

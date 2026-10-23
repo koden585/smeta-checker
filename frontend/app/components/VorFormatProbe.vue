@@ -87,7 +87,7 @@ onBeforeUnmount(() => {
     variant="outline"
     aria-label="Проверить оформление файла ВОР без сохранения"
     @click="pickFile"
-    >Проверить ВОР</UButton
+    >Оформление ВОР</UButton
   >
 
   <UModal

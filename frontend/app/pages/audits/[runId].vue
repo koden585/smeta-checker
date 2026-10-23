@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { RunDto, SummaryDto, RowsDto } from '~/generated/types.gen'
+import type { TableColumn } from '@nuxt/ui'
 import {
   formatFileName,
   queueColor,
@@ -51,6 +52,15 @@ function rowCell(row: RowsDto['rows'][number]) {
   const hit = Object.keys(row.cells).find((addr) => addr.endsWith(String(row.source_row)))
   return hit || 'Позиция ' + row.number
 }
+type AuditRow = RowsDto['rows'][number]
+const auditColumns: TableColumn<AuditRow>[] = [
+  { id: 'position', accessorFn: (row: AuditRow) => row.number, header: 'Позиция' },
+  { id: 'result', accessorFn: (row: AuditRow) => row.queue, header: 'Результат проверки' },
+  { id: 'values', accessorFn: (row: AuditRow) => row.declared_quantity, header: 'Значения' },
+  { id: 'action', header: '', enableSorting: false },
+]
+const auditSorting = ref<any[]>([])
+const auditPagination = ref({ pageIndex: 0, pageSize: 100 })
 function openPosition(index: number) {
   router.replace({ query: { ...route.query, position: index } })
 }
@@ -73,7 +83,10 @@ async function loadRows() {
       q: query.value,
       offset: offset.value,
     })
-    if (active && current === epoch) results.value = data
+    if (active && current === epoch) {
+      results.value = data
+      auditPagination.value = { pageIndex: Math.floor(offset.value / 100), pageSize: 100 }
+    }
   } catch (e) {
     if (active && current === epoch) error.value = readableError(e)
   } finally {
@@ -82,6 +95,10 @@ async function loadRows() {
 }
 function changePage(delta: number) {
   offset.value = Math.max(0, offset.value + delta)
+  loadRows()
+}
+function setPage(page: number) {
+  offset.value = Math.max(0, (page - 1) * 100)
   loadRows()
 }
 async function poll() {
@@ -246,6 +263,9 @@ onBeforeUnmount(() => {
         </p>
         <p class="muted">Можно закрыть страницу и вернуться к проверке через историю.</p>
         <div class="toolbar">
+          <UButton color="neutral" variant="outline" :to="`/projects/${run.project_id}`">
+            К проекту
+          </UButton>
           <UButton color="error" variant="outline" :loading="cancelling" @click="cancel">
             Остановить проверку
           </UButton>
@@ -287,52 +307,60 @@ onBeforeUnmount(() => {
           />
         </div>
         <div class="panel table-wrap" :aria-busy="busy">
-          <table class="results">
-            <thead>
-              <tr>
-                <th scope="col">Позиция</th>
-                <th scope="col">Результат проверки</th>
-                <th scope="col">Значения</th>
-                <th scope="col"><span class="visually-hidden">Действия</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="r in results?.rows" :key="r.id">
-                <td>
-                  <strong class="row-name">{{ r.number }} · {{ r.name }}</strong>
-                  <p class="muted">{{ r.sheet || 'CSV' }} · {{ rowCell(r) }}</p>
-                </td>
-                <td>
-                  <UBadge :color="queueColor(r.queue)" variant="subtle">{{
-                    queueLabel(r.queue)
-                  }}</UBadge>
-                  <p class="row-problem">{{ r.problem }}</p>
-                </td>
-                <td class="numbers">
-                  <p>
-                    <span class="muted">ВОР </span
-                    ><strong>{{ quantityWithUnit(r.declared_quantity, r.unit) }}</strong>
-                  </p>
-                  <p class="muted">ПД {{ quantityWithUnit(r.found_quantity, r.found_unit) }}</p>
-                </td>
-                <td class="row-action">
-                  <UButton variant="ghost" @click="openPosition(r.position_index)">
-                    Открыть позицию
-                  </UButton>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <UTable
+            sticky="header"
+            v-if="results?.rows?.length"
+            :data="results.rows"
+            v-model:sorting="auditSorting"
+            v-model:pagination="auditPagination"
+            :pagination-options="{ manualPagination: true, rowCount: results?.total ?? 0 }"
+            :columns="auditColumns"
+            class="results max-h-[60vh] overflow-auto"
+          >
+            <template #position-cell="{ row }">
+              <div>
+                <strong class="row-name"
+                  >{{ row.original.number }} · {{ row.original.name }}</strong
+                >
+                <p class="muted">{{ row.original.sheet || 'CSV' }} · {{ rowCell(row.original) }}</p>
+              </div>
+            </template>
+            <template #result-cell="{ row }">
+              <div>
+                <UBadge :color="queueColor(row.original.queue)" variant="subtle">
+                  {{ queueLabel(row.original.queue) }}
+                </UBadge>
+                <p class="row-problem">{{ row.original.problem }}</p>
+              </div>
+            </template>
+            <template #values-cell="{ row }">
+              <div class="numbers">
+                <p>
+                  <span class="muted">ВОР </span
+                  ><strong>{{
+                    quantityWithUnit(row.original.declared_quantity, row.original.unit)
+                  }}</strong>
+                </p>
+                <p class="muted">
+                  ПД {{ quantityWithUnit(row.original.found_quantity, row.original.found_unit) }}
+                </p>
+              </div>
+            </template>
+            <template #action-cell="{ row }">
+              <UButton variant="ghost" @click="openPosition(row.original.position_index)">
+                Открыть позицию
+              </UButton>
+            </template>
+          </UTable>
           <p v-if="!results?.rows.length && !busy" class="empty">По этому фильтру позиций нет.</p>
         </div>
-        <div v-if="results && (results.total > 100 || offset)" class="toolbar pagination">
-          <UButton :disabled="offset === 0" @click="changePage(-100)">Назад</UButton
-          ><span class="muted"
-            >{{ offset + 1 }}–{{ Math.min(offset + 100, results.total) }} из
-            {{ results.total }}</span
-          ><UButton :disabled="offset + 100 >= results.total" @click="changePage(100)">
-            Далее
-          </UButton>
+        <div v-if="results && results.total > 100" class="toolbar pagination">
+          <UPagination
+            :page="Math.floor(offset / 100) + 1"
+            :items-per-page="100"
+            :total="results.total"
+            @update:page="setPage"
+          />
         </div>
         <details class="docs">
           <summary>Исходные версии документов</summary>

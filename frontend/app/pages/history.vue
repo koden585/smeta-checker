@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { ProjectDto, RunDto } from '~/generated/types.gen'
+import type { TableColumn } from '@nuxt/ui'
 import { runLabel } from '~/utils/presentation'
 const backend = useBackend(),
   route = useRoute(),
@@ -13,6 +14,19 @@ const backend = useBackend(),
   renaming = ref(false),
   renamingName = ref(''),
   renamingBusy = ref(false)
+const historyColumns: TableColumn<RunDto>[] = [
+  { id: 'run', accessorFn: (row: RunDto) => row.vor_filename, header: 'Проверка' },
+  { accessorKey: 'created_at', header: 'Создано' },
+  { accessorKey: 'status', header: 'Состояние' },
+  {
+    id: 'progress',
+    accessorFn: (row: RunDto) => row.done + row.failed,
+    header: 'Позиций обработано',
+  },
+  { id: 'action', header: '', enableSorting: false },
+]
+const historySorting = ref<any[]>([])
+const historyPagination = ref({ pageIndex: 0, pageSize: 50 })
 const projectName = computed(() => projects.value.find((p) => p.id === selected.value)?.name || '')
 let epoch = 0
 let active = true
@@ -40,6 +54,10 @@ function changePage(delta: number) {
   offset.value = Math.max(0, offset.value + delta)
   loadRuns()
 }
+function setPage(page: number) {
+  offset.value = Math.max(0, (page - 1) * 50)
+  loadRuns()
+}
 async function loadRuns(background = false) {
   clearTimeout(timer)
   const current = ++epoch
@@ -54,6 +72,7 @@ async function loadRuns(background = false) {
     const values = await backend.runs(selected.value, offset.value)
     if (active && current === epoch) {
       runs.value = values
+      historyPagination.value = { pageIndex: Math.floor(offset.value / 50), pageSize: 50 }
       if (values.some((run) => run.status === 'running'))
         timer = setTimeout(() => loadRuns(true), 3000)
     }
@@ -162,61 +181,68 @@ onBeforeUnmount(() => {
       />
       <p v-if="busy" class="empty" role="status">Открываем историю…</p>
       <div v-else-if="runs.length" class="panel table-wrap" :aria-busy="busy">
-        <table class="results">
-          <thead>
-            <tr>
-              <th scope="col">Проверка</th>
-              <th scope="col">Создано</th>
-              <th scope="col">Состояние</th>
-              <th scope="col">Позиций обработано</th>
-              <th scope="col"><span class="visually-hidden">Действия</span></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="r in runs"
-              :key="r.run_id"
-              class="run-row"
-              tabindex="0"
-              role="link"
-              :aria-label="`Открыть проверку ${r.vor_filename}`"
-              @click="router.push(`/audits/${r.run_id}`)"
-              @keydown.enter="router.push(`/audits/${r.run_id}`)"
+        <UTable
+          sticky="header"
+          :data="runs"
+          v-model:sorting="historySorting"
+          v-model:pagination="historyPagination"
+          :pagination-options="{ manualPagination: true, rowCount: offset + runs.length + (runs.length === 50 ? 50 : 0) }"
+          :columns="historyColumns"
+          :on-select="(e, row) => router.push(`/audits/${row.original.run_id}`)"
+          class="results max-h-[60vh] overflow-auto"
+        >
+          <template #run-cell="{ row }">
+            <div>
+              <strong class="run-name">{{ row.original.vor_filename }}</strong>
+              <p class="muted">{{ projectName }}</p>
+            </div>
+          </template>
+          <template #created_at-cell="{ row }">
+            <span class="numbers">
+              {{
+                row.original.created_at
+                  ? new Date(row.original.created_at).toLocaleString('ru-RU')
+                  : '—'
+              }}
+            </span>
+          </template>
+          <template #status-cell="{ row }">
+            <UBadge
+              :color="
+                row.original.status === 'done'
+                  ? 'success'
+                  : row.original.status === 'failed'
+                    ? 'error'
+                    : 'warning'
+              "
+              variant="subtle"
             >
-              <td>
-                <strong class="run-name">{{ r.vor_filename }}</strong>
-                <p class="muted">{{ projectName }}</p>
-              </td>
-              <td class="numbers">
-                {{ r.created_at ? new Date(r.created_at).toLocaleString('ru-RU') : '—' }}
-              </td>
-              <td>
-                <UBadge
-                  :color="
-                    r.status === 'done' ? 'success' : r.status === 'failed' ? 'error' : 'warning'
-                  "
-                  variant="subtle"
-                >
-                  {{ runLabel(r.status) }}
-                </UBadge>
-              </td>
-              <td class="numbers">{{ r.done + r.failed }} / {{ r.total ?? '…' }}</td>
-              <td class="row-action">
-                <UButton variant="ghost" :to="`/audits/${r.run_id}`" @click.stop>
-                  Открыть проверку
-                </UButton>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+              {{ runLabel(row.original.status) }}
+            </UBadge>
+          </template>
+          <template #progress-cell="{ row }">
+            <span class="numbers"
+              >{{ row.original.done + row.original.failed }} / {{ row.original.total ?? '…' }}</span
+            >
+          </template>
+          <template #action-cell="{ row }">
+            <UButton variant="ghost" :to="`/audits/${row.original.run_id}`" @click.stop>
+              Открыть проверку
+            </UButton>
+          </template>
+        </UTable>
       </div>
       <div v-else class="empty empty-state">
         <p>Сохранённых проверок пока нет. Загрузите ВОР и проектные PDF.</p>
         <UButton to="/upload">Новая проверка</UButton>
       </div>
       <div v-if="offset || runs.length === 50" class="toolbar pagination">
-        <UButton :disabled="offset === 0" @click="changePage(-50)">Назад</UButton>
-        <UButton :disabled="runs.length < 50" @click="changePage(50)">Далее</UButton>
+        <UPagination
+          :page="Math.floor(offset / 50) + 1"
+          :items-per-page="50"
+          :total="offset + runs.length + (runs.length === 50 ? 50 : 0)"
+          @update:page="setPage"
+        />
       </div>
     </main>
   </div>

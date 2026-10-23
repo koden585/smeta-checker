@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { ProjectDto, RunDto, DocumentDto } from '~/generated/types.gen'
 import { runLabel } from '~/utils/presentation'
-
+import type { TableColumn } from '@nuxt/ui'
 type Tab = 'vor' | 'pdf' | 'runs'
 
 const backend = useBackend()
@@ -31,6 +31,8 @@ const renamingDocId = ref<string | null>(null)
 const docNameDraft = ref('')
 const docBusy = ref(false)
 const archivingDocId = ref<string | null>(null)
+const deletingDocId = ref<string | null>(null)
+const deletingDocBusy = ref(false)
 const archiveBusy = ref(false)
 const confirmProjectArchive = ref(false)
 const confirmProjectDelete = ref(false)
@@ -56,7 +58,24 @@ const visibleDocs = computed(() => {
       d.versions.some((v) => v.filename.toLocaleLowerCase('ru-RU').includes(q)),
   )
 })
-
+const runColumns: TableColumn<RunDto>[] = [
+  { id: 'vor', accessorFn: (row: RunDto) => row.vor_filename, header: 'Ведомость' },
+  { id: 'status', accessorFn: (row: RunDto) => row.status, header: 'Статус' },
+  { id: 'date', accessorFn: (row: RunDto) => row.created_at, header: 'Дата' },
+  { id: 'action', header: '', enableSorting: false },
+]
+const runSorting = ref<any[]>([])
+const docColumns: TableColumn<DocumentDto>[] = [
+  { id: 'doc', accessorFn: (row: DocumentDto) => row.title, header: 'Документ' },
+  {
+    id: 'revision',
+    accessorFn: (row: DocumentDto) => row.versions.length,
+    header: 'Текущая ревизия',
+  },
+  { id: 'status', accessorFn: (row: DocumentDto) => row.last_run?.status || '', header: 'Статус' },
+  { id: 'action', header: '', enableSorting: false },
+]
+const docSorting = ref<any[]>([])
 function setTab(next: Tab) {
   router.replace({ query: { ...route.query, tab: next === 'vor' ? undefined : next } })
 }
@@ -165,6 +184,24 @@ async function saveDocRename(doc: DocumentDto) {
     error.value = readableError(e)
   } finally {
     docBusy.value = false
+  }
+}
+
+function askDeleteDoc(id: string) {
+  deletingDocId.value = id
+}
+
+async function confirmDeleteDoc() {
+  if (!deletingDocId.value || deletingDocBusy.value) return
+  deletingDocBusy.value = true
+  try {
+    await backend.deleteDocument(deletingDocId.value)
+    deletingDocId.value = null
+    await load()
+  } catch (e) {
+    error.value = readableError(e)
+  } finally {
+    deletingDocBusy.value = false
   }
 }
 
@@ -426,35 +463,29 @@ onBeforeUnmount(() => {
             <p class="muted">Добавьте ведомость и проектные PDF, затем запустите проверку.</p>
           </div>
           <div v-else class="panel project-panel" :aria-busy="busy">
-            <table class="results project-table">
-              <caption class="visually-hidden">
-                История проверок проекта
-              </caption>
-              <thead>
-                <tr>
-                  <th scope="col">Ведомость</th>
-                  <th scope="col">Статус</th>
-                  <th scope="col">Дата</th>
-                  <th scope="col"><span class="visually-hidden">Действия</span></th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="run in runs" :key="run.run_id">
-                  <td class="project-cell-name">{{ run.vor_filename }}</td>
-                  <td>
-                    <UBadge :color="statusColor(run.status)" variant="subtle">
-                      {{ runLabel(run.status) }}
-                    </UBadge>
-                  </td>
-                  <td class="muted">{{ formatDate(run.created_at) }}</td>
-                  <td class="row-action">
-                    <UButton variant="ghost" :to="`/audits/${run.run_id}`"
-                      >Открыть результат</UButton
-                    >
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+            <UTable
+              sticky="header"
+              :data="runs"
+              :columns="runColumns"
+              class="results project-table max-h-[60vh] overflow-auto"
+            >
+              <template #vor-cell="{ row }">
+                <span class="project-cell-name">{{ row.original.vor_filename }}</span>
+              </template>
+              <template #status-cell="{ row }">
+                <UBadge :color="statusColor(row.original.status)" variant="subtle">
+                  {{ runLabel(row.original.status) }}
+                </UBadge>
+              </template>
+              <template #date-cell="{ row }">
+                <span class="muted">{{ formatDate(row.original.created_at) }}</span>
+              </template>
+              <template #action-cell="{ row }">
+                <UButton variant="ghost" :to="`/audits/${row.original.run_id}`">
+                  Открыть результат
+                </UButton>
+              </template>
+            </UTable>
           </div>
           <div v-if="runsOffset || runs.length === 50" class="toolbar">
             <UButton
@@ -499,134 +530,154 @@ onBeforeUnmount(() => {
           </p>
 
           <div v-else class="panel project-panel" :aria-busy="busy">
-            <table class="results project-table">
-              <caption class="visually-hidden">
-                {{
-                  tab === 'vor' ? 'Ведомости проекта' : 'Проектные документы ПД'
-                }}
-              </caption>
-              <thead>
-                <tr>
-                  <th scope="col">Документ</th>
-                  <th scope="col">Текущая ревизия</th>
-                  <th scope="col">Статус</th>
-                  <th scope="col"><span class="visually-hidden">Действия</span></th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="doc in visibleDocs" :key="doc.id">
-                  <td>
-                    <template v-if="renamingDocId === doc.id">
-                      <div class="project-rename" @click.stop>
-                        <UInput
-                          v-model="docNameDraft"
-                          :aria-label="`Новое название документа ${doc.title}`"
-                          :disabled="docBusy"
-                          autofocus
-                          @keydown.enter="saveDocRename(doc)"
-                          @keydown.escape="renamingDocId = null"
-                        />
-                        <UButton
-                          icon="i-lucide-check"
-                          :aria-label="`Сохранить название документа ${doc.title}`"
-                          color="primary"
-                          :loading="docBusy"
-                          @click="saveDocRename(doc)"
-                        />
-                        <UButton
-                          icon="i-lucide-x"
-                          :aria-label="`Отменить переименование документа ${doc.title}`"
-                          color="neutral"
-                          variant="ghost"
-                          :disabled="docBusy"
-                          @click="renamingDocId = null"
-                        />
-                      </div>
-                    </template>
-                    <template v-else>
-                      <div class="project-name-row">
-                        <NuxtLink
-                          :to="`/projects/${projectId}/documents/${doc.id}`"
-                          class="project-doc-link"
-                          >{{ doc.title }}</NuxtLink
-                        >
-                        <UButton
-                          icon="i-lucide-pencil"
-                          :aria-label="`Переименовать документ ${doc.title}`"
-                          color="neutral"
-                          variant="ghost"
-                          size="xs"
-                          @click="startDocRename(doc)"
-                        />
-                      </div>
-                    </template>
-                    <p class="muted">Ревизий: {{ doc.versions.length }}</p>
-                  </td>
-                  <td class="muted">
-                    <template v-if="currentVersion(doc)">
-                      {{ currentVersion(doc)!.filename }} · №{{ currentVersion(doc)!.number }}
-                    </template>
-                    <template v-else>—</template>
-                  </td>
-                  <td>
-                    <div class="project-badges">
-                      <UBadge v-if="doc.archived" color="neutral" variant="soft" size="sm"
-                        >В архиве</UBadge
-                      >
-                      <UBadge v-if="doc.pd_updated" color="warning" variant="soft" size="sm"
-                        >ПД обновлена</UBadge
-                      >
-                      <template v-if="doc.last_run">
-                        <UBadge
-                          :color="statusColor(doc.last_run.status)"
-                          variant="subtle"
-                          size="sm"
-                        >
-                          {{ runLabel(doc.last_run.status) }}
-                        </UBadge>
-                      </template>
-                      <span v-if="!doc.archived && !doc.pd_updated && !doc.last_run" class="muted"
-                        >—</span
-                      >
-                    </div>
-                  </td>
-                  <td class="row-action">
-                    <div class="project-actions">
-                      <UButton
-                        v-if="doc.last_run"
-                        variant="ghost"
-                        :to="`/audits/${doc.last_run.run_id}`"
-                        >Открыть результат</UButton
-                      >
-                      <UButton
-                        v-if="!doc.archived"
-                        variant="ghost"
-                        color="neutral"
-                        icon="i-lucide-file-plus-2"
-                        :aria-label="`Новая ревизия ${doc.title}`"
-                        @click="openImport(doc.id)"
+            <UTable
+              sticky="header"
+              :data="visibleDocs"
+              :columns="docColumns"
+              class="results project-table max-h-[60vh] overflow-auto"
+            >
+              <template #doc-cell="{ row }">
+                <div>
+                  <template v-if="renamingDocId === row.original.id">
+                    <div class="project-rename" @click.stop>
+                      <UInput
+                        v-model="docNameDraft"
+                        :aria-label="`Новое название документа ${row.original.title}`"
+                        :disabled="docBusy"
+                        autofocus
+                        @keydown.enter="saveDocRename(row.original)"
+                        @keydown.escape="renamingDocId = null"
                       />
                       <UButton
-                        v-if="doc.archived"
-                        variant="ghost"
-                        color="neutral"
-                        icon="i-lucide-archive-restore"
-                        :aria-label="`Восстановить документ ${doc.title}`"
-                        @click="setDocArchived(doc, false)"
+                        icon="i-lucide-check"
+                        :aria-label="`Сохранить название документа ${row.original.title}`"
+                        color="primary"
+                        :loading="docBusy"
+                        @click="saveDocRename(row.original)"
                       />
                       <UButton
-                        v-else
-                        variant="ghost"
+                        icon="i-lucide-x"
+                        :aria-label="`Отменить переименование документа ${row.original.title}`"
                         color="neutral"
-                        icon="i-lucide-archive"
-                        :aria-label="`Архивировать документ ${doc.title}`"
-                        @click="archivingDocId = doc.id"
+                        variant="ghost"
+                        :disabled="docBusy"
+                        @click="renamingDocId = null"
                       />
                     </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+                  </template>
+                  <template v-else>
+                    <div class="project-name-row">
+                      <NuxtLink
+                        :to="`/projects/${projectId}/documents/${row.original.id}`"
+                        class="project-doc-link"
+                        >{{ row.original.title }}</NuxtLink
+                      >
+                      <UButton
+                        icon="i-lucide-pencil"
+                        :aria-label="`Переименовать документ ${row.original.title}`"
+                        color="neutral"
+                        variant="ghost"
+                        size="xs"
+                        @click="startDocRename(row.original)"
+                      />
+                    </div>
+                  </template>
+                  <p class="muted">Ревизий: {{ row.original.versions.length }}</p>
+                </div>
+              </template>
+              <template #revision-cell="{ row }">
+                <span class="muted">
+                  <template v-if="currentVersion(row.original)">
+                    {{ currentVersion(row.original)!.filename }} · №{{
+                      currentVersion(row.original)!.number
+                    }}
+                  </template>
+                  <template v-else>—</template>
+                </span>
+              </template>
+              <template #status-cell="{ row }">
+                <div class="project-badges">
+                  <UBadge v-if="row.original.archived" color="neutral" variant="soft" size="sm"
+                    >В архиве</UBadge
+                  >
+                  <UBadge v-if="row.original.pd_updated" color="warning" variant="soft" size="sm"
+                    >ПД обновлена</UBadge
+                  >
+                  <template v-if="row.original.last_run">
+                    <UBadge
+                      :color="statusColor(row.original.last_run.status)"
+                      variant="subtle"
+                      size="sm"
+                    >
+                      {{ runLabel(row.original.last_run.status) }}
+                    </UBadge>
+                    <UProgress
+                      v-if="
+                        row.original.last_run.status === 'running' && row.original.last_run.total
+                      "
+                      :model-value="
+                        Math.floor(
+                          ((row.original.last_run.done + row.original.last_run.failed) /
+                            row.original.last_run.total) *
+                            100,
+                        )
+                      "
+                      color="neutral"
+                      size="xs"
+                      class="project-progress"
+                    />
+                  </template>
+                  <span
+                    v-if="
+                      !row.original.archived && !row.original.pd_updated && !row.original.last_run
+                    "
+                    class="muted"
+                    >—</span
+                  >
+                </div>
+              </template>
+              <template #action-cell="{ row }">
+                <div class="project-actions">
+                  <UButton
+                    v-if="row.original.last_run"
+                    variant="ghost"
+                    :to="`/audits/${row.original.last_run.run_id}`"
+                    >Открыть результат</UButton
+                  >
+                  <UButton
+                    v-if="!row.original.archived"
+                    variant="ghost"
+                    color="neutral"
+                    icon="i-lucide-file-plus-2"
+                    :aria-label="`Новая ревизия ${row.original.title}`"
+                    @click="openImport(row.original.id)"
+                  />
+                  <UButton
+                    v-if="row.original.archived"
+                    variant="ghost"
+                    color="neutral"
+                    icon="i-lucide-archive-restore"
+                    :aria-label="`Восстановить документ ${row.original.title}`"
+                    @click="setDocArchived(row.original, false)"
+                  />
+                  <UButton
+                    v-else
+                    variant="ghost"
+                    color="neutral"
+                    icon="i-lucide-archive"
+                    :aria-label="`Архивировать документ ${row.original.title}`"
+                    @click="archivingDocId = row.original.id"
+                  />
+                  <UButton
+                    variant="ghost"
+                    color="error"
+                    icon="i-lucide-trash-2"
+                    :aria-label="`Удалить документ ${row.original.title}`"
+                    @click="askDeleteDoc(row.original.id)"
+                  />
+                </div>
+              </template>
+            </UTable>
           </div>
         </template>
 
@@ -695,6 +746,31 @@ onBeforeUnmount(() => {
               <UButton color="primary" :loading="projectBusy" @click="setProjectArchived(true)"
                 >Архивировать</UButton
               >
+            </div>
+          </template>
+        </UModal>
+
+        <UModal
+          :open="deletingDocId !== null"
+          title="Удалить документ?"
+          @update:open="(open: boolean) => !open && (deletingDocId = null)"
+        >
+          <template #body>
+            <p class="muted modal-text">
+              Документ и все его ревизии будут удалены без восстановления.
+            </p>
+            <div class="toolbar spread modal-footer">
+              <UButton
+                color="neutral"
+                variant="ghost"
+                :disabled="deletingDocBusy"
+                @click="deletingDocId = null"
+              >
+                Отмена
+              </UButton>
+              <UButton color="error" :loading="deletingDocBusy" @click="confirmDeleteDoc">
+                Удалить
+              </UButton>
             </div>
           </template>
         </UModal>
