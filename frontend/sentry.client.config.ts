@@ -1,6 +1,6 @@
 import * as Sentry from '@sentry/nuxt'
 
-const dsn = import.meta.env.NUXT_PUBLIC_SENTRY_DSN || ''
+const dsn = useRuntimeConfig().public.sentryDsn
 
 if (dsn) {
   Sentry.init({
