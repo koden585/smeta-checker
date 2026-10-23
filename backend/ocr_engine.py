@@ -202,6 +202,21 @@ def _to_png(image):
     return buffer.getvalue()
 
 
+def _enhance_crop(crop):
+    """Upscale + contrast for small/low-contrast crops.
+
+    Small colored labels (blue '+81,28' on a line) vanish at native
+    resolution: 2x LANCZOS + autocontrast lifts them into the readable
+    range. Only crops smaller than 1200px on the long side pay for it.
+    """
+    from PIL import ImageOps
+    if max(crop.size) >= 1200:
+        return crop
+    big = crop.resize((crop.width * 2, crop.height * 2), Image.LANCZOS)
+    gray = big.convert("L")
+    return ImageOps.autocontrast(gray, cutoff=2).convert("RGB")
+
+
 def quadrant_boxes(width, height, overlap=QUADRANT_OVERLAP):
     """Four overlapping quadrants; the shared band is ~``overlap`` of the side."""
     half_x, half_y = width // 2, height // 2
@@ -352,6 +367,35 @@ def _row_bands(words, reading_angle=0):
                          key=lambda item: item["_tx"] if transposed else item["bbox"][0])
         rows.append({"id": "r%d" % number, "words": members})
     return rows
+
+
+_GLUE_LEFT_RE = re.compile(r"(?:\d{2}\.\d{2}\.\d{2}|\bПК\s*\d+\+\d+|\d+,\d+)$")
+_GLUE_RIGHT_RE = re.compile(r"^(?:\d{2}\b|\+\d+|\d)")
+
+
+def _glue_line(words):
+    """Join date/PK fragments split across adjacent TSV words.
+
+    Engines cut '22.03.2024' into '22.03.20'+'24' and 'ПК 5+90,00' into
+    pieces when glyphs touch cell borders. Neighbours join without a
+    space only when horizontally adjacent (gap < half height) and the
+    pair matches a date/PK/decimal shape; everything else keeps spaces.
+    """
+    if len(words) < 2:
+        return " ".join(word["text"] for word in words)
+    parts = [words[0]["text"]]
+    for prev, word in zip(words, words[1:]):
+        left, right = prev["text"], word["text"]
+        gap = word["bbox"][0] - prev["bbox"][2]
+        height = max(prev["bbox"][3] - prev["bbox"][1],
+                       word["bbox"][3] - word["bbox"][1], 1)
+        if (gap < height * 0.5
+                and _GLUE_LEFT_RE.search(left)
+                and _GLUE_RIGHT_RE.match(right)):
+            parts[-1] += right
+        else:
+            parts.append(right)
+    return " ".join(parts)
 
 
 def _column_strips(words, reading_angle=0, min_gap=8.0):
@@ -539,8 +583,10 @@ def recognize_page(page, *, language="rus+eng", dpi=200, max_pixels=12000000,
             if passes_used >= MAX_TSV_PASSES:
                 break
             crop = rotated.crop(box)
+            enhanced = _enhance_crop(crop)
+            rescale = crop.width / enhanced.width
             try:
-                raw = parse_tsv(run_tsv(_to_png(crop), language, CROP_PSM, timeout))
+                raw = parse_tsv(run_tsv(_to_png(enhanced), language, CROP_PSM, timeout))
                 passes_used += 1
             except Exception as exc:
                 passes_used += 1
@@ -549,9 +595,9 @@ def recognize_page(page, *, language="rus+eng", dpi=200, max_pixels=12000000,
             crops_done.append(name)
             origin = (box[0], box[1])
             for word in raw:
-                box_px = (word["left"], word["top"],
-                          word["left"] + word["width"],
-                          word["top"] + word["height"])
+                box_px = (word["left"] * rescale, word["top"] * rescale,
+                          (word["left"] + word["width"]) * rescale,
+                          (word["top"] + word["height"]) * rescale)
                 # Rescale crop pixels (hi-res) into the rotated overview frame.
                 factor_x = best["size"][0] / rotated_size[0]
                 factor_y = best["size"][1] / rotated_size[1]
@@ -601,7 +647,7 @@ def recognize_page(page, *, language="rus+eng", dpi=200, max_pixels=12000000,
     multi_row = len(rows) > 1
     ambiguous = multi_row and not strips
     layout_resolved = not ambiguous
-    lines = [" ".join(word["text"] for word in row["words"]) for row in rows]
+    lines = [_glue_line(row["words"]) for row in rows]
     text = "\n".join(line for line in lines if line.strip())
     raw_total = len(candidates)
     mean_conf = (sum(word["conf"] for word in kept) / len(kept)) if kept else None

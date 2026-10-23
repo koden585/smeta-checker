@@ -55,6 +55,9 @@ _REASON_TEXTS = {
     "unit_mismatch": "единица измерения в проекте другая",
     "unit_not_bound": "единица измерения не привязалась к числу",
     "directed_pair_mismatch": "пара «число — единица» не сошлась",
+    "directed_pair_second_matches": "число ВОР совпало с измерениями, а не с точками: в ПД пара «точки/измерения»",
+    "directed_pair_equal": "число совпало с парой «точки/измерения»",
+    "split_account_report": "в ПД один общий отчёт — раздельный учёт по видам работ требует проверки",
     "source_conflict": "два источника в проекте противоречат друг другу",
     "measurement_unresolved": "величину не удалось опознать",
     "measurement_basis_unresolved": "неясно, к чему относится величина",
@@ -237,6 +240,13 @@ def build_user_report(df, tracking, tasks):
             if status != DISCREPANCY:
                 status = NOT_CHECKED
             remarks.append("Непонятно, к какому файлу относится позиция: имя в ВОР не совпало ни с одним PDF.")
+        elif all(check.get("state") == "not_applicable"
+                 and "normative_position" in (check.get("reasons") or [])
+                 for check in checks.values()) and checks:
+            status = MANUAL
+            notes.append(
+                "Нормативная позиция: расценивается по сборнику, "
+                "в ПД объёму подтверждения нет и быть не должно.")
         elif not source.get("work_found"):
             if raw_status == TECHNICAL_ERROR:
                 if status != DISCREPANCY:
@@ -273,7 +283,7 @@ def build_user_report(df, tracking, tasks):
                 before = _number(expected_volume, expected_unit)
                 after = _number(actual_volume, actual_unit)
                 delta = ""
-                if before is not None and after is not None and before != after:
+                if "unit_mismatch" not in reasons and before is not None and after is not None and before != after:
                     delta = f" Разница — {format_ru(abs(before - after))} {expected_unit}."
                 origin = "по расчёту" if source.get("volume_calculation") else "в проекте"
                 if "unit_mismatch" in reasons:
