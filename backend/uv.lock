@@ -883,6 +883,15 @@ wheels = [
 ]
 
 [[package]]
+name = "prometheus-client"
+version = "0.21.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/62/14/7d0f567991f3a9af8d1cd4f619040c93b68f09a02b6d0b6ab1b2d1ded5fe/prometheus_client-0.21.1.tar.gz", hash = "sha256:252505a722ac04b0456be05c05f75f45d760c2911ffc45f2a06bcaed9f3ae3fb", size = 78551, upload-time = "2024-12-03T14:59:12.164Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ff/c2/ab7d37426c179ceb9aeb109a85cda8948bb269b7561a0be870cc656eefe4/prometheus_client-0.21.1-py3-none-any.whl", hash = "sha256:594b45c410d6f4f8888940fe80b5cc2521b305a1fafe1c58609ef715a001f301", size = 54682, upload-time = "2024-12-03T14:59:10.935Z" },
+]
+
+[[package]]
 name = "prompt-toolkit"
 version = "3.0.53"
 source = { registry = "https://pypi.org/simple" }
@@ -1274,6 +1283,30 @@ wheels = [
 ]
 
 [[package]]
+name = "sentry-sdk"
+version = "2.19.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "certifi" },
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/36/4a/eccdcb8c2649d53440ae1902447b86e2e2ad1bc84207c80af9696fa07614/sentry_sdk-2.19.2.tar.gz", hash = "sha256:467df6e126ba242d39952375dd816fbee0f217d119bf454a8ce74cf1e7909e8d", size = 299047, upload-time = "2024-12-06T08:23:30.762Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/31/4d/74597bb6bcc23abc774b8901277652c61331a9d4d0a8d1bdb20679b9bbcb/sentry_sdk-2.19.2-py2.py3-none-any.whl", hash = "sha256:ebdc08228b4d131128e568d696c210d846e5b9d70aa0327dec6b1272d9d40b84", size = 322942, upload-time = "2024-12-06T08:23:28.842Z" },
+]
+
+[package.optional-dependencies]
+celery = [
+    { name = "celery" },
+]
+fastapi = [
+    { name = "fastapi" },
+]
+sqlalchemy = [
+    { name = "sqlalchemy" },
+]
+
+[[package]]
 name = "shapely"
 version = "2.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1342,6 +1375,7 @@ full = [
     { name = "openpyxl" },
     { name = "pandas" },
     { name = "pillow" },
+    { name = "prometheus-client" },
     { name = "pymupdf" },
     { name = "pymupdf-layout" },
     { name = "pymupdf4llm" },
@@ -1349,6 +1383,7 @@ full = [
     { name = "python-multipart" },
     { name = "rapid-table" },
     { name = "rapidocr" },
+    { name = "sentry-sdk", extra = ["celery", "fastapi", "sqlalchemy"] },
     { name = "uvicorn" },
 ]
 
@@ -1380,6 +1415,7 @@ full = [
     { name = "openpyxl", specifier = "==3.1.5" },
     { name = "pandas", specifier = "==3.0.6" },
     { name = "pillow", specifier = "==12.3.0" },
+    { name = "prometheus-client", specifier = "==0.21.1" },
     { name = "pymupdf", specifier = "==2.0" },
     { name = "pymupdf-layout", specifier = "==2.0" },
     { name = "pymupdf4llm", specifier = "==2.0" },
@@ -1387,6 +1423,7 @@ full = [
     { name = "python-multipart", specifier = "==0.0.32" },
     { name = "rapid-table", specifier = "==3.0.2" },
     { name = "rapidocr", specifier = "==3.10.0" },
+    { name = "sentry-sdk", extras = ["fastapi", "celery", "sqlalchemy"], specifier = "==2.19.2" },
     { name = "uvicorn", specifier = "==0.54.0" },
 ]
 

@@ -29,6 +29,12 @@ from audit_observability import bind, get_logger, reset, restore, snapshot
 from audit_service import preflight_bindings, run_audit
 from storage_blobs import BlobStore, open_blob_store
 from storage_db import DocumentVersionRow, Repository, open_repository
+from sentry_setup import init_sentry
+from metrics import (
+    HTTP_REQUESTS_TOTAL,
+    HTTP_REQUEST_DURATION_SECONDS,
+    render_metrics,
+)
 
 logger = get_logger(__name__)
 
@@ -650,20 +656,36 @@ def create_app(context: ApiContext | None = None) -> FastAPI:
         )
     runner = AuditRunner(resolved)
     app = FastAPI(title="smeta-checker API", version="1.0.0")
+    init_sentry("api")
     app.state.context = resolved
     app.state.runner = runner
 
     @app.middleware("http")
     async def _request_context(request: Request, call_next):  # type: ignore[no-untyped-def]
+        import time as _time
+        started = _time.monotonic()
         request_id = _request_id(request)
         request.state.request_id = request_id
         token = bind(request_id=request_id, stage="http")
+        status_code = 500
+        response = None
         try:
+            try:
+                import sentry_sdk
+                sentry_sdk.set_tag("request_id", request_id)
+            except Exception:
+                pass
             response = await call_next(request)
+            status_code = response.status_code
+            response.headers[REQUEST_ID_HEADER] = request_id
+            return response
         finally:
             reset(token)
-        response.headers[REQUEST_ID_HEADER] = request_id
-        return response
+            duration = _time.monotonic() - started
+            route = request.scope.get("route")
+            path = getattr(route, "path", None) or request.url.path
+            HTTP_REQUESTS_TOTAL.labels(request.method, path, str(status_code)).inc()
+            HTTP_REQUEST_DURATION_SECONDS.labels(request.method, path).observe(duration)
 
     def get_context() -> ApiContext:
         return app.state.context
@@ -710,6 +732,11 @@ def create_app(context: ApiContext | None = None) -> FastAPI:
 
     @app.exception_handler(Exception)
     async def _unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+        try:
+            import sentry_sdk
+            sentry_sdk.capture_exception(exc)
+        except Exception:
+            pass
         logger.exception("unhandled API error", exc_info=exc)
         response = JSONResponse(
             status_code=500,
@@ -720,6 +747,11 @@ def create_app(context: ApiContext | None = None) -> FastAPI:
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/metrics")
+    def metrics() -> Response:
+        data, content_type = render_metrics()
+        return Response(content=data, media_type=content_type)
 
     @app.post("/api/v1/documents", response_model=DocumentUploadResponse)
     async def upload_document(
