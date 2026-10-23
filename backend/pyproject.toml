@@ -9,10 +9,12 @@ dependencies = [
     "celery==5.6.3",
     "langfuse==5.0.1",
     "openai==3.24.0",
+    "prometheus-client==0.21.1",
     "psycopg[binary]==3.3.6",
     "pydantic==2.14.1",
     "python-dotenv==1.2.4",
     "redis==8.1.0",
+    "sentry-sdk[celery,sqlalchemy]==2.19.2",
     "sqlalchemy==2.1.5",
 ]
 
@@ -32,7 +34,6 @@ full = [
     "python-multipart==0.0.32",
     "rapid-table==3.0.2",
     "rapidocr==3.10.0",
-    "prometheus-client==0.21.1",
     "sentry-sdk[fastapi,celery,sqlalchemy]==2.19.2",
     "onnxruntime==1.31.0",
     "opencv-python==4.11.0.86",

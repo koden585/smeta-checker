@@ -1217,3 +1217,5 @@ Focused live (№4/6/15/17): 15 запросов за 23,828 с, все reasonin
 Совпадение `HEAD` и `origin/dev` не подтверждает версию запущенных Docker-образов: workflow обновляет исходники до вызова серверного установщика. Серверный `/usr/local/bin/smeta-deploy.sh` должен выполнять сборку и запуск и при совпадающих SHA; лимит сборки — 1800 секунд. Lock-файл `flock` нельзя удалять при выходе процесса.
 
 Для GlitchTip задайте полный DSN проекта в корневом `.env`: `GLITCHTIP_DSN` с доступным из контейнеров адресом, `NUXT_PUBLIC_SENTRY_DSN` с браузерным адресом. Клиент использует `runtimeConfig.public.sentryDsn`, а не build-time `import.meta.env`. Backend-группа `full` включает Jinja2, необходимый для инициализации установленной Sentry/Starlette-интеграции.
+
+Prometheus-клиент и Sentry SDK входят в базовые зависимости: они нужны и облегчённому LLM worker. Серверная копия установщика берётся из `scripts/smeta-deploy.sh`: `sudo install -o root -g root -m 750 scripts/smeta-deploy.sh /usr/local/bin/smeta-deploy.sh`. Workflow вызывает только этот установщик; fetch/reset выполняются внутри его блокировки, а одновременные Actions-деплои сериализуются через `concurrency`.

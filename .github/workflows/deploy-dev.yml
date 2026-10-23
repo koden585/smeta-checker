@@ -4,14 +4,16 @@ on:
     branches: [dev]
   workflow_dispatch:
 
+concurrency:
+  group: smeta-production-deploy
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: [self-hosted, smeta-dev]
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - name: deploy
         run: |
-          cd /root/smeta-checker-dev
-          git fetch origin
-          git reset --hard origin/dev
-          sudo /usr/local/bin/smeta-deploy.sh
+          sudo -n /usr/local/bin/smeta-deploy.sh
