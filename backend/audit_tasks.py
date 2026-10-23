@@ -242,7 +242,14 @@ def prepare_run(
         for hit in check_scheme_divisors(positions):
             scheme_notes.setdefault(hit.get("position", ""), []).append(hit)
         pool_keys = list(pool.keys())
+        cancelled = False
         for position in positions:
+            try:
+                if str(context.repository.load_run(run_id).get("status")) == "cancelled":
+                    cancelled = True
+                    break
+            except Exception:
+                pass
             index = int(position.index)
             try:
                 prep = _prepare_one_position(
@@ -345,6 +352,12 @@ def prepare_run(
                     error=f"{type(exc).__name__}: {str(exc)[:300]}",
                 )
                 failed.append(index)
+        if cancelled:
+            try:
+                context.repository.finish_run(run_id, "cancelled")
+            except Exception:
+                pass
+            return {"run_id": str(run_id), "cancelled": True}
         logger.info(
             "prepare finished",
             extra={"queued": len(queued), "failed": len(failed)},
@@ -402,6 +415,23 @@ def audit_position(
     finished position enqueues ``finalize_run`` on the ``pdf`` queue; without
     it (tests/fallback) the caller runs ``finalize_run`` itself.
     """
+    try:
+        if str(context.repository.load_run(run_id).get("status")) == "cancelled":
+            try:
+                context.repository.finish_position_job(
+                    run_id, position_index, "failed", error="Отменено"
+                )
+            except Exception:
+                pass
+            try:
+                _maybe_chain_finalize(
+                    context, run_id, dispatch=dispatch, request_id=request_id
+                )
+            except Exception:
+                pass
+            return {"position_index": position_index, "cancelled": True}
+    except Exception:
+        pass
     started = time.monotonic()
     job = context.repository.load_position_job(run_id, position_index)
     if job.status == "done" and job.result:
@@ -768,9 +798,10 @@ def finalize_run(
     in-process runner byte-for-shape.
     """
     from vor_parse import load_vor_frame_positions
-
     started = time.monotonic()
     record = context.repository.load_run(run_id)
+    if str(record.get("status")) == "cancelled":
+        return {"run_id": str(run_id), "cancelled": True}
     config = record.get("config") or {}
     resolved_request = str(request_id or config.get("request_id") or "")
     token = bind(

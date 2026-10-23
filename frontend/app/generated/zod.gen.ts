@@ -351,7 +351,8 @@ export const zRunDto = z.object({
     status: z.enum([
         'running',
         'done',
-        'failed'
+        'failed',
+        'cancelled'
     ]),
     total: z.int().nullable(),
     vor_filename: z.string(),
@@ -570,6 +571,15 @@ export const zGetAuditApiV1AuditsRunIdGetPath = z.object({
  * Successful Response
  */
 export const zGetAuditApiV1AuditsRunIdGetResponse = zAuditStatusResponse;
+
+export const zCancelAuditApiV1AuditsRunIdCancelPostPath = z.object({
+    run_id: z.string()
+});
+
+/**
+ * Successful Response
+ */
+export const zCancelAuditApiV1AuditsRunIdCancelPostResponse = zRunDto;
 
 export const zWorkspaceApiV1AuditsRunIdPositionsPositionIndexWorkspaceGetPath = z.object({
     run_id: z.string(),

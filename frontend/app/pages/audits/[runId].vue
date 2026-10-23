@@ -10,6 +10,7 @@ const route = useRoute(),
   results = ref<RowsDto | null>(null),
   error = ref(''),
   busy = ref(true),
+  cancelling = ref(false),
   focus = ref('fix'),
   query = ref(''),
   offset = ref(0)
@@ -83,6 +84,10 @@ async function poll() {
       timer = setTimeout(poll, 1500)
       return
     }
+    if (value.status === 'cancelled') {
+      busy.value = false
+      return
+    }
     summary.value = await backend.summary(runId.value)
     await loadRows()
     fixButton.value?.focus({ preventScroll: true })
@@ -103,6 +108,20 @@ async function download() {
     )
   } catch (e) {
     error.value = readableError(e)
+  }
+}
+async function cancel() {
+  if (cancelling.value || !run.value || run.value.status !== 'running') return
+  cancelling.value = true
+  try {
+    const value = await backend.cancelAudit(runId.value)
+    run.value = value
+    clearTimeout(timer)
+  } catch (e) {
+    error.value = readableError(e)
+  } finally {
+    cancelling.value = false
+    busy.value = false
   }
 }
 watch(focus, () => {
@@ -209,10 +228,18 @@ onBeforeUnmount(() => {
           Сейчас проверяется: {{ run.running }}. В очереди: {{ run.queued }}.
         </p>
         <p class="muted">Можно закрыть страницу и вернуться к проверке через историю.</p>
+        <div class="toolbar">
+          <UButton color="error" variant="outline" :loading="cancelling" @click="cancel">
+            Остановить проверку
+          </UButton>
+        </div>
       </section>
       <p v-if="run?.status === 'failed'" class="error-box">
         Запуск завершился с техническим сбоем. Сохранённые результаты доступны ниже; непроверенные
         позиции не подтверждены.
+      </p>
+      <p v-if="run?.status === 'cancelled'" class="error-box">
+        Проверка остановлена. Частичные результаты могут быть недоступны.
       </p>
       <template v-if="summary">
         <div class="toolbar results-bar">

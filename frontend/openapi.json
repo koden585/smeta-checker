@@ -1248,7 +1248,8 @@
             "enum": [
               "running",
               "done",
-              "failed"
+              "failed",
+              "cancelled"
             ],
             "title": "Status",
             "type": "string"
@@ -1975,6 +1976,45 @@
           }
         },
         "summary": "Get Audit"
+      }
+    },
+    "/api/v1/audits/{run_id}/cancel": {
+      "post": {
+        "operationId": "cancel_audit_api_v1_audits__run_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDTO"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Audit"
       }
     },
     "/api/v1/audits/{run_id}/positions/{position_index}/workspace": {

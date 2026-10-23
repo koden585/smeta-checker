@@ -820,7 +820,7 @@ export type RunDto = {
     /**
      * Status
      */
-    status: 'running' | 'done' | 'failed';
+    status: 'running' | 'done' | 'failed' | 'cancelled';
     /**
      * Total
      */
@@ -1265,6 +1265,36 @@ export type GetAuditApiV1AuditsRunIdGetResponses = {
 };
 
 export type GetAuditApiV1AuditsRunIdGetResponse = GetAuditApiV1AuditsRunIdGetResponses[keyof GetAuditApiV1AuditsRunIdGetResponses];
+
+export type CancelAuditApiV1AuditsRunIdCancelPostData = {
+    body?: never;
+    path: {
+        /**
+         * Run Id
+         */
+        run_id: string;
+    };
+    query?: never;
+    url: '/api/v1/audits/{run_id}/cancel';
+};
+
+export type CancelAuditApiV1AuditsRunIdCancelPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CancelAuditApiV1AuditsRunIdCancelPostError = CancelAuditApiV1AuditsRunIdCancelPostErrors[keyof CancelAuditApiV1AuditsRunIdCancelPostErrors];
+
+export type CancelAuditApiV1AuditsRunIdCancelPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: RunDto;
+};
+
+export type CancelAuditApiV1AuditsRunIdCancelPostResponse = CancelAuditApiV1AuditsRunIdCancelPostResponses[keyof CancelAuditApiV1AuditsRunIdCancelPostResponses];
 
 export type WorkspaceApiV1AuditsRunIdPositionsPositionIndexWorkspaceGetData = {
     body?: never;

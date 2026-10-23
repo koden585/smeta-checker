@@ -74,7 +74,7 @@ class RunDTO(DTO):
     project_id: str
     vor_version_id: str
     vor_filename: str
-    status: Literal["running", "done", "failed"]
+    status: Literal["running", "done", "failed", "cancelled"]
     stage: Literal["preparing", "auditing", "finalizing", "done", "failed"]
     total: int | None
     done: int

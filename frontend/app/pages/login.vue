@@ -2,6 +2,7 @@
 const backend = useBackend(),
   route = useRoute(),
   password = ref(''),
+  showPassword = ref(false),
   error = ref(''),
   busy = ref(false),
   locked = ref(true),
@@ -38,7 +39,6 @@ onMounted(async () => {
 </script>
 <template>
   <div>
-    <WorkspaceHeader />
     <main id="main-content" class="shell login-shell" tabindex="-1">
       <section class="login-content">
         <div class="page-heading">
@@ -54,12 +54,25 @@ onMounted(async () => {
             <UFormField label="Пароль стенда" name="password" required>
               <UInput
                 v-model="password"
-                type="password"
+                :type="showPassword ? 'text' : 'password'"
+                name="password"
                 aria-label="Пароль стенда"
                 autocomplete="current-password"
                 :disabled="busy"
                 class="w-full"
-              />
+              >
+                <template #trailing>
+                  <UButton
+                    color="neutral"
+                    variant="ghost"
+                    size="xs"
+                    :icon="showPassword ? 'i-lucide-eye-off' : 'i-lucide-eye'"
+                    :aria-label="showPassword ? 'Скрыть пароль' : 'Показать пароль'"
+                    type="button"
+                    @click="showPassword = !showPassword"
+                  />
+                </template>
+              </UInput>
             </UFormField>
             <UButton type="submit" :loading="busy" :disabled="!password || busy" block>
               Войти

@@ -271,6 +271,18 @@ def workspace_router(get_context) -> APIRouter:
             raise ApiError(404, "run_not_found", "Запуск аудита не найден")
         return run_progress(context, records[0])
 
+    @router.post("/api/v1/audits/{run_id}/cancel", response_model=RunDTO)
+    def cancel_audit(run_id: str, context=Depends(guarded)):
+        parsed = _parse_uuid(run_id, field="run_id")
+        record = context.repository.load_run(parsed)
+        if str(record.get("status")) in {"done", "failed", "cancelled"}:
+            raise ApiError(409, "audit_not_running", "Аудит уже завершён.")
+        context.repository.finish_run(parsed, "cancelled")
+        records = context.repository.run_progress_records(run_id=parsed)
+        if not records:
+            raise ApiError(404, "run_not_found", "Запуск аудита не найден.")
+        return run_progress(context, records[0])
+
     @router.get("/api/v1/audits/{run_id}/summary", response_model=SummaryDTO)
     def summary(run_id: str, context=Depends(guarded)):
         record = terminal(context, run_id)

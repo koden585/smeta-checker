@@ -64,7 +64,14 @@ export function queueColor(queue: string): 'error' | 'warning' | 'success' | 'ne
         : 'neutral'
 }
 export function runLabel(status: string) {
-  return { running: 'Выполняется', done: 'Завершена', failed: 'Сбой проверки' }[status] || status
+  return (
+    {
+      running: 'Выполняется',
+      done: 'Завершена',
+      failed: 'Сбой проверки',
+      cancelled: 'Остановлена',
+    }[status] || status
+  )
 }
 export function clampPage(page: number, count: number) {
   return Math.max(1, Math.min(count, page || 1))
