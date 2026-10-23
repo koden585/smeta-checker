@@ -8,15 +8,11 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: setup ssh key
+      - name: deploy to server
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-      - name: deploy
-        run: |
-          set -x
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             kso@176.197.229.166 \
-            'cd /root/smeta-checker-dev && git fetch origin && git reset --hard origin/dev && sudo /usr/local/bin/smeta-deploy.sh' || echo "SSH_EXIT=$?"
+            'cd /root/smeta-checker-dev && git fetch https://x-access-token:'"${GH_PAT}"'@github.com/koden585/smeta-checker.git dev && git reset --hard FETCH_HEAD && sudo /usr/local/bin/smeta-deploy.sh'
         timeout-minutes: 10
