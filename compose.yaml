@@ -260,6 +260,30 @@ services:
       retries: 3
       start_period: 60s
 
+  task-relay:
+    build:
+      context: ./backend
+      target: llm-slim
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-smeta}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-smeta}
+      BLOB_STORE_URL: file:///srv/smeta/.audit_blobs
+      CELERY_BROKER_URL: redis://redis:6379/0
+    volumes:
+      - blobs:/srv/smeta/.audit_blobs
+    command: ["python", "-m", "scripts.dispatch_tasks"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import time,pathlib; assert time.time()-pathlib.Path('/tmp/smeta-relay-heartbeat').stat().st_mtime < 60"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
 volumes:
   pgdata:
   redisdata:

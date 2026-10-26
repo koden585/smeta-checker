@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, func, select, or_, delete
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from storage_blobs import BlobStore
@@ -31,6 +32,7 @@ from storage_models import (
     Run,
     RunArtifact,
     RunPdfVersion,
+    TaskOutbox,
 )
 
 
@@ -763,7 +765,7 @@ class Repository:
 
     def create_run(
         self, project_id: UUID, vor_version_id: UUID, config: dict[str, Any],
-        pdf_pins: dict[str, UUID] | None = None,
+        pdf_pins: dict[str, UUID] | None = None, *, background: bool = False,
     ) -> RunRow:
         with Session(self._engine) as session:
             vor = session.get(DocumentVersion, vor_version_id)
@@ -782,6 +784,7 @@ class Repository:
             )
             session.add(run)
             session.flush()
+            pdf_blob_keys = {}
             for source_key, version_id in dict(pdf_pins or {}).items():
                 pdf_version = session.get(DocumentVersion, version_id)
                 if pdf_version is None:
@@ -791,8 +794,16 @@ class Repository:
                     raise ValueError("pinned version is not a PDF")
                 if pdf_doc.project_id != project_id:
                     raise ValueError("pinned version belongs to another project")
+                pdf_blob_keys[source_key] = pdf_version.blob_key
                 session.add(RunPdfVersion(run_id=run.id, source_key=str(source_key),
                                           version_id=pdf_version.id))
+            if background:
+                self._enqueue(session, run.id, "prepare", "audit_tasks.prepare_run", {
+                    "run_id": str(run.id), "project": str(config.get("project", "")),
+                    "vor_filename": vor.filename, "vor_blob_key": vor.blob_key,
+                    "pdf_blob_keys": pdf_blob_keys,
+                    "request_id": str(config.get("request_id", "")),
+                })
             session.commit()
             session.refresh(run)
             return RunRow(
@@ -811,7 +822,7 @@ class Repository:
     def update_run_config(self, run_id: UUID, patch: dict[str, Any]) -> None:
         """Merge ``patch`` into the stored run config (metrics, timings)."""
         with Session(self._engine) as session:
-            run = session.get(Run, run_id)
+            run = session.scalar(select(Run).where(Run.id == run_id).with_for_update())
             if run is None:
                 raise KeyError(str(run_id))
             config = dict(run.config or {})
@@ -832,13 +843,182 @@ class Repository:
             if run is None:
                 raise KeyError(str(run_id))
             config = dict(run.config or {})
-            if config.get("finalize_chained"):
+            if run.status != "running" or config.get("finalize_chained") or not config.get("prepare_complete"):
                 session.commit()
+                return False
+            counts = dict(session.execute(
+                select(PositionJob.status, func.count()).where(PositionJob.run_id == run_id)
+                .group_by(PositionJob.status)
+            ).all())
+            expected = config.get("expected_positions", len(config.get("position_inputs") or []))
+            if sum(counts.values()) != expected or any(
+                count and status not in {"done", "failed"} for status, count in counts.items()
+            ):
+                return False
+            unfinished = session.scalar(select(func.count()).select_from(TaskOutbox).where(
+                TaskOutbox.run_id == run_id, TaskOutbox.task_name == "audit_tasks.audit_position",
+                TaskOutbox.status != "done",
+            ))
+            if unfinished:
                 return False
             config["finalize_chained"] = True
             run.config = config
+            self._enqueue(session, run_id, "finalize", "audit_tasks.finalize_run", {
+                "run_id": str(run_id), "request_id": str(config.get("request_id", "")),
+            })
             session.commit()
             return True
+
+    @staticmethod
+    def _enqueue(session, run_id, task_key, task_name, payload):
+        session.execute(insert(TaskOutbox).values(
+            id=uuid4(), run_id=run_id, task_key=task_key, task_name=task_name,
+            payload=dict(payload), status="pending", attempts=0,
+        ).on_conflict_do_nothing(index_elements=["run_id", "task_key"]))
+
+    def enqueue_task(self, task_name: str, payload: dict[str, Any]) -> None:
+        run_id = UUID(str(payload["run_id"]))
+        key = {"audit_tasks.prepare_run": "prepare", "audit_tasks.finalize_run": "finalize"}.get(
+            task_name, f"audit:{payload.get('position_index')}")
+        with Session(self._engine) as session:
+            self._enqueue(session, run_id, key, task_name, payload)
+            session.commit()
+
+    def run_status(self, run_id: UUID) -> str:
+        with Session(self._engine) as session:
+            status = session.scalar(select(Run.status).where(Run.id == run_id))
+            if status is None:
+                raise KeyError(str(run_id))
+            return str(status)
+
+    def resume_run(self, run_id: UUID) -> None:
+        """Explicitly resume an interrupted audit, preserving completed results.
+
+        Operators must stop old workers before adopting a pre-outbox run.
+        Active durable leases are never stolen by this operation.
+        """
+        now = datetime.now(timezone.utc)
+        with Session(self._engine) as session:
+            run = session.scalar(select(Run).where(Run.id == run_id).with_for_update())
+            if run is None:
+                raise KeyError(str(run_id))
+            if run.status not in {"running", "failed"}:
+                raise ValueError("Only running or failed audits can be resumed")
+            active = session.scalar(select(func.count()).select_from(TaskOutbox).where(
+                TaskOutbox.run_id == run_id, TaskOutbox.status.in_(["running", "dispatched"]),
+                TaskOutbox.lease_until > now,
+            ))
+            if active:
+                raise ValueError("An execution lease is still active; stop workers and wait for it to expire")
+            session.execute(delete(TaskOutbox).where(TaskOutbox.run_id == run_id))
+            config = dict(run.config or {})
+            config.update(prepare_complete=False, finalize_chained=False)
+            for field in ("prepare_seconds", "prepare_elapsed_seconds", "execution_error", "failed_task"):
+                config.pop(field, None)
+            run.config = config
+            run.status = "running"
+            run.finished_at = None
+            vor = session.get(DocumentVersion, run.vor_version_id)
+            pdf_keys = {
+                pin.source_key: session.get(DocumentVersion, pin.version_id).blob_key
+                for pin in session.scalars(select(RunPdfVersion).where(RunPdfVersion.run_id == run_id))
+            }
+            self._enqueue(session, run_id, "prepare", "audit_tasks.prepare_run", {
+                "run_id": str(run_id), "project": str(config.get("project", "")),
+                "vor_filename": vor.filename, "vor_blob_key": vor.blob_key,
+                "pdf_blob_keys": pdf_keys, "request_id": str(config.get("request_id", "")),
+            })
+            for job in session.scalars(select(PositionJob).where(PositionJob.run_id == run_id)):
+                if job.status == "done":
+                    continue
+                job.status, job.worker, job.error = "queued", None, None
+                if job.queue == "llm":
+                    self._enqueue(session, run_id, f"audit:{job.position_index}", "audit_tasks.audit_position", {
+                        "run_id": str(run_id), "position_index": job.position_index,
+                        "request_id": str(config.get("request_id", "")),
+                    })
+            session.commit()
+
+    def reserve_deliveries(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        """Recover expired execution leases even when the worker hostname is alive."""
+        now = datetime.now(timezone.utc)
+        deliveries = []
+        with Session(self._engine) as session:
+            in_flight = session.scalar(select(func.count()).select_from(TaskOutbox).where(
+                TaskOutbox.status.in_(["dispatched", "running"]))) or 0
+            rows = session.scalars(select(TaskOutbox).where(
+                TaskOutbox.status.in_(["pending", "dispatched", "running"]),
+                TaskOutbox.available_at <= now,
+                or_(TaskOutbox.lease_until.is_(None), TaskOutbox.lease_until < now),
+            ).order_by(TaskOutbox.status == "pending", TaskOutbox.available_at)
+                .limit(limit).with_for_update(skip_locked=True)).all()
+            for row in rows:
+                if row.status == "pending" and in_flight >= 32:
+                    continue
+                run = session.get(Run, row.run_id)
+                if run is None or run.status != "running":
+                    row.status = "cancelled"
+                    continue
+                if row.attempts >= 3:
+                    self._exhaust_task(session, row, run, "Execution lease expired after 3 attempts")
+                    continue
+                if row.status == "pending":
+                    in_flight += 1
+                if row.status != "dispatched":
+                    row.delivery_token = uuid4()
+                row.status = "dispatched"
+                row.lease_until = now + timedelta(seconds=60)
+                deliveries.append({"id": str(row.id), "token": str(row.delivery_token),
+                                   "name": row.task_name, "payload": dict(row.payload)})
+            session.commit()
+        return deliveries
+
+    def claim_delivery(self, task_id: UUID, token: UUID, *, timeout: int) -> bool:
+        with Session(self._engine) as session:
+            hint = session.get(TaskOutbox, task_id)
+            if hint is None:
+                return False
+            run = session.scalar(select(Run).where(Run.id == hint.run_id).with_for_update())
+            row = session.scalar(select(TaskOutbox).where(TaskOutbox.id == task_id)
+                                 .with_for_update().execution_options(populate_existing=True))
+            if row is None or row.status != "dispatched" or row.delivery_token != token:
+                return False
+            if run is None or run.status != "running":
+                row.status = "cancelled"
+                session.commit()
+                return False
+            row.status = "running"
+            row.attempts += 1
+            row.lease_until = datetime.now(timezone.utc) + timedelta(seconds=timeout + 60)
+            session.commit()
+            return True
+
+    @staticmethod
+    def _exhaust_task(session, row, run, error):
+        row.status = "failed"
+        row.error = error[:1000]
+        run.status = "failed"
+        run.finished_at = datetime.now(timezone.utc)
+        run.config = {**dict(run.config or {}), "execution_error": error[:1000], "failed_task": row.task_key}
+
+    def settle_delivery(self, task_id: UUID, token: UUID, *, error: str | None = None,
+                        continuation: bool = False) -> None:
+        with Session(self._engine) as session:
+            row = session.scalar(select(TaskOutbox).where(TaskOutbox.id == task_id).with_for_update())
+            if row is None or row.delivery_token != token or row.status != "running":
+                return
+            row.lease_until = None
+            row.error = error[:1000] if error else None
+            if error and row.attempts >= 3:
+                self._exhaust_task(session, row, session.get(Run, row.run_id), error)
+            elif error or continuation:
+                row.status = "pending"
+                row.available_at = datetime.now(timezone.utc) + timedelta(seconds=min(30, 2 ** row.attempts) if error else 0)
+                if continuation:
+                    row.attempts = 0
+            else:
+                row.status = "done"
+            session.commit()
 
     def save_position_result(
         self, run_id: UUID, position_index: int, result: dict[str, Any]
@@ -1016,7 +1196,7 @@ class Repository:
         position_index: int,
         *,
         queue: str,
-        payload: dict[str, Any],
+        payload: dict[str, Any], durable: bool = False,
     ) -> None:
         """Move a claimed job to another queue without consuming an attempt."""
         with Session(self._engine) as session:
@@ -1035,11 +1215,23 @@ class Repository:
             job.status = "queued"
             job.worker = None
             job.error = None
+            if durable:
+                self._enqueue(session, run_id, f"audit:{position_index}", "audit_tasks.audit_position", {
+                    "run_id": str(run_id), "position_index": position_index,
+                    "request_id": str(payload.get("request_id", "")),
+                })
             session.commit()
 
-    def list_position_jobs(self, run_id: UUID) -> list[PositionJobRow]:
+    def list_position_jobs(self, run_id: UUID, *, include_results: bool = True) -> list[PositionJobRow]:
         """List all job rows of a run ordered by position index."""
         with Session(self._engine) as session:
+            if not include_results:
+                rows = session.execute(select(
+                    PositionJob.id, PositionJob.run_id, PositionJob.position_index,
+                    PositionJob.queue, PositionJob.status, PositionJob.attempts,
+                    PositionJob.worker, PositionJob.payload,
+                ).where(PositionJob.run_id == run_id).order_by(PositionJob.position_index)).mappings()
+                return [PositionJobRow(**dict(row)) for row in rows]
             rows = session.scalars(
                 select(PositionJob)
                 .where(PositionJob.run_id == run_id)
@@ -1138,7 +1330,7 @@ class Repository:
                 for row in rows
             ]
 
-    def load_run(self, run_id: UUID) -> dict[str, Any]:
+    def load_run(self, run_id: UUID, *, include_results: bool = True) -> dict[str, Any]:
         with Session(self._engine) as session:
             run = session.get(Run, run_id)
             if run is None:
@@ -1148,7 +1340,7 @@ class Repository:
                 select(PositionResult)
                 .where(PositionResult.run_id == run_id)
                 .order_by(PositionResult.position_index)
-            ).all()
+            ).all() if include_results else []
             return {
                 "id": run.id,
                 "project_id": run.project_id,

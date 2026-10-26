@@ -854,6 +854,7 @@ def create_app(context: ApiContext | None = None) -> FastAPI:
         positions, _ = load_vor_positions(vor_bytes, vor_filename)
         llm = context.settings.llm_credentials()
         config = {
+            "project": project,
             "model": llm.model_name,
             "provider": llm.provider,
             "pdf_versions": {key: str(row.id) for key, row in pdf_versions.items()},
@@ -863,10 +864,12 @@ def create_app(context: ApiContext | None = None) -> FastAPI:
             "request_id": request_id,
             "position_inputs": [p.model_dump(mode="json") for p in positions],
         }
+        dispatch = _celery_dispatch(context)
         try:
             run = context.repository.create_run(
                 stored_project.id, vor_id, config,
                 pdf_pins={key: row.id for key, row in pdf_versions.items()},
+                background=dispatch is not None,
             )
         except KeyError as exc:
             raise ApiError(404, "version_not_found", "Версия не найдена") from exc
@@ -877,31 +880,14 @@ def create_app(context: ApiContext | None = None) -> FastAPI:
                 500, "storage_error", f"Не удалось создать запуск: {exc}"
             ) from exc
 
-        dispatch = _celery_dispatch(context)
         if dispatch is not None:
-            vor_ref = context.repository.load_version(vor_id)
-            pdf_blob_keys = {
-                key: context.repository.load_version(
-                    _parse_uuid(str(row.id), field="pdf_version_ids")
-                ).blob_key
-                for key, row in pdf_versions.items()
-            }
             try:
-                dispatch(
-                    "audit_tasks.prepare_run",
-                    {
-                        "run_id": str(run.id),
-                        "project": project,
-                        "vor_filename": vor_filename,
-                        "vor_blob_key": vor_ref.blob_key,
-                        "pdf_blob_keys": pdf_blob_keys,
-                        "request_id": request_id,
-                    },
-                )
-            except Exception as exc:
-                raise ApiError(
-                    503, "broker_unavailable", f"Очередь недоступна: {exc}"
-                ) from exc
+                from audit_delivery import publish_pending
+                publish_pending(context.repository, dispatch)
+            except Exception:
+                # The run and its first task are committed together. The
+                # dispatcher retries delivery when the broker becomes available.
+                logger.warning("initial delivery deferred", exc_info=True)
             logger.info(
                 "audit dispatched",
                 extra={"audit_run_id": str(run.id), "stage": "dispatch"},

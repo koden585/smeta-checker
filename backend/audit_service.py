@@ -207,7 +207,9 @@ def _independent_checks(task, notes, consumption=None):
             "reasons": [kind], "facts": [],
         })
     calculation = task.get("calculation") or {}
-    if calculation:
+    from vor_formula import has_formula_text
+    if calculation and (calculation.get("status") in {"calculated", "error"}
+                        or has_formula_text(calculation.get("expression"))):
         state = calculation.get("status")
         checks.append({
             "claim_id": "workbook:formula", "kind": "workbook", "required": True,
