@@ -53,6 +53,10 @@ def publish(report, stored, position_key, validation, *, enabled=False, derived=
         output['Что не так'] = ('Сопоставление выполнено. Проверяем основание по нормативам.' if pending else
             'Нормативная валидация не завершена или недостаточно источников. Расхождение не подтверждено.')
         return output
+    if review.get('execution_state') == 'technical_failure':
+        output['Статус аудита'] = 'Проверка не выполнена'
+        output['Что не так'] = review.get('summary') or 'Технический сбой нормативного этапа; вывод о корректности ВОР не получен.'
+        return output
     items = review.get('items') or []
     arithmetic_errors = [v.get('message') or 'Ошибка арифметики формулы ВОР.' for v in stored.get('workbook_notes') or []
         if v.get('kind') == 'formula-mismatch']
@@ -66,7 +70,12 @@ def publish(report, stored, position_key, validation, *, enabled=False, derived=
     needed = required_claims(stored, report['Статус аудита'], derived)
     cards = review.get('parameter_cards') or []
     card_gaps = [c for c in cards if c.get('required', True) and c['state'] != 'confirmed']
-    card_conflicts = [c for c in card_gaps if c['state'] == 'possible_mismatch']
+    def disputed_scope(card):
+        key = card.get('id')
+        return any(v.get('state') == 'needs_facts' and any(
+            claim == 'quantity' if key == 'quantity' else 'thickness' in claim if key == 'thickness' else False
+            for claim in v.get('claim_ids', [])) for v in items)
+    card_conflicts = [c for c in card_gaps if c['state'] == 'possible_mismatch' and not disputed_scope(c)]
     if card_conflicts and 'normative:applicability' in confirmed:
         output['Статус аудита'] = FIX
         output['Что не так'] = ' '.join(c['label']+': '+c['reason'] for c in card_conflicts)

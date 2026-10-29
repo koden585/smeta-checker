@@ -104,15 +104,28 @@ def build_cards(position, result, positions, relation):
         source = sources[p['source_id']]
         wanted_kind = 'project' if kind in {'quantity', 'thickness'} else 'normative'
         c.update(found_value=p['value'], found_unit=p['unit'], source_ids=[p['source_id']], quote=p['quote'],
-            source_anchors=[dict(source_id=p['source_id'], quote=p['quote'], rects=[])])
+            source_anchors=[dict(source_id=p['source_id'], quote=p['quote'], rects=source.get('rects', []))])
         found = measure(p['value'], p['unit'])
         unit_present = kind == 'coefficient' or unit_quoted(p['unit'], p['quote'])
         if source['kind'] != wanted_kind or not quoted(p['value'], p['quote'], source['text']) or not expected or not found or not unit_present:
             c['reason'] = 'Число, цитата, тип источника или единица не подтверждены программно.'
             return c
-        if source['origin'].startswith('ocr'):
+        if (source['origin'].startswith('ocr') and not source.get('numeric_verified')) or source['origin'] == 'uncertain_table':
             c['reason'] = 'Распознано OCR: требуется подтверждение по изображению.'
             return c
+        if result.get('pipeline_version', 1) >= 3 and kind in {'quantity', 'thickness'}:
+            scope = p.get('scope_quote', '')
+            def roles(text):
+                return set(re.findall(r'нижн|средн|верхн', clean(text)))
+            declared_roles, found_roles = roles(owner.work_name), roles(scope)
+            relevant = [i for i in result.get('items', []) if p['source_id'] in i.get('project_source_ids', [])
+                and any(claim == 'quantity' if kind == 'quantity' else 'thickness' in claim for claim in i.get('claim_ids', []))]
+            disputed = any(i.get('state') == 'needs_facts' for i in relevant)
+            if (p.get('scope_state') != 'verified' or not quoted(p['value'], p['quote'], scope)
+                    or clean(scope) not in clean(source['text']) or disputed
+                    or (declared_roles and (found_roles != declared_roles) and (kind == 'thickness' or found_roles))):
+                c['reason'] = 'Принадлежность числа той же конструкции, слою и участку не подтверждена; сравнение не выполнено.'
+                return c
         if re.search(r'\b(?:не более|не менее|до\s*\d|от\s*\d|в пределах|диапазон)', clean(p['quote'])):
             c['reason'] = 'В цитате указано ограничение или диапазон, а не однозначное фактическое значение.'
             return c

@@ -1212,12 +1212,14 @@ class Repository:
                 NormativeReview.payload['position_check']['summary'].as_string(),
                 NormativeReview.payload['position_check']['parameter_cards'],
                 NormativeReview.payload['position_check']['parameter_schema_version'],
+                NormativeReview.payload['position_check']['execution_state'].as_string(),
                 NormativeReview.payload['position_check']['local_rules_version'].as_integer()).where(
                     NormativeReview.run_id == run_id, NormativeReview.kind == 'check')
                 .distinct(NormativeReview.position_index)
                 .order_by(NormativeReview.position_index, NormativeReview.created_at.desc(), NormativeReview.id.desc()))
-            for index, key, items, summary, cards, schema, revision in rows:
+            for index, key, items, summary, cards, schema, execution, revision in rows:
                 result.setdefault(index, {})['review'] = dict(position_key=key, items=items or [], summary=summary or '',
+                    execution_state=execution or 'complete',
                     parameter_cards=cards or [], parameter_schema_version=schema or 0, local_rules_version=revision or 0)
             return result
 

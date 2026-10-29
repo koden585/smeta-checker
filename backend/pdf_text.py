@@ -978,6 +978,9 @@ class PDFTextSource:
                 "rotation", 0
             )
             tables = raster_tables(self._doc[idx], rotation=int(orientation))
+            from pdf_tables import verify_numeric_cells, recover_unit_headers
+            recover_unit_headers(tables, (self._ocr_pages.get(idx) or {}).get('words') or [])
+            verify_numeric_cells(tables, (self._ocr_pages.get(idx) or {}).get('words') or [])
             # Reuse the pipeline's locale normalization without changing source words.
             for table in tables:
                 for cell in table["cells"]:
@@ -1334,9 +1337,22 @@ class PDFTextSource:
                 locator["document_id"] = document_id
         for idx, record in self._ocr_locators().items():
             page_locators[idx].extend(record)
-        for idx in [page for page in self._ocr_pages if page in pool][
-            :MAX_TABLE_PAGES_PER_POSITION
-        ]:
+        # A quantity schedule may share no work-name tokens with the VOR.
+        # Discover it by structure, including scans outside the lexical pool.
+        def looks_like_quantity_table(page):
+            return bool(re.search(r'ведомост|площад|объем|количеств|всего|итого', texts[page], re.I)) and len(re.findall(r'\d+[.,]\d+', texts[page])) >= 12
+        scan_tables = sorted((page for page in self._ocr_pages if page in pool or looks_like_quantity_table(page)), key=lambda page: (
+            -int(looks_like_quantity_table(page)),
+            -int(page in pool), page))
+        fresh_tables = 0
+        for idx in scan_tables:
+            cached = self._table_origins.get(idx) == 'ocr'
+            if not cached:
+                cached = self._read_cached_table_rows(idx) is not None and self._table_origins.get(idx) == 'ocr'
+            if not cached:
+                if fresh_tables >= MAX_TABLE_PAGES_PER_POSITION:
+                    continue
+                fresh_tables += 1
             if not self._table_errors.get(idx, "").startswith("scan_table_failed"):
                 self._scan_grid_for(idx)
                 if idx in self._structured_tables and idx in self._table_rows:
@@ -1393,6 +1409,9 @@ class PDFTextSource:
                 }
         metadata = {
             "pdf_sha256": self._pdf_hash,
+            "page_geometry": {str(i): dict(width=self._doc[i].rect.width, height=self._doc[i].rect.height,
+                matrix=list(getattr(self._doc[i], 'rotation_matrix', (1,0,0,1,0,0))))
+                for i in range(len(texts)) if hasattr(self._doc[i], 'rect')},
             "extraction_key": self._extraction_key,
             "ocr_settings_key": self._settings_key,
             "ocr": self._ocr_settings_identity(),

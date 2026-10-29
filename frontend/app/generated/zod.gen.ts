@@ -259,8 +259,10 @@ export const zNormativeCheckSource = z.object({
     image_key: z.string().nullish(),
     kind: z.enum(['project', 'normative']),
     label: z.string(),
+    numeric_verified: z.boolean().optional().default(false),
     origin: z.string(),
     page: z.int(),
+    rects: z.array(z.array(z.number())).max(40).optional(),
     source_id: z.string().nullish(),
     text: z.string(),
     version_id: z.string().nullish(),
@@ -408,6 +410,8 @@ export const zNormativeParameterCard = z.object({
  */
 export const zNormativeParameterProposal = z.object({
     conditions: z.array(zNormativeNumericCondition).max(6).optional(),
+    operand_source_ids: z.array(z.string()).max(12).optional(),
+    operation: z.enum(['direct', 'sum']).optional().default('direct'),
     parameter: z.enum([
         'quantity',
         'thickness',
@@ -415,6 +419,8 @@ export const zNormativeParameterProposal = z.object({
         'unit_scale'
     ]),
     quote: z.string().max(900),
+    scope_quote: z.string().max(900).optional().default(''),
+    scope_state: z.enum(['verified', 'unresolved']).optional().default('unresolved'),
     source_id: z.string().max(80),
     unit: z.string().max(30),
     value: z.string().max(40)
@@ -770,6 +776,9 @@ export const zQuantityComposition = z.object({
  * NormativePositionCheck
  */
 export const zNormativePositionCheck = z.object({
+    coverage: z.record(z.string(), z.unknown()).optional(),
+    evidence_trace: z.array(z.record(z.string(), z.unknown())).optional(),
+    execution_state: z.enum(['complete', 'technical_failure']).optional().default('complete'),
     items: z.array(zNormativePositionCheckItem),
     local_rules_version: z.int().optional().default(0),
     local_validation_version: z.int().optional().default(0),
@@ -777,6 +786,7 @@ export const zNormativePositionCheck = z.object({
     parameter_cards: z.array(zNormativeParameterCard).optional(),
     parameter_proposals: z.array(zNormativeParameterProposal).optional(),
     parameter_schema_version: z.int().optional().default(0),
+    pipeline_version: z.int().optional().default(1),
     quantity_composition: zQuantityComposition.nullish(),
     related_positions: z.array(z.record(z.string(), z.unknown())),
     requires_engineer_review: z.boolean().optional().default(true),

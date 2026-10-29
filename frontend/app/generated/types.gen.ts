@@ -836,6 +836,10 @@ export type NormativeCheckSource = {
      */
     label: string;
     /**
+     * Numeric Verified
+     */
+    numeric_verified?: boolean;
+    /**
      * Origin
      */
     origin: string;
@@ -843,6 +847,10 @@ export type NormativeCheckSource = {
      * Page
      */
     page: number;
+    /**
+     * Rects
+     */
+    rects?: Array<Array<number>>;
     /**
      * Source Id
      */
@@ -1170,6 +1178,14 @@ export type NormativeParameterProposal = {
      */
     conditions?: Array<NormativeNumericCondition>;
     /**
+     * Operand Source Ids
+     */
+    operand_source_ids?: Array<string>;
+    /**
+     * Operation
+     */
+    operation?: 'direct' | 'sum';
+    /**
      * Parameter
      */
     parameter: 'quantity' | 'thickness' | 'coefficient' | 'unit_scale';
@@ -1177,6 +1193,14 @@ export type NormativeParameterProposal = {
      * Quote
      */
     quote: string;
+    /**
+     * Scope Quote
+     */
+    scope_quote?: string;
+    /**
+     * Scope State
+     */
+    scope_state?: 'verified' | 'unresolved';
     /**
      * Source Id
      */
@@ -1195,6 +1219,22 @@ export type NormativeParameterProposal = {
  * NormativePositionCheck
  */
 export type NormativePositionCheck = {
+    /**
+     * Coverage
+     */
+    coverage?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Evidence Trace
+     */
+    evidence_trace?: Array<{
+        [key: string]: unknown;
+    }>;
+    /**
+     * Execution State
+     */
+    execution_state?: 'complete' | 'technical_failure';
     /**
      * Items
      */
@@ -1220,6 +1260,10 @@ export type NormativePositionCheck = {
      * Parameter Schema Version
      */
     parameter_schema_version?: number;
+    /**
+     * Pipeline Version
+     */
+    pipeline_version?: number;
     quantity_composition?: QuantityComposition | null;
     /**
      * Related Positions

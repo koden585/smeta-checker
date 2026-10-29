@@ -14,6 +14,8 @@ def review_position(context, run_id, index, *, local_only=False):
     # Upgrade saved results locally; never repeat a paid request during recovery.
     latest = next((r for r in repo.normative_reviews(run_id, index) if r['kind'] == 'check'), None)
     if latest:
+        if latest['payload']['position_check'].get('pipeline_version', 1) >= 2:
+            return {'skipped': 'already_reviewed'}
         if latest['payload']['position_check'].get('local_rules_version', 0) >= LOCAL_RULES_VERSION:
             return {"skipped": "already_reviewed"}
         updated = validate_saved(context, record, index, latest['id'], 'automatic-local-refresh')
