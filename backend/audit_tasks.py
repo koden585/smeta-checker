@@ -1226,13 +1226,13 @@ def register_tasks(app):  # type: ignore[no-untyped-def]
         })
 
     @app.task(name="audit_tasks.normative_position", bind=True)
-    def _normative(self, run_id, position_index, delivery_id="", delivery_token=""):
+    def _normative(self, run_id, position_index, delivery_id="", delivery_token="", local_only=False, local_rules_version=0):
         from normative_background import review_position
         context = open_task_context()
         # No finalization chain: matching may finish while this independent layer runs.
         try:
             return execute_delivery(context, delivery_id, delivery_token,
-                lambda: review_position(context, UUID(str(run_id)), int(position_index)))
+                lambda: review_position(context, UUID(str(run_id)), int(position_index), local_only=local_only))
         finally:
             try:
                 publish_pending(context.repository, lambda name, payload: app.send_task(name, kwargs=payload))

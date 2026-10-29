@@ -1163,10 +1163,46 @@ class Repository:
             return dict(status=row.status, attempts=row.attempts,
                 message="Нормативный этап прерван; автоматический платный повтор отключён." if row.status == "failed" else "")
 
+    def schedule_local_normative_refresh(self, run_id, revision):
+        """Versioned local-only upgrades reuse position slots; no new model calls."""
+        now = datetime.now(timezone.utc)
+        with Session(self._engine) as session:
+            run = session.get(Run, run_id)
+            if run is None or run.status not in {'running', 'done'} or not (run.config or {}).get('normative_after_match'):
+                return 0
+            # Serialize schedulers, without locking the run against worker commits.
+            lock = int.from_bytes(run_id.bytes[:7], 'big')
+            session.execute(select(func.pg_advisory_xact_lock(lock)))
+            latest = session.execute(select(NormativeReview.position_index,
+                NormativeReview.payload['position_check']['local_rules_version'].as_integer()).where(
+                    NormativeReview.run_id == run_id, NormativeReview.kind == 'check')
+                .distinct(NormativeReview.position_index)
+                .order_by(NormativeReview.position_index, NormativeReview.created_at.desc(), NormativeReview.id.desc())).all()
+            tasks = {t.task_key: t for t in session.scalars(select(TaskOutbox).where(
+                TaskOutbox.run_id == run_id, TaskOutbox.task_name == 'audit_tasks.normative_position').with_for_update(skip_locked=True))}
+            scheduled = 0
+            for index, version in latest:
+                if (version or 0) >= revision:
+                    continue
+                key = f'normative:{index}'
+                row = tasks.get(key)
+                if row and ((row.payload or {}).get('local_rules_version', 0) >= revision
+                        or row.status in {'pending', 'running', 'dispatched'}):
+                    continue
+                payload = dict(run_id=str(run_id), position_index=index, local_only=True, local_rules_version=revision)
+                if row:
+                    row.payload, row.status, row.attempts = payload, 'pending', 0
+                    row.available_at, row.lease_until, row.delivery_token, row.error = now, None, None, None
+                else:
+                    self._enqueue(session, run_id, key, 'audit_tasks.normative_position', payload)
+                scheduled += 1
+            session.commit()
+            return scheduled
+
     def normative_validation_context(self, run_id):
         """Batch-read latest validation fields, without full OCR/source snapshots."""
         with Session(self._engine) as session:
-            result = {r.payload['position_index']: {'stage': r.status}
+            result: dict[int, dict[str, Any]] = {r.payload['position_index']: {'stage': r.status}
                 for r in session.scalars(select(TaskOutbox).where(
                     TaskOutbox.run_id == run_id, TaskOutbox.task_name == 'audit_tasks.normative_position'))
                 if type(r.payload.get('position_index')) is int and r.payload['position_index'] >= 0}
@@ -1175,13 +1211,14 @@ class Repository:
                 NormativeReview.payload['position_check']['items'],
                 NormativeReview.payload['position_check']['summary'].as_string(),
                 NormativeReview.payload['position_check']['parameter_cards'],
-                NormativeReview.payload['position_check']['parameter_schema_version']).where(
+                NormativeReview.payload['position_check']['parameter_schema_version'],
+                NormativeReview.payload['position_check']['local_rules_version'].as_integer()).where(
                     NormativeReview.run_id == run_id, NormativeReview.kind == 'check')
                 .distinct(NormativeReview.position_index)
                 .order_by(NormativeReview.position_index, NormativeReview.created_at.desc(), NormativeReview.id.desc()))
-            for index, key, items, summary, cards, schema in rows:
+            for index, key, items, summary, cards, schema, revision in rows:
                 result.setdefault(index, {})['review'] = dict(position_key=key, items=items or [], summary=summary or '',
-                    parameter_cards=cards or [], parameter_schema_version=schema or 0)
+                    parameter_cards=cards or [], parameter_schema_version=schema or 0, local_rules_version=revision or 0)
             return result
 
     def review_artifacts(self, run_id, index):

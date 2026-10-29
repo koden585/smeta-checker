@@ -111,3 +111,18 @@ def test_unbounded_numbers_are_rejected_instead_of_overflowing():
     assert measure('1e999999','м') is None
     assert measure('NaN','м') is None
     assert measure('999999999999999999999','м') is None
+
+
+def test_material_inherits_verified_geometry_with_unambiguous_source_names():
+    from normative_parameters import inherit_work_evidence
+    parent=dict(sources=[source()],local_work_basis=dict(quantity='431.61',unit='м2',thickness_cm='24',norm_scale='1000',
+        project_source_ids=['p1'],normative_source_ids=[],anchors={'quantity':[dict(source_id='p1',quote='Площадь',rects=[])]}),
+        quantity_composition=dict(source_id='p1',total='431.611'))
+    original=deepcopy(parent)
+    child=dict(sources=[source(text='Другой исходный фрагмент')])
+    value=inherit_work_evidence(child,parent,0)
+    assert len(value['sources'])==2 and value['sources'][0]['id']=='p1'
+    assert value['local_work_basis']['project_source_ids']==['work-0:p1']
+    assert value['quantity_composition']['source_id']=='work-0:p1'
+    assert inherit_work_evidence(value,parent,0)==value
+    assert parent==original and len(child['sources'])==1

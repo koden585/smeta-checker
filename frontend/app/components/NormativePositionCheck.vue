@@ -220,7 +220,11 @@ async function check() {
           class="quantity-composition"
           aria-label="Расчёт количества по таблице ПД"
         >
-          <strong>Количество из таблицы ПД</strong>
+          <strong>{{
+            composition.parent_position_index != null
+              ? `Площадь связанной работы №${composition.parent_position_index + 1}`
+              : 'Количество из таблицы ПД'
+          }}</strong>
           <div class="quantity-equation">
             <template v-for="(term, i) in composition.terms" :key="i">
               <span v-if="i" aria-hidden="true">+</span>
@@ -240,8 +244,11 @@ async function check() {
             >
           </div>
           <p>
-            В ВОР:
-            <strong>{{ decimalLabel(composition.declared_value) }} {{ compositionUnit }}</strong
+            В ВОР{{
+              composition.parent_position_index != null
+                ? ` по работе №${composition.parent_position_index + 1}`
+                : ''
+            }}: <strong>{{ decimalLabel(composition.declared_value) }} {{ compositionUnit }}</strong
             >.
             {{
               composition.state === 'confirmed'

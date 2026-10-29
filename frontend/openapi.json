@@ -1992,6 +1992,11 @@
             "title": "Items",
             "type": "array"
           },
+          "local_rules_version": {
+            "default": 0,
+            "title": "Local Rules Version",
+            "type": "integer"
+          },
           "local_validation_version": {
             "default": 0,
             "title": "Local Validation Version",
@@ -3133,6 +3138,17 @@
           "page": {
             "title": "Page",
             "type": "integer"
+          },
+          "parent_position_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Position Index"
           },
           "rounded_total": {
             "title": "Rounded Total",

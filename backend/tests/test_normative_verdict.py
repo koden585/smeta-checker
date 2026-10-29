@@ -108,3 +108,11 @@ def test_confirmed_table_quantity_is_visible_only_for_its_own_work_and_unit():
     assert verified_quantity(review,'same','м2',derived=True) is None
     review['parameter_cards'][0]['state']='needs_facts'
     assert verified_quantity(review,'same','м2') is None
+
+
+def test_old_review_shows_automatic_refresh_instead_of_stale_manual_verdict():
+    checked=validation([item()])
+    checked['stage']='pending'
+    assert publish(report(),SOURCE,'same',checked,enabled=True)['Статус аудита']==PENDING
+    checked['review']['local_rules_version']=1
+    assert publish(report(),SOURCE,'same',checked,enabled=True)['Статус аудита']=='ОК'

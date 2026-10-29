@@ -12,6 +12,8 @@ from typing import Any
 
 from normative_corpus import decimal
 
+LOCAL_RULES_VERSION = 1
+
 
 def _unit(value):
     return str(value).strip().casefold().rstrip('.').replace('²', '2').replace('m', 'м')

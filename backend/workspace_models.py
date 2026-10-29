@@ -250,6 +250,7 @@ class QuantityTerm(DTO):
 
 
 class QuantityComposition(DTO):
+    parent_position_index: int | None = None
     state: Literal['confirmed', 'possible_mismatch']
     unit: str
     total: str
@@ -261,6 +262,7 @@ class QuantityComposition(DTO):
 
 
 class NormativePositionCheck(DTO):
+    local_rules_version: int = 0
     quantity_composition: QuantityComposition | None = None
     local_validation_version: int = 0
     local_work_basis: NormativeWorkBasis | None = None

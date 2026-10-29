@@ -41,6 +41,12 @@ def publish(report, stored, position_key, validation, *, enabled=False, derived=
     review = (validation or {}).get('review')
     if review and review.get('position_key') != position_key:
         review = None
+    if review and stage in {'pending', 'dispatched', 'running'}:
+        from normative_local_checks import LOCAL_RULES_VERSION
+        if review.get('local_rules_version', 0) < LOCAL_RULES_VERSION:
+            output['Статус аудита'] = PENDING
+            output['Что не так'] = 'Автоматически обновляем основание по новым правилам. Готовый результат сохранён; новый запрос к модели не выполняется.'
+            return output
     if not review:
         pending = stage in {'pending', 'dispatched', 'running'} or (enabled and stage is None)
         output['Статус аудита'] = PENDING if pending else REVIEW

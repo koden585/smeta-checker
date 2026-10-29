@@ -209,6 +209,8 @@ def check(context, record, index, payload, actor, *, automatic=False):
                 quantity=str(other.get("volume") or ""), unit=other.get("unit") or "", formula=other.get("formula") or "", comment=str(other.get("comment") or "")[:700]))
     from normative_quantity_search import augment
     discovered = augment(context, record, parent_position or position, dict(sources=sources, related_positions=related, items=[]))
+    if parent_position and discovered.get('quantity_composition'):
+        discovered['quantity_composition']['parent_position_index'] = parent_position.index
     sources = discovered['sources']
     tracing = TracingRun(context.settings.langfuse_public_key, context.settings.langfuse_secret_key,
         context.settings.langfuse_base_url, context.settings.langfuse_environment, audit_run_id=str(record["id"]),
@@ -288,7 +290,7 @@ def check(context, record, index, payload, actor, *, automatic=False):
 
 def validate_saved(context, record, index, review_id, actor):
     """Append local validation of a frozen answer; never calls a provider."""
-    from normative_local_checks import apply_local_checks, is_layer_threshold_claim
+    from normative_local_checks import apply_local_checks, is_layer_threshold_claim, LOCAL_RULES_VERSION
     started = time.monotonic()
     row = context.repository.normative_review(record["id"], index, UUID(review_id))
     data = row["payload"]
@@ -331,6 +333,19 @@ def validate_saved(context, record, index, review_id, actor):
     links = material_links([p.legacy_task() for p in positions.values()])
     relation = dict(parent=links.get(index), children_truncated=sum(v['index'] == index for v in links.values()) > 12, children=[dict(**link, material_index=child)
         for child, link in links.items() if link['index'] == index][:12])
+    if relation['parent']:
+        parent_index = relation['parent']['index']
+        parent = next((v for v in context.repository.normative_reviews(record['id'],parent_index) if v['kind']=='check'), None)
+        if parent:
+            if parent['payload']['position_check'].get('local_rules_version',0) < LOCAL_RULES_VERSION:
+                try:
+                    parent = validate_saved(context,record,parent_index,parent['id'],actor)
+                except ValueError:
+                    # Another worker may have upgraded the parent concurrently.
+                    parent = next((v for v in context.repository.normative_reviews(record['id'],parent_index) if v['kind']=='check'), None)
+            if parent and parent['payload'].get('kb') == data.get('kb') and parent['payload']['position_key'] == service.position_key(positions[parent_index]):
+                from normative_parameters import inherit_work_evidence
+                derived = inherit_work_evidence(derived,parent['payload']['position_check'],parent_index)
     if derived.get('local_work_basis') and not relation['parent']:
         from audit_predicates import technical_specs
         specs = {s.claim_id: s for s in technical_specs('', position.comment, '', [], '')}
@@ -358,11 +373,12 @@ def validate_saved(context, record, index, review_id, actor):
     enriched = enrich(position, derived, positions, relation)
     changed = changed or enriched != derived
     derived = enriched
-    if derived.get('local_work_basis'):
+    if derived.get('local_work_basis') and not relation['parent']:
         proof = next(v for v in derived['items'] if v['topic'] == 'Основание работы подтверждено')
         derived['summary'] = proof['explanation']
         derived['state'] = ('confirmed' if all(v['state'] == 'confirmed' or v.get('required') is False for v in derived['items'])
             and all(c['state'] == 'confirmed' or c.get('required') is False for c in derived['parameter_cards']) else 'needs_facts')
+    derived['local_rules_version'] = LOCAL_RULES_VERSION
     changed = changed or derived != data['position_check']
     if not changed:
         return row

@@ -110,8 +110,11 @@ class PositionCheckTests(unittest.TestCase):
             assert data["kind"] == "check"
             check = data["payload"]["position_check"]
             assert len(calls) == 1
-            assert check["telemetry"]["requests"] == 1
-            assert check["telemetry"]["usage"]["total"] == 150
+            assert check["telemetry"]["requests"] == 0  # The versioned local follow-up adds no paid call.
+            raw_id = UUID(check['telemetry']['warnings'][0].rsplit(': ',1)[1].rstrip('.'))
+            raw = repo.normative_review(UUID(self.run),0,raw_id)['payload']['position_check']
+            assert raw['telemetry']['requests'] == 1
+            assert raw['telemetry']['usage']['total'] == 150
             assert check["items"][0]["state"] == "confirmed"
             assert self.client.get(self.base).json()["latest_check"]["id"] == data["id"]
             published = self.client.get(f'/api/v1/audits/{self.run}/rows').json()['rows'][0]

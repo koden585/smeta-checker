@@ -258,3 +258,26 @@ def enrich(position, result, positions, relation):
     output['parameter_cards'] = build_cards(position, output, positions, relation)
     output['parameter_schema_version'] = 1
     return output
+
+
+def inherit_work_evidence(result, parent, index):
+    """Reuse verified work geometry for a linked material, retaining source IDs."""
+    if not parent.get('local_work_basis'):
+        return result
+    output = deepcopy(result)
+    mapping = {s['id']: f'work-{index}:{s["id"]}' for s in parent['sources']}
+    output['sources'] = [s for s in output['sources'] if s['id'] not in mapping.values()]
+    output['sources'] += [{**deepcopy(s), 'id':mapping[s['id']]} for s in parent['sources']]
+    basis = deepcopy(parent['local_work_basis'])
+    for key in ('project_source_ids','normative_source_ids'):
+        basis[key] = [mapping[i] for i in basis[key]]
+    for anchors in basis.get('anchors',{}).values():
+        for anchor in anchors:
+            anchor['source_id'] = mapping[anchor['source_id']]
+    output['local_work_basis'] = basis
+    if parent.get('quantity_composition'):
+        composition = deepcopy(parent['quantity_composition'])
+        composition['source_id'] = mapping[composition['source_id']]
+        composition['parent_position_index'] = index
+        output['quantity_composition'] = composition
+    return output

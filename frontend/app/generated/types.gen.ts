@@ -1200,6 +1200,10 @@ export type NormativePositionCheck = {
      */
     items: Array<NormativePositionCheckItem>;
     /**
+     * Local Rules Version
+     */
+    local_rules_version?: number;
+    /**
      * Local Validation Version
      */
     local_validation_version?: number;
@@ -1869,6 +1873,10 @@ export type QuantityComposition = {
      * Page
      */
     page: number;
+    /**
+     * Parent Position Index
+     */
+    parent_position_index?: number | null;
     /**
      * Rounded Total
      */

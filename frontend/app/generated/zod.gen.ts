@@ -757,6 +757,7 @@ export const zQuantityTerm = z.object({
 export const zQuantityComposition = z.object({
     declared_value: z.string(),
     page: z.int(),
+    parent_position_index: z.int().nullish(),
     rounded_total: z.string(),
     source_id: z.string(),
     state: z.enum(['confirmed', 'possible_mismatch']),
@@ -770,6 +771,7 @@ export const zQuantityComposition = z.object({
  */
 export const zNormativePositionCheck = z.object({
     items: z.array(zNormativePositionCheckItem),
+    local_rules_version: z.int().optional().default(0),
     local_validation_version: z.int().optional().default(0),
     local_work_basis: zNormativeWorkBasis.nullish(),
     parameter_cards: z.array(zNormativeParameterCard).optional(),

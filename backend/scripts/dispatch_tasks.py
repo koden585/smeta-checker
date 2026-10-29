@@ -12,6 +12,10 @@ from storage_blobs import open_blob_store
 from storage_db import open_repository
 
 
+def queue_for_task(name):
+    return {'audit_tasks.audit_position':'llm', 'audit_tasks.normative_position':'normative'}.get(name, 'pdf')
+
+
 def main():
     logging.basicConfig(level=logging.INFO)
     settings = AuditSettings.load()
@@ -26,7 +30,7 @@ def main():
         app.send_task(
             name,
             kwargs=payload,
-            queue="llm" if name == "audit_tasks.audit_position" else "pdf",
+            queue=queue_for_task(name),
         )
 
     while True:

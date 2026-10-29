@@ -82,6 +82,8 @@ def _provenance(position: VorPosition) -> tuple[str, int | None, dict[str, str]]
 
 
 def present_results(context, record) -> list[ResultDTO]:
+    from normative_local_checks import LOCAL_RULES_VERSION
+    context.repository.schedule_local_normative_refresh(record['id'], LOCAL_RULES_VERSION)
     positions = {p.index: p for p in inputs_for_run(context, record)}
     from vor_material_links import material_links
     links = material_links([p.legacy_task() for p in positions.values()])
