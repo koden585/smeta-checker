@@ -41,9 +41,15 @@ def _catalog_chunks(piece, limit=_CATALOG_CHUNK):
     """Split a context piece on table rows / lines, never inside a measurement."""
     piece = piece.strip()
     if re.match(r'<table\b[^>]*\bdata-table=', piece):
-        # Already bounded by select_fragment; retain headers and physical
-        # row/cell provenance as one reproducible fragment.
-        yield piece
+        # A source ID addresses one actual row, not all neighbouring works.
+        # Header and row quotes remain verbatim substrings of the context.
+        header = re.search(r"<thead>.*?</thead>", piece, re.S)
+        if header:
+            yield header.group()
+        body = re.search(r"<tbody>(.*?)</tbody>", piece, re.S)
+        if body:
+            for row in re.finditer(r"<tr\b[^>]*>.*?</tr>", body.group(1), re.S):
+                yield row.group()
         return
     rows = list(re.finditer(r"<tr\b[^>]*>.*?</tr>", piece, re.I | re.S))
     if rows and not (len(rows) == 1 and rows[0].span() == (0, len(piece))):
@@ -198,8 +204,9 @@ def audit_position_hybrid(
                     source_id = f"p{page}q{len(quote_sources) + 1}"
                     locator = {}
                     if text_index.tables is not None and 0 < page <= len(text_index.tables):
-                        from table_context import resolve_fragment
-                        locator = resolve_fragment(text_index.tables[page - 1], quote) or {}
+                        from table_context import resolve_fragment, resolve_row
+                        locator = (resolve_fragment(text_index.tables[page - 1], quote)
+                                   or resolve_row(text_index.tables[page - 1], piece, quote) or {})
                     if not locator and text_index.locators is not None and 0 < page <= len(text_index.locators):
                         matches = [dict(item) for item in text_index.locators[page - 1]
                                    if item.get("text") and item["text"] in quote]

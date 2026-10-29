@@ -99,7 +99,9 @@ def test_structured_context_and_catalog_retain_headers_and_addressed_cells():
     index = PageTextIndex(["plain text that loses column boundaries"], tables=[[table]])
     restored = PageTextIndex.from_snapshot(index.to_snapshot())
     quote = restored.fragment(0, WORK, "", "", "75", 5000)
-    assert list(_catalog_chunks(quote)) == [quote]
+    chunks = list(_catalog_chunks(quote))
+    assert all(chunk in quote for chunk in chunks)
+    assert any('<td>75</td>' in chunk for chunk in chunks)
     locator = resolve_fragment(restored.tables[0], quote)
     value = next(c for c in locator["members"] if c["text"] == "75")
     assert value["column"] == 3 and value["row"] == 1 and value["header_ids"]
@@ -155,7 +157,7 @@ def test_long_table_keeps_complete_addressed_row_within_evidence_limit():
     index = PageTextIndex(["page"], tables=[[grid]])
     quote = index.fragment(0, WORK, "", "", "74", 12000, prefer_volume=True)
     assert len(quote) <= 1200 and resolve_fragment(index.tables[0], quote)
-    assert list(_catalog_chunks(quote)) == [quote]
+    assert all(chunk in quote for chunk in _catalog_chunks(quote))
     fact, state = _bind_quantity_fact([quote], WORK, "м")
     assert state == "bound" and fact.value == 75
 

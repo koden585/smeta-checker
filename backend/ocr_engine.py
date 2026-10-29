@@ -30,7 +30,7 @@ from functools import lru_cache
 
 from PIL import Image
 
-ALGO_VERSION = "ocr-tsv-v2"
+ALGO_VERSION = "ocr-tsv-v3"
 CACHE_FORMAT = "ocr-tsv-v1"
 CACHE_SCHEMA = 2
 ORIENTATIONS = (0, 90, 180, 270)
@@ -144,7 +144,9 @@ def run_tsv(png_bytes, language="rus+eng", psm=OVERVIEW_PSM,
 def parse_tsv(tsv_text):
     """Parse TSV words (level 5); skips empty texts and unparseable rows."""
     words = []
-    reader = csv.DictReader(io.StringIO(tsv_text), delimiter="\t")
+    # Tesseract emits literal text, not CSV-escaped quoted fields. A leading
+    # quotation mark must never consume subsequent words/rows as one field.
+    reader = csv.DictReader(io.StringIO(tsv_text), delimiter="\t", quoting=csv.QUOTE_NONE)
     for row in reader:
         try:
             if (row.get("level") or "").strip() != "5":

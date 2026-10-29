@@ -65,6 +65,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-smeta}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-smeta}
       BLOB_STORE_URL: file:///srv/smeta/.audit_blobs
+      NORMATIVE_PREPARED_CACHE_ROOT: /prepared-cache/pdf
       CELERY_BROKER_URL: redis://redis:6379/0
       AUDIT_API_TOKEN: ${AUDIT_API_TOKEN:?Set AUDIT_API_TOKEN in .env}
       YANDEX_CLOUD_API_KEY: ${YANDEX_CLOUD_API_KEY:-}
@@ -88,6 +89,7 @@ services:
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.05}
     volumes:
       - blobs:/srv/smeta/.audit_blobs
+      - pdfcache:/prepared-cache:ro
     ports:
       - "${API_PORT:-8000}:8000"
     healthcheck:
@@ -203,6 +205,18 @@ services:
       timeout: 5s
       retries: 3
       start_period: 60s
+
+  worker-normative:
+    extends:
+      service: worker-pdf
+    environment:
+      AUDIT_TASK_TIME_LIMIT: "240"
+      AUDIT_TASK_SOFT_TIME_LIMIT: "210"
+      NORMATIVE_KB_ROOT: /knowledge/electrical-norms
+      NORMATIVE_ROAD_KB_ROOT: /knowledge/road-norms
+    command: ["celery", "-A", "audit_tasks:worker", "worker", "-Q", "normative", "-c", "${AUDIT_NORMATIVE_CONCURRENCY:-2}", "--loglevel=INFO", "--max-memory-per-child", "750000", "--max-tasks-per-child", "25", "-n", "normative-worker@%h", "--pidfile", "/tmp/celery-normative.pid"]
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 $(cat /tmp/celery-normative.pid)"]
 
   worker-llm:
     build:

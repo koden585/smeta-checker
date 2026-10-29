@@ -186,7 +186,8 @@ def test_checkpoint_does_not_consume_retry_budget(pipeline):
     assert p.repo.run_status(p.run.id) == "running"
 
 
-def test_resume_keeps_completed_positions_and_requeues_unfinished(pipeline):
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_resume_keeps_completed_positions_and_requeues_unfinished(pipeline, status):
     p = pipeline
     for i, status in enumerate(("done", "running")):
         p.repo.create_position_job(
@@ -196,7 +197,7 @@ def test_resume_keeps_completed_positions_and_requeues_unfinished(pipeline):
             p.repo.finish_position_job(p.run.id, i, "done", result={"status": "OK"})
         else:
             p.repo.claim_position_job(p.run.id, i, worker="old-worker")
-    p.repo.finish_run(p.run.id, "failed")
+    p.repo.finish_run(p.run.id, status)
     p.repo.resume_run(p.run.id)
     jobs = p.repo.list_position_jobs(p.run.id)
     assert jobs[0].status == "done" and jobs[0].result == {"status": "OK"}
@@ -211,6 +212,24 @@ def test_resume_refuses_active_delivery(pipeline):
     enqueue(pipeline)
     with pytest.raises(ValueError, match="lease"):
         pipeline.repo.resume_run(pipeline.run.id)
+
+
+def test_user_resume_is_atomic_and_does_not_restart_an_active_run(pipeline):
+    p = pipeline
+    p.repo.finish_run(p.run.id, "cancelled")
+    p.repo.resume_run(p.run.id, allow_running=False)
+    with pytest.raises(ValueError, match="interrupted"):
+        p.repo.resume_run(p.run.id, allow_running=False)
+    assert len(p.repo.reserve_deliveries()) == 1
+
+
+def test_cancelled_run_keeps_its_state_while_old_execution_is_active(pipeline):
+    p = pipeline
+    enqueue(p)
+    p.repo.finish_run(p.run.id, "cancelled")
+    with pytest.raises(ValueError, match="lease"):
+        p.repo.resume_run(p.run.id, allow_running=False)
+    assert p.repo.run_status(p.run.id) == "cancelled"
 
 
 def test_registered_pipeline_completes_through_durable_deliveries(pipeline):

@@ -5,7 +5,7 @@ store and are referenced by ``blob_key``. History is append-only: reruns add
 rows, re-uploads add versions. Documents are UUID identities; versions carry
 their own source filename and extracted metadata. Run PDF pins are relational
 (``run_pdf_versions``). VOR designations verify against PDF text at audit
-time; no manual binding is stored.
+time; explicit VOR-version bindings are snapshotted in run configuration.
 """
 
 from __future__ import annotations
@@ -33,6 +33,10 @@ from storage_models import (
     RunArtifact,
     RunPdfVersion,
     TaskOutbox,
+    HumanBasis,
+    PositionResultVersion,
+    ReviewArtifact,
+    NormativeReview,
 )
 
 
@@ -167,6 +171,46 @@ class Repository:
                 "DROP TABLE IF EXISTS " + ", ".join(tables) + " CASCADE"
             )
         migrate(self._database_url)
+
+    def list_human_basis(self, project_id, vor_version_id, position_key, pdf_version_ids, *, include_revoked=False):
+        with Session(self._engine) as session:
+            rows = session.scalars(select(HumanBasis).where(
+                HumanBasis.project_id == project_id,
+                HumanBasis.vor_version_id == vor_version_id,
+                HumanBasis.position_key == position_key,
+                HumanBasis.pdf_version_id.in_(pdf_version_ids),
+                True if include_revoked else HumanBasis.revoked_at.is_(None),
+            ).order_by(HumanBasis.created_at, HumanBasis.id)).all()
+            return [{"id": str(row.id), "run_id": str(row.run_id), "position_index": row.position_index,
+                     "pdf_version_id": str(row.pdf_version_id), "actor": row.actor,
+                     "created_at": row.created_at, "revoked_at": row.revoked_at, "revoked_by": row.revoked_by, **row.payload} for row in rows]
+
+    def save_human_basis(self, *, project_id, run_id, position_index, vor_version_id,
+                         pdf_version_id, position_key, fingerprint, payload, actor):
+        import hashlib
+        with Session(self._engine) as session, session.begin():
+            previous = session.scalar(select(HumanBasis).where(HumanBasis.fingerprint == fingerprint))
+            while previous is not None and previous.revoked_at is not None:
+                fingerprint = hashlib.sha256((fingerprint + str(previous.revoked_at)).encode()).hexdigest()
+                previous = session.scalar(select(HumanBasis).where(HumanBasis.fingerprint == fingerprint))
+            session.execute(insert(HumanBasis).values(
+                id=uuid4(), project_id=project_id, run_id=run_id, position_index=position_index,
+                vor_version_id=vor_version_id, pdf_version_id=pdf_version_id,
+                position_key=position_key, fingerprint=fingerprint, payload=payload, actor=actor,
+            ).on_conflict_do_nothing(index_elements=["fingerprint"]))
+            row = session.scalar(select(HumanBasis).where(HumanBasis.fingerprint == fingerprint))
+            return str(row.id)
+
+    def revoke_human_basis(self, basis_id, project_id, vor_version_id, position_key, actor):
+        with Session(self._engine) as session, session.begin():
+            row = session.scalar(select(HumanBasis).where(
+                HumanBasis.id == basis_id, HumanBasis.project_id == project_id,
+                HumanBasis.vor_version_id == vor_version_id, HumanBasis.position_key == position_key,
+            ).with_for_update())
+            if row is None:
+                raise KeyError(str(basis_id))
+            row.revoked_at = datetime.now(timezone.utc)
+            row.revoked_by = actor
 
     def get_or_create_project(self, name: str) -> ProjectRow:
         with Session(self._engine) as session:
@@ -798,6 +842,7 @@ class Repository:
                 session.add(RunPdfVersion(run_id=run.id, source_key=str(source_key),
                                           version_id=pdf_version.id))
             if background:
+                run.config = {**dict(run.config), "normative_after_match": os.environ.get("NORMATIVE_AUTO_ENABLED", "0") == "1"}
                 self._enqueue(session, run.id, "prepare", "audit_tasks.prepare_run", {
                     "run_id": str(run.id), "project": str(config.get("project", "")),
                     "vor_filename": vor.filename, "vor_blob_key": vor.blob_key,
@@ -879,7 +924,7 @@ class Repository:
     def enqueue_task(self, task_name: str, payload: dict[str, Any]) -> None:
         run_id = UUID(str(payload["run_id"]))
         key = {"audit_tasks.prepare_run": "prepare", "audit_tasks.finalize_run": "finalize"}.get(
-            task_name, f"audit:{payload.get('position_index')}")
+            task_name, f"{'normative' if task_name == 'audit_tasks.normative_position' else 'audit'}:{payload.get('position_index')}")
         with Session(self._engine) as session:
             self._enqueue(session, run_id, key, task_name, payload)
             session.commit()
@@ -891,7 +936,7 @@ class Repository:
                 raise KeyError(str(run_id))
             return str(status)
 
-    def resume_run(self, run_id: UUID) -> None:
+    def resume_run(self, run_id: UUID, *, allow_running: bool = True) -> None:
         """Explicitly resume an interrupted audit, preserving completed results.
 
         Operators must stop old workers before adopting a pre-outbox run.
@@ -902,8 +947,9 @@ class Repository:
             run = session.scalar(select(Run).where(Run.id == run_id).with_for_update())
             if run is None:
                 raise KeyError(str(run_id))
-            if run.status not in {"running", "failed"}:
-                raise ValueError("Only running or failed audits can be resumed")
+            allowed = {"failed", "cancelled"} | ({"running"} if allow_running else set())
+            if run.status not in allowed:
+                raise ValueError("Only interrupted audits can be resumed")
             active = session.scalar(select(func.count()).select_from(TaskOutbox).where(
                 TaskOutbox.run_id == run_id, TaskOutbox.status.in_(["running", "dispatched"]),
                 TaskOutbox.lease_until > now,
@@ -945,25 +991,36 @@ class Repository:
         deliveries = []
         with Session(self._engine) as session:
             in_flight = session.scalar(select(func.count()).select_from(TaskOutbox).where(
+                TaskOutbox.task_name != "audit_tasks.normative_position",
                 TaskOutbox.status.in_(["dispatched", "running"]))) or 0
-            rows = session.scalars(select(TaskOutbox).where(
+            normative_in_flight = session.scalar(select(func.count()).select_from(TaskOutbox).where(
+                TaskOutbox.task_name == "audit_tasks.normative_position",
+                TaskOutbox.status.in_(["dispatched", "running"]))) or 0
+            eligible = select(TaskOutbox).where(
                 TaskOutbox.status.in_(["pending", "dispatched", "running"]),
                 TaskOutbox.available_at <= now,
                 or_(TaskOutbox.lease_until.is_(None), TaskOutbox.lease_until < now),
             ).order_by(TaskOutbox.status == "pending", TaskOutbox.available_at)
-                .limit(limit).with_for_update(skip_locked=True)).all()
+            rows = list(session.scalars(eligible.where(TaskOutbox.task_name != "audit_tasks.normative_position")
+                .limit(limit).with_for_update(skip_locked=True)).all())
+            rows += list(session.scalars(eligible.where(TaskOutbox.task_name == "audit_tasks.normative_position")
+                .limit(limit).with_for_update(skip_locked=True)).all())
             for row in rows:
-                if row.status == "pending" and in_flight >= 32:
+                normative = row.task_name == "audit_tasks.normative_position"
+                if row.status == "pending" and (normative_in_flight >= 2 if normative else in_flight >= 32):
                     continue
                 run = session.get(Run, row.run_id)
-                if run is None or run.status != "running":
+                if run is None or run.status not in ({"running", "done"} if normative else {"running"}):
                     row.status = "cancelled"
                     continue
-                if row.attempts >= 3:
-                    self._exhaust_task(session, row, run, "Execution lease expired after 3 attempts")
+                if row.attempts >= (1 if normative else 3):
+                    self._exhaust_task(session, row, run, "Execution lease expired; automatic retry limit reached")
                     continue
                 if row.status == "pending":
-                    in_flight += 1
+                    if normative:
+                        normative_in_flight += 1
+                    else:
+                        in_flight += 1
                 if row.status != "dispatched":
                     row.delivery_token = uuid4()
                 row.status = "dispatched"
@@ -983,7 +1040,8 @@ class Repository:
                                  .with_for_update().execution_options(populate_existing=True))
             if row is None or row.status != "dispatched" or row.delivery_token != token:
                 return False
-            if run is None or run.status != "running":
+            normative = row.task_name == "audit_tasks.normative_position"
+            if run is None or run.status not in ({"running", "done"} if normative else {"running"}):
                 row.status = "cancelled"
                 session.commit()
                 return False
@@ -997,6 +1055,8 @@ class Repository:
     def _exhaust_task(session, row, run, error):
         row.status = "failed"
         row.error = error[:1000]
+        if row.task_name == "audit_tasks.normative_position":
+            return  # An optional second layer never invalidates the matching run.
         run.status = "failed"
         run.finished_at = datetime.now(timezone.utc)
         run.config = {**dict(run.config or {}), "execution_error": error[:1000], "failed_task": row.task_key}
@@ -1009,7 +1069,7 @@ class Repository:
                 return
             row.lease_until = None
             row.error = error[:1000] if error else None
-            if error and row.attempts >= 3:
+            if error and row.attempts >= (1 if row.task_name == "audit_tasks.normative_position" else 3):
                 self._exhaust_task(session, row, session.get(Run, row.run_id), error)
             elif error or continuation:
                 row.status = "pending"
@@ -1060,6 +1120,117 @@ class Repository:
             else:
                 existing.blob_key = blob.key
                 existing.size = blob.size
+            session.commit()
+
+    def result_versions(self, run_id, index, *, limit=20):
+        with Session(self._engine) as session:
+            rows = session.scalars(select(PositionResultVersion).where(PositionResultVersion.run_id == run_id, PositionResultVersion.position_index == index).order_by(PositionResultVersion.created_at.desc(), PositionResultVersion.id.desc()).limit(limit)).all()
+            return [dict(id=str(r.id), created_at=r.created_at, result=dict(r.result)) for r in rows]
+
+    def save_review_artifact(self, run_id, index, kind, payload, actor):
+        import hashlib
+        import json
+        fingerprint = hashlib.sha256(json.dumps([str(run_id), index, kind, payload, actor], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        with Session(self._engine) as session:
+            statement = insert(ReviewArtifact).values(id=uuid4(), run_id=run_id, position_index=index, kind=kind, payload=payload, actor=actor, fingerprint=fingerprint).on_conflict_do_nothing(index_elements=[ReviewArtifact.fingerprint])
+            session.execute(statement)
+            session.commit()
+            row = session.scalar(select(ReviewArtifact).where(ReviewArtifact.fingerprint == fingerprint))
+            return dict(id=str(row.id), kind=row.kind, actor=row.actor, created_at=row.created_at, **row.payload)
+
+    def cached_normative_page(self, run_id, key, build):
+        """Share frozen page extraction between positions; serialize only this page."""
+        import hashlib
+        fingerprint = hashlib.sha256(f"normative-page:{run_id}:{key}".encode()).hexdigest()
+        with Session(self._engine) as session:
+            session.execute(select(func.pg_advisory_xact_lock(int(fingerprint[:15], 16))))
+            row = session.scalar(select(ReviewArtifact).where(ReviewArtifact.fingerprint == fingerprint))
+            if row:
+                return dict(row.payload)
+            payload = build()
+            if payload.get("origin") != "ocr_failed":
+                session.add(ReviewArtifact(id=uuid4(), run_id=run_id, position_index=-1, kind="normative_page",
+                    fingerprint=fingerprint, actor="normative-page-cache", payload=payload))
+            session.commit()
+            return payload
+
+    def normative_stage(self, run_id, index):
+        with Session(self._engine) as session:
+            row = session.scalar(select(TaskOutbox).where(TaskOutbox.run_id == run_id,
+                TaskOutbox.task_key == f"normative:{index}"))
+            if not row:
+                return None
+            return dict(status=row.status, attempts=row.attempts,
+                message="Нормативный этап прерван; автоматический платный повтор отключён." if row.status == "failed" else "")
+
+    def normative_validation_context(self, run_id):
+        """Batch-read latest validation fields, without full OCR/source snapshots."""
+        with Session(self._engine) as session:
+            result = {r.payload['position_index']: {'stage': r.status}
+                for r in session.scalars(select(TaskOutbox).where(
+                    TaskOutbox.run_id == run_id, TaskOutbox.task_name == 'audit_tasks.normative_position'))
+                if type(r.payload.get('position_index')) is int and r.payload['position_index'] >= 0}
+            rows = session.execute(select(NormativeReview.position_index,
+                NormativeReview.payload['position_key'].as_string(),
+                NormativeReview.payload['position_check']['items'],
+                NormativeReview.payload['position_check']['summary'].as_string(),
+                NormativeReview.payload['position_check']['parameter_cards'],
+                NormativeReview.payload['position_check']['parameter_schema_version']).where(
+                    NormativeReview.run_id == run_id, NormativeReview.kind == 'check')
+                .distinct(NormativeReview.position_index)
+                .order_by(NormativeReview.position_index, NormativeReview.created_at.desc(), NormativeReview.id.desc()))
+            for index, key, items, summary, cards, schema in rows:
+                result.setdefault(index, {})['review'] = dict(position_key=key, items=items or [], summary=summary or '',
+                    parameter_cards=cards or [], parameter_schema_version=schema or 0)
+            return result
+
+    def review_artifacts(self, run_id, index):
+        with Session(self._engine) as session:
+            rows = session.scalars(select(ReviewArtifact).where(ReviewArtifact.run_id == run_id, ReviewArtifact.position_index == index).order_by(ReviewArtifact.created_at.desc(), ReviewArtifact.id.desc()).limit(30)).all()
+            return [dict(id=str(r.id), kind=r.kind, actor=r.actor, created_at=r.created_at, **r.payload) for r in rows]
+
+    def load_pdf_bindings(self, version_id: UUID) -> dict[str, str]:
+        with Session(self._engine) as session:
+            row = session.get(DocumentVersion, version_id)
+            if row is None:
+                raise KeyError(str(version_id))
+            return dict(row.pdf_bindings or {})
+
+    def save_normative_review(self, run_id, index, kind, payload, actor):
+        import hashlib
+        import json
+        fingerprint = hashlib.sha256(json.dumps([str(run_id), index, kind, payload, actor], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        with Session(self._engine) as session:
+            session.execute(insert(NormativeReview).values(id=uuid4(), run_id=run_id, position_index=index,
+                kind=kind, payload=payload, actor=actor, fingerprint=fingerprint)
+                .on_conflict_do_nothing(index_elements=[NormativeReview.fingerprint]))
+            session.commit()
+            row = session.scalar(select(NormativeReview).where(NormativeReview.fingerprint == fingerprint))
+            return dict(id=str(row.id), kind=row.kind, actor=row.actor, created_at=row.created_at, payload=dict(row.payload))
+
+    def normative_reviews(self, run_id, index):
+        with Session(self._engine) as session:
+            rows = [session.scalar(select(NormativeReview).where(NormativeReview.run_id == run_id,
+                NormativeReview.position_index == index, NormativeReview.kind == kind)
+                .order_by(NormativeReview.created_at.desc(), NormativeReview.id.desc()).limit(1))
+                for kind in ("search", "selection", "check")]
+            rows = [r for r in rows if r is not None]
+            return [dict(id=str(r.id), kind=r.kind, actor=r.actor, created_at=r.created_at, payload=dict(r.payload)) for r in rows]
+
+    def normative_review(self, run_id, index, review_id):
+        with Session(self._engine) as session:
+            row = session.scalar(select(NormativeReview).where(NormativeReview.id == review_id,
+                NormativeReview.run_id == run_id, NormativeReview.position_index == index))
+            if row is None:
+                raise KeyError("Нормативный поиск не найден для этой позиции")
+            return dict(id=str(row.id), kind=row.kind, actor=row.actor, created_at=row.created_at, payload=dict(row.payload))
+
+    def save_pdf_bindings(self, version_id: UUID, bindings: dict[str, str]) -> None:
+        with Session(self._engine) as session:
+            row = session.get(DocumentVersion, version_id)
+            if row is None:
+                raise KeyError(str(version_id))
+            row.pdf_bindings = dict(bindings)
             session.commit()
 
     def finish_run(
@@ -1188,6 +1359,11 @@ class Repository:
             if result is not None:
                 job.result = dict(result)
             job.error = error
+            run = session.get(Run, run_id)
+            if status == "done" and run and run.config.get("normative_after_match"):
+                self._enqueue(session, run_id, f"normative:{position_index}", "audit_tasks.normative_position", {
+                    "run_id": str(run_id), "position_index": position_index,
+                })
             session.commit()
 
     def requeue_position_job(
@@ -1310,6 +1486,12 @@ class Repository:
                     counts[row["job_status"]] = counts.get(row["job_status"], 0) + row["job_count"]
                     if row["queue"] == "pdf":
                         record["pdf_jobs"] += row["job_count"]
+            if records:
+                for run_key, task_status, count in session.execute(select(
+                    TaskOutbox.run_id, TaskOutbox.status, func.count()).where(
+                    TaskOutbox.run_id.in_(list(records)), TaskOutbox.task_name == "audit_tasks.normative_position"
+                ).group_by(TaskOutbox.run_id, TaskOutbox.status)):
+                    records[run_key].setdefault("normative_counts", {})[task_status] = count
             return list(records.values())
 
     def list_runs(self, project_id: UUID) -> list[RunRow]:

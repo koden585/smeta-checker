@@ -51,6 +51,7 @@ logger = get_logger(__name__)
 
 PDF_QUEUE = "pdf"
 LLM_QUEUE = "llm"
+NORMATIVE_QUEUE = "normative"
 
 
 class PreparationYield(BaseException):
@@ -62,6 +63,7 @@ DEFAULT_TASK_ROUTES = {
     "audit_tasks.audit_position": {"queue": LLM_QUEUE},
     "audit_tasks.finalize_run": {"queue": PDF_QUEUE},
     "audit_tasks.recover_run": {"queue": PDF_QUEUE},
+    "audit_tasks.normative_position": {"queue": NORMATIVE_QUEUE},
 }
 
 
@@ -145,11 +147,12 @@ def _prepare_one_position(
     meta: Any,
     pool_keys: list[str],
     pdf_versions: dict[str, Any],
+    bindings=None,
 ) -> dict[str, Any]:
     """Bind one position and claim its job row; pure except the claim."""
     refs = list(position.explicit_refs)
     pdfs, _, _, bind_error = resolve_position_pdfs(
-        refs, pool_keys, meta.get("basis_code", "")
+        refs, pool_keys, meta.get("basis_code", ""), bindings
     )
     pdf_name = pdfs[0] if not bind_error and pdfs else ""
     payload = _task_payload(position, pdf_name, [], 0)
@@ -328,6 +331,7 @@ def prepare_run(
                     meta=meta,
                     pool_keys=pool_keys,
                     pdf_versions=pdf_versions,
+                    bindings=previous_config.get("pdf_bindings", {}),
                 )
                 if prep.get("skipped"):
                     queued.append(index)
@@ -1220,6 +1224,20 @@ def register_tasks(app):  # type: ignore[no-untyped-def]
         return execute(context, run_id, delivery_id, delivery_token, operation, "audit_tasks.audit_position", {
             "run_id": str(run_id), "position_index": int(position_index), "request_id": request_id,
         })
+
+    @app.task(name="audit_tasks.normative_position", bind=True)
+    def _normative(self, run_id, position_index, delivery_id="", delivery_token=""):
+        from normative_background import review_position
+        context = open_task_context()
+        # No finalization chain: matching may finish while this independent layer runs.
+        try:
+            return execute_delivery(context, delivery_id, delivery_token,
+                lambda: review_position(context, UUID(str(run_id)), int(position_index)))
+        finally:
+            try:
+                publish_pending(context.repository, lambda name, payload: app.send_task(name, kwargs=payload))
+            except Exception:
+                logger.warning("normative delivery deferred to relay", exc_info=True)
 
     @app.task(name="audit_tasks.finalize_run", bind=True)
     def _finalize(self, run_id, request_id="", delivery_id="", delivery_token=""):  # type: ignore[no-untyped-def]

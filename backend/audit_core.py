@@ -1607,7 +1607,16 @@ def parse_audit_response(raw, context, comment_required=True, *, expected_volume
         checks.append(geometry)
     comment_items = grouped.get("attribute", []) + grouped.get("comment", [])
     if comment_required:
-        if comment_items:
+        mapped_comments = [check for check in checks if ":comment:" in check.claim_id]
+        if mapped_comments:
+            required_comments = [check for check in mapped_comments if check.required]
+            closed = all(check.state in {ClaimState.CONFIRMED, ClaimState.NOT_APPLICABLE}
+                         for check in required_comments)
+            state = ClaimState.CONFIRMED if closed else ClaimState.REVIEW_REQUIRED
+            checks.append(ClaimCheck(claim_id="comment", kind=ClaimKind.ATTRIBUTE,
+                                     state=state, reasons=["comment_predicates_evaluated"],
+                                     required=False))
+        elif comment_items:
             checks.append(ClaimCheck(claim_id="comment", kind=ClaimKind.ATTRIBUTE,
                                      state=ClaimState.CONFIRMED,
                                      reasons=["comment_cited"], required=False))
