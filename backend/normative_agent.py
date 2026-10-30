@@ -147,6 +147,10 @@ class EvidenceTools:
             self.index = latest
             self.snapshot_refs.insert(0, refreshed)
         prepared_tables: Any = self.index.tables
+        if record['config'].get('document_preparation_version') and (
+            self.index.pending_ocr or not self.index.metadata.get('preparation_complete')
+        ):
+            raise ValueError('Normative checks require a fully prepared document')
         self.coverage = dict(state='prepared', pages=len(self.index.texts),
             pending_ocr_pages=[p+1 for p in self.index.pending_ocr],
             error_pages=[int(p)+1 for p in self.index.errors],
