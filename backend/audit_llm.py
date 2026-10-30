@@ -123,7 +123,8 @@ def chat_generation_options(base_url, model_name):
     """Explicit reasoning profiles for bounded JSON audit tasks."""
     host = (urlparse(base_url).hostname or '').lower()
     if host == 'routerai.ru' and model_name.startswith('deepseek/'):
-        return {'reasoning_effort': 'low', 'response_format': {'type': 'json_object'}}
+        # The Decart endpoint advertises `reasoning`, not the flat alias.
+        return {'extra_body': {'reasoning': {'effort': 'low'}}, 'response_format': {'type': 'json_object'}}
     if host == 'anymodel.org' and model_name == 'ds/deepseek-v4-flash':
         return {'reasoning_effort': 'none', 'response_format': {'type': 'json_object'}}
     return {}

@@ -31,7 +31,8 @@ def test_routerai_deepseek_preserves_reasoning_and_reserves_larger_completion_bu
     result = _ask(client, credentials, '', {}, Plan, Trace(), 'test', stats)
     assert result.queries == ['test']
     assert create.call_args.kwargs['max_tokens'] == 8192
-    assert create.call_args.kwargs['reasoning_effort'] == 'low'
+    assert create.call_args.kwargs['extra_body']['reasoning']['effort'] == 'low'
+    assert 'reasoning_effort' not in create.call_args.kwargs
     assert stats['usage']['reasoning'] == 7000
 
 
@@ -53,10 +54,20 @@ def test_reasoning_profile_does_not_apply_deepseek_parameters_to_other_models():
 def test_source_navigation_does_not_spend_final_validation_reasoning_budget():
     client, credentials, stats, create = invoke('{"interpretation":"read table","queries":["test"]}')
     _ask(client, credentials, '', {}, Plan, Trace(), 'normative-evidence-plan', stats)
-    assert create.call_args.kwargs['reasoning_effort']=='none'
+    assert create.call_args.kwargs['extra_body']['reasoning']['effort']=='none'
 
 
 def test_evidence_validation_returns_json_without_unbounded_hidden_reasoning():
     client, credentials, stats, create = invoke('{"interpretation":"check","queries":["test"]}')
     _ask(client, credentials, '', {}, Plan, Trace(), 'normative-evidence-1', stats)
-    assert create.call_args.kwargs['reasoning_effort']=='none'
+    assert create.call_args.kwargs['extra_body']['reasoning']['effort']=='none'
+
+
+def test_pinned_decart_model_is_passed_verbatim_without_duplicate_provider_routing():
+    client, credentials, stats, create = invoke('{"interpretation":"check","queries":["test"]}')
+    credentials.model_name='deepseek/deepseek-v4.1-flash-1017@provider=decart&allow_fallbacks=false'
+    _ask(client, credentials, '', {}, Plan, Trace(), 'normative-evidence-1', stats)
+    kwargs=create.call_args.kwargs
+    assert kwargs['model']==credentials.model_name
+    assert kwargs['extra_body']=={'reasoning':{'effort':'none'}}
+    assert 'provider' not in kwargs

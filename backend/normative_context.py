@@ -63,6 +63,9 @@ def _ask(client, credentials, instructions, data, schema, trace, stage, stats):
             # completion budget before closing JSON even for a navigation step.
             if stage.startswith('normative-evidence-') and options.get('reasoning_effort') == 'low':
                 options['reasoning_effort'] = 'none'
+            reasoning = options.get('extra_body', {}).get('reasoning', {})
+            if stage.startswith('normative-evidence-') and reasoning.get('effort') == 'low':
+                reasoning['effort'] = 'none'
             response = client.chat.completions.create(model=credentials.model_name, messages=messages,
                 temperature=0.1, max_tokens=max_tokens, **options)
             text = _chat_completion_text(response)
