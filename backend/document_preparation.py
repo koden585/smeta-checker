@@ -51,11 +51,13 @@ def prepare_documents(
 ):
     import pymupdf
     from pdf_text import PDFTextSource
+    from analysis_replay import enabled,get,prepared_identity,store_prepared,digest
 
     record = context.repository.load_run(run_id, include_results=False)
     config = record.get("config") or {}
     documents: dict[str, dict[str, Any]] = dict(config.get("prepared_documents") or {})
     snapshots = {}
+    reused_documents = []
     total = 0
     for name in pdf_files:
         checkpoint()
@@ -69,6 +71,12 @@ def prepare_documents(
             state = dict(
                 version=VERSION, version_id=str(pdf_versions[name].id), pages=[]
             )
+        if enabled(context) and not state.get('snapshot'):
+            ident=prepared_identity(record,pdf_files[name],pdf_versions[name].id)
+            cached=get(context,ident)
+            if cached:
+                state=dict(cached['state'],reused_artifact=digest(ident))
+                reused_documents.append(name)
         if not state.get("page_count"):
             with pymupdf.open(stream=bytes(pdf_files[name]), filetype="pdf") as doc:
                 state["page_count"] = len(doc)
@@ -103,6 +111,9 @@ def prepare_documents(
                 or index.metadata.get("document_version_id") != version
             ):
                 raise ValueError("Document snapshot is not fully prepared")
+            if enabled(context):
+                state=store_prepared(context,prepared_identity(record,pdf_files[name],version),state)
+                documents[name]=state
             snapshots[name] = state["snapshot"]
             continue
         native = (
@@ -184,6 +195,9 @@ def prepare_documents(
                 index = assemble_document(native, packed)
                 state["snapshot"] = store_snapshot(context.blob_store, index)
                 state["failed_pages"] = list(index.metadata["failed_pages"])
+                if enabled(context):
+                    state=store_prepared(context,prepared_identity(record,pdf_files[name],version),dict(state,pages=list(pages)))
+                    pages=list(state['pages'])
                 commit()
                 snapshots[name] = state["snapshot"]
     # Every selected PDF has completed before the caller can dispatch positions.
@@ -191,6 +205,8 @@ def prepare_documents(
         run_id,
         {
             "documents_prepared": True,
+            "prepared_documents":documents,
+            "preparation_reused_documents":reused_documents,
             "normative_corpora": {
                 str(pdf_versions[name].id): ref for name, ref in snapshots.items()
             },

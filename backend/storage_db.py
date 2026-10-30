@@ -37,6 +37,7 @@ from storage_models import (
     PositionResultVersion,
     ReviewArtifact,
     NormativeReview,
+    AnalysisArtifact,
 )
 
 
@@ -151,6 +152,41 @@ def _read_source_bytes(source: Any) -> bytes:
 
 
 class Repository:
+    supports_analysis_replay = True
+
+    def analysis_human_revision(self, project_id, vor_version_id, pdf_versions):
+        from analysis_replay import digest
+        with Session(self._engine) as session:
+            rows=session.scalars(select(HumanBasis).where(HumanBasis.project_id==UUID(str(project_id)),
+                HumanBasis.vor_version_id==UUID(str(vor_version_id)),
+                HumanBasis.pdf_version_id.in_([UUID(str(v)) for v in pdf_versions])).order_by(HumanBasis.id)).all()
+            return digest([(str(r.id),r.fingerprint,r.payload,r.revoked_at) for r in rows])
+
+    def analysis_artifact(self, project_id, key):
+        from analysis_replay import digest
+        project_id=UUID(str(project_id))
+        with Session(self._engine) as session:
+            row=session.scalar(select(AnalysisArtifact).where(AnalysisArtifact.project_id==project_id,AnalysisArtifact.key==key))
+            if row is None:
+                return None
+            identity,payload=dict(row.identity),dict(row.payload)
+            if digest(identity)!=key or digest(payload)!=row.sha256:
+                raise ValueError('Reusable analysis artifact hash mismatch')
+            return dict(identity=identity,payload=payload)
+
+    def save_analysis_artifact(self, project_id, identity, payload):
+        from analysis_replay import digest
+        project_id=UUID(str(project_id))
+        key=digest(identity)
+        with Session(self._engine) as session:
+            session.execute(insert(AnalysisArtifact).values(key=key,project_id=project_id,stage=identity['stage'],
+                identity=identity,payload=payload,sha256=digest(payload)).on_conflict_do_nothing(index_elements=['key']))
+            session.commit()
+        saved=self.analysis_artifact(project_id,key)
+        if saved is None or saved['identity']!=identity:
+            raise ValueError('Reusable analysis artifact identity mismatch')
+        return saved['payload']
+
     def __init__(self, database_url: str, blob_store: BlobStore) -> None:
         self._database_url = database_url
         self._engine = create_engine(database_url)

@@ -521,6 +521,14 @@ def audit_position(
         pass
     stored: dict[str, Any] | None = None
     try:
+        from analysis_replay import replay_matching,store_matching,enabled as replay_enabled
+        replay_record=context.repository.load_run(run_id,include_results=False) if replay_enabled(context) else None
+        cached=replay_matching(context,replay_record,job.payload) if replay_record else None
+        if cached is not None:
+            context.repository.save_position_result(run_id,position_index,cached)
+            context.repository.finish_position_job(run_id,position_index,'done',result=cached)
+            _maybe_chain_finalize(context,run_id,dispatch=dispatch,request_id=resolved_request)
+            return {'position_index':position_index,'duplicate':False,'reused':True}
         payload = job.payload
         if payload.get("vor_context"):
             from audit_snapshot import load_json
@@ -752,6 +760,8 @@ def audit_position(
             settings=context.settings,
         )
         stored["corpus_id"] = payload.get("corpus_id", "")
+        if replay_record:
+            stored=store_matching(context,replay_record,job.payload,stored)
         context.repository.save_position_result(run_id, position_index, stored)
         context.repository.finish_position_job(
             run_id, position_index, "done", result=stored

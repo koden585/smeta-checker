@@ -1,5 +1,6 @@
 """Independent bounded normative follow-up; no mutation of matching verdicts."""
 from workspace_models import NormativePositionCheckRequest
+from analysis_replay import DEFAULT_QUESTION
 
 
 def review_position(context, run_id, index, *, local_only=False):
@@ -25,8 +26,6 @@ def review_position(context, run_id, index, *, local_only=False):
     if not any(r["position_index"] == index for r in record["indexed_results"]):
         return {"skipped": "no_matching_result"}
     result = check(context, record, index, NormativePositionCheckRequest(
-        question="Следующий слой после сопоставления ПД и ВОР: проверить нормативное основание, состав работ, "
-        "измеритель, связанные расчётные строки, коэффициенты и условия. Не считать уточнения размеров, "
-        "технологическое разбиение или отсутствие отдельной строки расчётного материала самостоятельной ошибкой."
+        question=DEFAULT_QUESTION
     ), "automatic-after-matching", automatic=True)
     return {"review_id": result["id"]} if result else {"skipped": "insufficient_sources"}

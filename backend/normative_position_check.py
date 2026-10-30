@@ -223,10 +223,14 @@ def project_sources(context, record, position, citations, payload, warnings, *, 
 
 
 def check(context, record, index, payload, actor, *, automatic=False):
+    from analysis_replay import replay_normative,store_normative
+    replayed=replay_normative(context,record,index,payload,actor)
+    if replayed is not None:
+        return replayed
     from normative_layer_reuse import reuse_layer_check
     cached=reuse_layer_check(context,record,index,actor)
     if cached is not None:
-        return cached
+        return store_normative(context,record,index,payload,cached)
     started = time.monotonic()
     position, facts, origins, project_citations = service.project_context(context, record, index)
     from vor_material_links import material_links
@@ -480,10 +484,10 @@ def check(context, record, index, payload, actor, *, automatic=False):
     saved = context.repository.save_normative_review(record["id"], index, "check", snapshot, actor)
     # New agent answers are validated by citation/card validators above. Do not
     # rewrite them using legacy road-specific saved-answer repair rules.
-    return saved
+    return store_normative(context,record,index,payload,saved)
 
 
-def validate_agent_saved(context, record, index, row, actor):
+def validate_agent_saved(context, record, index, row, actor, *, register=True):
     """Re-run general guards on a frozen agent answer; no retrieval, OCR or LLM.
 
     Older road-specific answer repair rules are intentionally excluded. A new
@@ -522,7 +526,11 @@ def validate_agent_saved(context, record, index, row, actor):
         elapsed_seconds=round(time.monotonic()-started,3),trace_id=None,trace_url=None)
     data['position_check']=result
     data['status']='candidate' if result['state']=='confirmed' else result['state']
-    return context.repository.save_normative_review(record['id'],index,'check',data,actor)
+    saved=context.repository.save_normative_review(record['id'],index,'check',data,actor)
+    if register:
+        from analysis_replay import register_validated
+        return register_validated(context,record,index,saved)
+    return saved
 
 
 def validate_saved(context, record, index, review_id, actor):
