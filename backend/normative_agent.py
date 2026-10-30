@@ -151,12 +151,14 @@ class EvidenceTools:
             self.index.pending_ocr or not self.index.metadata.get('preparation_complete')
         ):
             raise ValueError('Normative checks require a fully prepared document')
+        catalogue = [dict(page=p+1, table_id=t['table_id'], rows=t['row_count'], columns=t['col_count'],
+            total_rows=sorted({c['row'] for c in t['cells'] if c['text'].strip().casefold().rstrip(':') in {'всего','итог','итого'}}))
+            for p, tables in enumerate(prepared_tables or []) for t in tables]
         self.coverage = dict(state='prepared', pages=len(self.index.texts),
             pending_ocr_pages=[p+1 for p in self.index.pending_ocr],
             error_pages=[int(p)+1 for p in self.index.errors],
-            available_tables=[dict(page=p+1, table_id=t['table_id'], rows=t['row_count'], columns=t['col_count'],
-                total_rows=sorted({c['row'] for c in t['cells'] if c['text'].strip().casefold().rstrip(':') in {'всего','итог','итого'}}))
-                for p, tables in enumerate(prepared_tables or []) for t in tables][:80])
+            available_tables=catalogue[:80], available_table_count=len(catalogue),
+            table_catalog_truncated=len(catalogue)>80)
 
     def _add(self, source):
         existing = next((s for s in self.sources if s['id'] == source['id']), None)
@@ -172,10 +174,13 @@ class EvidenceTools:
             return []
         from normative_table_candidates import grouped_totals
         ranked = []
-        for entry in self.coverage.get('available_tables', []):
-            for table in self._tables(entry['page']):
+        # Coverage is a bounded MODEL preview, not an internal search index.
+        # Drawing frames can fill that preview before quantity schedules at
+        # the end of a large PDF. Search every prepared table exactly once.
+        for page, tables in enumerate(self.index.tables or []):
+            for table in tables:
                 for candidate in grouped_totals(table, query, unit=unit, height_cm=height_cm):
-                    ranked.append(dict(**candidate, page=entry['page'], table_id=table['table_id']))
+                    ranked.append(dict(**candidate, page=page+1, table_id=table['table_id']))
         ranked.sort(key=lambda c: -c['score'])
         for candidate in ranked[:4]:
             result = self.execute(EvidenceRequest(tool='read_table', page=candidate['page'],

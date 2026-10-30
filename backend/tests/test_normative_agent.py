@@ -32,6 +32,21 @@ def sid(cell):
     return cell_source_id('pinned-version', 1, 't1', cell)
 
 
+def test_quantity_search_reaches_late_table_beyond_bounded_model_catalogue():
+    from test_normative_table_candidates import table
+    tools = toolkit()
+    frames = [dict(table_id=f'frame{i}',row_count=1,col_count=1,cells=[])
+              for i in range(80)]
+    late = table()
+    tools.index.tables = (frames, [late], [])
+    tools.coverage['available_tables'] = [dict(page=1,table_id=t['table_id']) for t in frames]
+    candidates = tools.quantity_candidates('Материал Б',unit='м2',height_cm='18')
+    assert len(candidates)==1
+    assert candidates[0]['page']==2
+    assert candidates[0]['calculated_sum']=='22'
+    assert candidates[0]['operand_source_ids']
+
+
 def test_fact_graph_cannot_overflow_model_prompt():
     inputs = dict(matching_checks=[dict(claim_id='quantity', state='review_required', facts=[{'raw': 'x'*1000000}])])
     result = compact(inputs, [dict(id='p1', kind='project', text='x'*20000)])
