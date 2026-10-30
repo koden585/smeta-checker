@@ -1,5 +1,6 @@
 """Derive the published verdict after normative validation; raw matching is immutable."""
 from copy import deepcopy
+import re
 
 PENDING = 'Проверяется по нормативам'
 FIX = 'Обнаружено расхождение'
@@ -10,6 +11,32 @@ def source_supported(item):
     claims = item.get('claim_ids') or []
     project_only = bool(claims) and all(c in {'quantity','unit','presence'} or c.startswith('geometry:') for c in claims)
     return bool(claims and item.get('project_source_ids') and (project_only or item.get('normative_source_ids')))
+
+
+def absence_claim(item):
+    """A negative search result is not a positive incompatibility proof."""
+    return bool(item.get('state')=='possible_mismatch' and re.search(
+        r'не\s+(?:найден|обнаружен|указан|подтвержд)|нет\s+подтвержден|отсутств\w*[^.!?]{0,90}(?:ПД|проект|документ)',
+        item.get('explanation',''),re.I))
+
+
+def readable_review(review):
+    """Ephemeral model handles belong in traces, not the engineer's prose."""
+    result=deepcopy(review)
+    labels={f's{i}':('ПД' if s['kind']=='project' else s.get('label','Норматив'))+
+        (f", стр. {s['page']}" if s.get('page') else '') for i,s in enumerate(result.get('sources',[]))}
+    def readable(text):
+        return re.sub(r'(?<!\w)s\d+(?!\w)',lambda m: labels.get(m[0],m[0]),text)
+    result['summary']=readable(result.get('summary',''))
+    rejected=False
+    for item in result.get('items',[]):
+        item['explanation']=readable(item.get('explanation',''))
+        if absence_claim(item):
+            item['state']='needs_facts'
+            rejected=True
+    if rejected and result.get('state')=='possible_mismatch' and not any(i.get('state')=='possible_mismatch' for i in result.get('items',[])):
+        result['state']='needs_facts'
+    return result
 
 
 def verified_quantity(review, position_key, unit, *, derived=False):
@@ -47,6 +74,8 @@ def publish(report, stored, position_key, validation, *, enabled=False, derived=
     review = (validation or {}).get('review')
     if review and review.get('position_key') != position_key:
         review = None
+    if review:
+        review=readable_review(review)
     if review and stage in {'pending', 'dispatched', 'running'}:
         from normative_local_checks import LOCAL_RULES_VERSION
         if review.get('local_rules_version', 0) < LOCAL_RULES_VERSION:
@@ -71,7 +100,7 @@ def publish(report, stored, position_key, validation, *, enabled=False, derived=
         output['Что не так'] = ' '.join(arithmetic_errors)
         return output
     supported = [v for v in items if source_supported(v)]
-    contradictions = [v for v in supported if v.get('state') == 'possible_mismatch']
+    contradictions = [v for v in supported if v.get('state') == 'possible_mismatch' and not absence_claim(v)]
     confirmed = {claim for v in supported if v.get('state') == 'confirmed' for claim in v['claim_ids']}
     needed = required_claims(stored, report['Статус аудита'], derived)
     cards = review.get('parameter_cards') or []
@@ -130,3 +159,19 @@ def apply_parent_verdicts(rows, *, enabled, running):
             row.queue, row.report_status = 'review', REVIEW
             row.problem = f"Расчёт связан с работой №{row.related_work['number']}, но её основание ещё не подтверждено."
     return rows
+
+
+def finalize_state(result, stored, position_key, *, derived=False):
+    """Persist the same validated status that the row publisher computes.
+
+    Previously every new agent result was stored as needs_facts even when all
+    required claims and numeric cards passed. This uses the existing guards;
+    it cannot promote an unsupported model assertion.
+    """
+    output = deepcopy(result)
+    report = publish({'Статус аудита':'ОК' if stored.get('status')=='ОК' else REVIEW},
+        stored,position_key,{'stage':'done','review':dict(result,position_key=position_key)},
+        enabled=True,derived=derived)
+    output['state'] = 'confirmed' if report['Статус аудита']=='ОК' else 'possible_mismatch' if report['Статус аудита']==FIX else 'needs_facts'
+    output['requires_engineer_review'] = output['state']!='confirmed'
+    return output

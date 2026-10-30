@@ -8,6 +8,17 @@ def sources():
         dict(id='n',kind='normative',origin='native',text='Работа. Измеритель: 1000 м2')]
 
 
+def test_thickness_adjustment_uses_literal_base_step_and_requested_thickness():
+    from normative_parameter_anchors import thickness_adjustments
+    items=[dict(id='base',kind='normative',label='01-02-003-01',text='Основание толщиной 16 см.'),
+        dict(id='step',kind='normative',label='01-02-003-02',text='На каждый 1 см изменения толщины слоя.')]
+    result=thickness_adjustments('Устройство слоя h=11 см',items)
+    assert result[0]['signed_steps']=='-5'
+    assert result[0]['base_source_id']=='base' and not result[0]['scope_verified']
+    items[1]['label']='99-99-999-01'
+    assert thickness_adjustments('Устройство слоя h=11 см',items)==[]
+
+
 def test_native_layer_anchors_preserve_exact_text_and_layer_identity():
     candidates=parameter_candidates(sources())
     lower=next(c for c in candidates if c['parameter']=='thickness' and c['value']=='24')

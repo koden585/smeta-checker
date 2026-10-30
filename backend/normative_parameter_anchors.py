@@ -4,6 +4,44 @@ import re
 from normative_parameters import measure, quoted, construction_conflict
 
 
+def thickness_adjustments(work, sources):
+    """Arithmetic candidates from literal norm titles, not applicability proofs."""
+    target=re.search(r'\bh\s*=\s*(\d+(?:[.,]\d+)?)\s*(мм|см|м)\b',work,re.I)
+    if not target:
+        return []
+    target_measure=measure(target[1],target[2])
+    if not target_measure:
+        return []
+    target_cm=target_measure[1]*100
+    norms=[s for s in sources if s['kind']=='normative' and 'ресурсы' not in s.get('label','')]
+    output=[]
+    for base in norms:
+        code=re.search(r'\b(\d{2}-\d{2}-\d{3})-\d{2,3}\b',base.get('label',''))
+        match=re.search(r'толщин\w*\s+(\d+(?:[.,]\d+)?)\s*(мм|см|м)\b',base['text'],re.I)
+        if not code or not match:
+            continue
+        amount=measure(match[1],match[2])
+        if not amount:
+            continue
+        for step in norms:
+            if code[1] not in step.get('label',''):
+                continue
+            increment=re.search(r'на\s+кажд\w*\s+(\d+(?:[.,]\d+)?)\s*(мм|см|м)\s+изменени\w*\s+толщин',step['text'],re.I)
+            if not increment:
+                continue
+            unit=measure(increment[1],increment[2])
+            if not unit or unit[1]<=0:
+                continue
+            count=(target_cm/100-amount[1])/unit[1]
+            if count!=count.to_integral_value():
+                continue
+            output.append(dict(base_source_id=base['id'],adjustment_source_id=step['id'],
+                base_quote=match[0],adjustment_quote=increment[0],target_cm=str(target_cm),
+                base_cm=str(amount[1]*100),step_cm=str(unit[1]*100),signed_steps=str(count),
+                scope_verified=False,explanation='Только арифметика: применимость нормы и возможность уменьшения/увеличения проверь по пункту техчасти.'))
+    return output[:12]
+
+
 def parameter_candidates(sources):
     result = []
     for source in sources:

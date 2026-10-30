@@ -163,3 +163,19 @@ def test_material_inherits_verified_geometry_with_unambiguous_source_names():
     assert value['quantity_composition']['source_id']=='work-0:p1'
     assert inherit_work_evidence(value,parent,0)==value
     assert parent==original and len(child['sources'])==1
+
+
+def test_formula_literals_are_not_all_normative_coefficients():
+    p=position(volume='0.4',unit='т')
+    p.work_name='Обработка основания'
+    p.formula='500*0.8/1000'
+    p.comment=''
+    cards=build_cards(p,dict(sources=[],parameter_proposals=[]),{0:p},{})
+    literals=[c for c in cards if c['id'].startswith('factor:')]
+    assert len(literals)==3
+    assert all(c['role']!='coefficient' and c['state']=='needs_facts' for c in literals)
+    assert next(c for c in literals if c['declared_value']=='1000')['role']=='calculation'
+    p.formula='0.4*1.26'
+    p.comment='Купл-1,26'
+    cards=build_cards(p,dict(sources=[],parameter_proposals=[]),{0:p},{})
+    assert next(c for c in cards if c['id'].startswith('factor:'))['role']=='coefficient'

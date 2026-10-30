@@ -112,7 +112,17 @@ def build_cards(position, result, positions, relation):
         if c['role'] == 'coefficient':
             exact = [p for p in matches if number(p['value']) == number(c['declared_value'])]
             matches = exact or matches
-        distinct = {(p['source_id'], p['value'], p['unit']) for p in matches}
+        # Several reads of one physical page can expose the SAME literal
+        # parameter. Duplicate excerpts are not conflicting engineering facts.
+        if kind in {'quantity','thickness'}:
+            valid = [p for p in matches if p.get('scope_state')=='verified'
+                and not construction_conflict(p.get('scope_quote',''),work_scope,group['height'] if group else None)
+                and quoted(p['value'],p['quote'],sources[p['source_id']]['text'])]
+            if valid:
+                matches = valid
+        distinct = {(sources[p['source_id']].get('version_id',p['source_id']),
+            sources[p['source_id']].get('page',p['source_id']), measure(p['value'],p['unit']),
+            clean(p.get('scope_quote',''))) for p in matches}
         if len(distinct) != 1:
             c['reason'] = 'Нужен однозначный источник параметра.' if matches else c['reason']
             if not matches and kind=='coefficient':
@@ -255,12 +265,35 @@ def build_cards(position, result, positions, relation):
                 excluded.add(depth[1])
         factors = list(dict.fromkeys(str(d['value']) for d in actual.get('dependencies') or []
             if d.get('origin') == 'formula_literal' and number(d.get('value')) not in excluded))
+        literal_values={number(d.get('value')) for d in actual.get('dependencies') or [] if d.get('origin')=='formula_literal'}
+        owner_measure,work_measure=measure('1',owner.unit),measure('1',work.unit)
+        dimensional_factor=bool(owner_measure and work_measure and owner_measure[0]=='area' and work_measure[0]=='volume'
+            and height and (depth:=measure(height[1],height[2].lower()))
+            and {number(owner.volume),depth[1]}<=literal_values and re.fullmatch(r'[()\d.,*\s=]+',expression))
         if len(factors) > 8:
             cards.append(card(f'factors:limit:{work.index}', 'Дополнительные параметры формулы', str(len(factors)), '', role='coefficient'))
         for value in factors[:8]:
-            c = card(f'factor:{work.index}:{value}', f'Параметр формулы {value} · позиция №{work_number}', value, '', role='coefficient')
+            # A literal is not automatically a dimensionless normative factor.
+            # Areas, thicknesses and unit divisors also occur in VOR formulae.
+            literal=re.escape(str(value)).replace(r'\.',r'[.,]')
+            explicit=bool(re.search(r'(?:коэфф\w*|к[\s_.-]*упл|купл)[^\d]{0,25}'+literal+r'(?![\d.,])',
+                getattr(work,'comment',''),re.I))
+            normative=any(p['parameter']=='coefficient' and number(p['value'])==number(value)
+                and p['source_id'] in sources and sources[p['source_id']]['kind']=='normative'
+                and quoted(p['value'],p['quote'],sources[p['source_id']]['text'])
+                and re.search(r'коэфф|уплотн',clean(p['quote'])) for p in proposals)
+            is_factor=explicit or normative or dimensional_factor
+            c = card(f'factor:{work.index}:{value}', f"{'Коэффициент' if is_factor else 'Исходное число'} формулы {value} · позиция №{work_number}",
+                value, '', role='coefficient' if is_factor else 'project_value')
             c['row'] = work.position_source.row if work.position_source else None
-            cards.append(compare(c, 'coefficient'))
+            if is_factor:
+                cards.append(compare(c, 'coefficient'))
+            else:
+                c['reason']='Нужно установить назначение числа и источник: объём связанной работы, геометрический параметр, расход или перевод единиц.'
+                if re.search(r'/\s*\(?\s*'+literal+r'\s*\)?(?:$|[+*/-])',expression):
+                    c['role']='calculation'
+                    c['reason']='Делитель формулы: нужно подтвердить входную единицу и масштаб пересчёта.'
+                cards.append(c)
     for p in proposals:
         if p['parameter'] != 'unit_scale' or p['source_id'] not in sources:
             continue
@@ -271,7 +304,9 @@ def build_cards(position, result, positions, relation):
         if s['kind'] == 'normative' and 'измерител' in clean(p['quote']) and quoted(p['value'], p['quote'], s['text']) and unit_quoted(p['unit'], p['quote']) and scale and declared and scale[0] == declared[0] and scale[1] > 0:
             c.update(state='confirmed', reason=f"Объём ВОР соответствует {declared[1]/scale[1]} измерителя нормы; масштаб {p['value']} {p['unit']} учтён.")
         cards.append(c)
-    if not any(c['role'] == 'unit_scale' for c in cards) and any(s['kind'] == 'normative'
+    selected_norms = {sid for item in result.get('items',[]) if 'normative:applicability' in item.get('claim_ids',[])
+        for sid in item.get('normative_source_ids',[])}
+    if not any(c['role'] == 'unit_scale' for c in cards) and any(s['kind'] == 'normative' and s['id'] in selected_norms
         and re.search(r'\d{2}-\d{2}-\d{3}-\d{2}', s['label']) for s in sources.values()):
         cards.append(card('unit_scale:missing', 'Измеритель нормы', owner.volume, owner.unit, role='unit_scale'))
     # A child material has its own verdict. Its rate must not block the work.

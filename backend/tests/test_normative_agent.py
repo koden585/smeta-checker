@@ -10,6 +10,131 @@ from normative_position_check import AgentAnswer
 from normative_verdict import publish
 
 
+def test_large_search_and_table_replies_stay_bounded_without_changing_evidence():
+    from normative_agent import model_result, MAX_CONTEXT
+    tools=toolkit()
+    tools.coverage['available_tables']=[dict(page=i,table_id='drawing') for i in range(80)]
+    result=dict(rows=[dict(row=i,column=7,text=str(i),source_id=f'exact:{i}',
+        bbox=[0,1,2,3],header_ids=['header']*50) for i in range(90)],
+        columns=[dict(column=i,headers=['Header '*100]*10) for i in range(26)],coverage=tools.coverage)
+    small=model_result(result,4000)
+    assert len(json.dumps(small,ensure_ascii=False))<=4000
+    assert small['rows'][0]['source_id']=='exact:0'
+    assert len(result['rows'])==90 and 'bbox' in result['rows'][0]
+    tools.execute=Mock(return_value=result)
+    answer=AgentAnswer(summary='Read',items=[],requests=[EvidenceRequest(tool='read_table')]*4)
+    ask=Mock(side_effect=[answer,AgentAnswer(summary='Partial',items=[])])
+    run(ask,None,None,'',dict(prepared_quantity_tables=result),AgentAnswer,None,{'queries':[]},tools)
+    assert len(json.dumps(ask.call_args.args[3],ensure_ascii=False))<MAX_CONTEXT
+    assert len(tools.events)==4 and len(tools.events[0]['result']['rows'])==90
+
+
+def test_unique_public_source_alias_resolves_but_ambiguous_alias_does_not():
+    from normative_position_check import validate_items
+    item=dict(topic='Norm',state='confirmed',explanation='Source selected',claim_ids=['normative:applicability'],
+        project_source_ids=['p'],normative_source_ids=['public-pdf'])
+    answer=AgentAnswer(summary='Check',items=[item])
+    sources=[dict(id='p',kind='project'),dict(id='n1',kind='normative',source_id='public-pdf')]
+    assert validate_items(answer.items,sources)[0]['normative_source_ids']==['n1']
+    sources.append(dict(id='n2',kind='normative',source_id='public-pdf'))
+    assert validate_items(answer.items,sources)[0]['state']=='needs_facts'
+
+
+def test_normative_resources_retain_their_own_page_and_unknown_values():
+    from normative_agent import resource_sources
+    item=dict(designation='Test norm',code='01',unit_raw='100 м2',extraction_status='extracted',resources=[
+        dict(code='M',name='Machine',unit='маш.-ч',raw_quantity='П',quantity=None,
+            citations=[dict(page=19,source_id='pdf')])])
+    result=resource_sources(item,'n1')
+    assert result[0]['page']==19 and result[0]['source_id']=='pdf'
+    assert 'Machine' in result[0]['text'] and 'П' in result[0]['text']
+
+
+def test_short_source_handles_roundtrip_to_exact_cells_not_neighboring_values():
+    from normative_agent import model_source_aliases,restore_source_ids
+    sources=[dict(id='hashed-left-cell',kind='project'),dict(id='hashed-right-cell',kind='project')]
+    sent,aliases=model_source_aliases(dict(sources=sources,quantity_candidates=[dict(operand_source_ids=['hashed-left-cell','hashed-right-cell'])]),sources)
+    assert sent['sources'][0]['id']=='s0'
+    assert sent['quantity_candidates'][0]['operand_source_ids']==['s0','s1']
+    answer=AgentAnswer(summary='Sum',items=[],parameters=[dict(parameter='quantity',value='22',unit='м2',
+        operation='sum',operand_source_ids=['s0','s1'],source_id='s0',quote='22')])
+    restored=restore_source_ids(answer,aliases)
+    assert restored.parameters[0].operand_source_ids==['hashed-left-cell','hashed-right-cell']
+    assert sources[0]['id']=='hashed-left-cell'
+
+
+def test_mechanical_validation_feedback_gets_one_bounded_correction_round():
+    tools=toolkit()
+    answers=[AgentAnswer(summary='First',items=[]),AgentAnswer(summary='Corrected',items=[])]
+    ask=Mock(side_effect=answers)
+    verify=Mock(side_effect=[['Unknown source; use exact source handle'],[]])
+    result=run(ask,None,None,'',{},AgentAnswer,None,{'queries':[]},tools,verify_answer=verify)
+    assert result.summary=='Corrected'
+    assert 'answer_validation' in ask.call_args.args[3]
+    assert ask.call_count==2
+
+
+def test_transient_connection_failure_uses_remaining_round_not_new_ocr():
+    import httpx
+    import openai
+    error=openai.APIConnectionError(request=httpx.Request('POST','https://example.invalid'))
+    tools=toolkit()
+    ask=Mock(side_effect=[error,AgentAnswer(summary='Recovered',items=[])])
+    stats={'queries':[]}
+    assert run(ask,None,None,'',{},AgentAnswer,None,stats,tools).summary=='Recovered'
+    assert ask.call_count==2 and stats['warnings']
+    ask=Mock(side_effect=error)
+    with pytest.raises(openai.APIConnectionError):
+        run(ask,None,None,'',{},AgentAnswer,None,{'queries':[]},toolkit())
+    assert ask.call_count==3
+
+
+def test_read_sum_survives_unrelated_answer_repair_but_not_withdrawn_scope():
+    from normative_position_check import answer_feedback,retain_literal_parameters
+    tools=toolkit()
+    tools.execute(EvidenceRequest(tool='read_table',table_id='t1'))
+    first=AgentAnswer(summary='Read',items=[],parameters=[dict(parameter='quantity',operation='sum',
+        operand_source_ids=[sid('c1'),sid('c2')],scope_state='verified',value='69.12',unit='м2',quote='sum')])
+    assert answer_feedback(first,tools.sources,tools)==[]
+    final=AgentAnswer(summary='Correct another aspect',items=[],parameters=[dict(parameter='quantity',
+        value='69.12',unit='м2',source_id=sid('c1'),quote='invented sum',scope_state='verified')])
+    assert retain_literal_parameters(final,tools.sources,tools).parameters[0].operation=='sum'
+    source_count=len(tools.sources)
+    tools.execute(EvidenceRequest(tool='sum_cells',operand_ids=[sid('c1'),sid('c2')],unit='м2'))
+    assert len(tools.sources)==source_count  # One immutable sum, not repeated copies.
+    final.parameters[0].scope_state='unresolved'
+    final.parameters[0].operation='direct'
+    assert retain_literal_parameters(final,tools.sources,tools).parameters[0].operation=='direct'
+
+
+def test_saved_agent_revalidation_is_local_pinned_and_keeps_original_immutable():
+    from copy import deepcopy
+    from normative_position_check import validate_agent_saved
+    from test_normative_parameters import position,source,proposal
+    p=position(volume='10')
+    p.work_name='Основание'
+    p.legacy_task=lambda: {}
+    review=dict(pipeline_version=4,execution_state='complete',state='confirmed',summary='Read',related_positions=[],
+        sources=[dict(**source(text='Площадь 10 м2'),version_id='version'),source('n','normative','Норма')],
+        parameter_proposals=[dict(**proposal('quantity','10','м2','Площадь 10 м2'),scope_state='verified',scope_quote='Площадь 10 м2')],
+        items=[dict(topic='Check',state='confirmed',claim_ids=['quantity','normative:applicability'],
+            explanation='Literal',project_source_ids=['p1'],normative_source_ids=['n'])])
+    row=dict(id='root',payload=dict(position_key='key',vor_version_id='vor',kb={'release':'pinned'},position_check=review))
+    original=deepcopy(row)
+    record=dict(id='run',project_id='test',vor_version_id='vor',config={'pdf_versions':{'test.pdf':'version'}},indexed_results=[dict(position_index=0,result={'status':'ОК'})])
+    context=SimpleNamespace(repository=Mock())
+    context.repository.save_normative_review.side_effect=lambda *args: args[3]
+    with patch('workspace_service.inputs_for_run',return_value=[p]),patch('normative_service.position_key',return_value='key'),\
+            patch('normative_service.corpus',return_value=SimpleNamespace(identity={'release':'pinned'})),\
+            patch('audit_review_policy.review_source',side_effect=lambda raw,task:raw),\
+            patch('normative_context._ask',side_effect=AssertionError('No model call')),\
+            patch('pdf_text.PDFTextSource',side_effect=AssertionError('No PDF/OCR')):
+        output=validate_agent_saved(context,record,0,row,'test')
+    assert output['position_check']['state']=='confirmed'
+    assert output['position_check']['telemetry']['requests']==0
+    assert row==original
+
+
 def toolkit():
     tools = EvidenceTools.__new__(EvidenceTools)
     tools.sources, tools.cells = [], {}
