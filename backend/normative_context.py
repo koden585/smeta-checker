@@ -56,9 +56,12 @@ def _ask(client, credentials, instructions, data, schema, trace, stage, stats):
     finish_reason = ''
     with trace.stage(stage, as_type="generation", model=credentials.model_name, input=messages) as observation:
         if _is_chat_backend(credentials.base_url):
-            options = {"response_format": {"type": "json_object"}}
+            options: dict[str, Any] = {"response_format": {"type": "json_object"}}
             options.update(chat_generation_options(credentials.base_url, credentials.model_name))
-            if stage == 'normative-evidence-plan' and options.get('reasoning_effort') == 'low':
+            # This bounded tool protocol already supplies explicit evidence and
+            # deterministic arithmetic. DeepSeek's low mode exhausted the shared
+            # completion budget before closing JSON even for a navigation step.
+            if stage.startswith('normative-evidence-') and options.get('reasoning_effort') == 'low':
                 options['reasoning_effort'] = 'none'
             response = client.chat.completions.create(model=credentials.model_name, messages=messages,
                 temperature=0.1, max_tokens=max_tokens, **options)

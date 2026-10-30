@@ -167,7 +167,7 @@ def check(context, record, index, payload, actor, *, automatic=False):
     matching = review_source(matching, task)
     needed = required_claims(matching, 'ОК' if matching.get('status') == 'ОК' else 'Требуется ручная проверка', bool(parent))
     known_claims = needed | {c['claim_id'] for c in matching.get('checks') or [] if c.get('claim_id')} | {'matching:verdict'}
-    relation = dict(parent=parent, children_truncated=sum(v['index'] == index for v in links.values()) > 12, children=[dict(**link, material_index=child,
+    relation: dict[str, Any] = dict(parent=parent, children_truncated=sum(v['index'] == index for v in links.values()) > 12, children=[dict(**link, material_index=child,
         work=positions[child].work_name[:600], quantity=positions[child].volume, unit=positions[child].unit)
         for child, link in links.items() if link['index'] == index][:12])
     kb = service.corpus(profile=service.profile_for(record))
@@ -219,6 +219,27 @@ def check(context, record, index, payload, actor, *, automatic=False):
         if own and src.get("sheet") == own.sheet and src.get("sections") == sections and abs(other["index"]-index) <= 7 and other["index"] != index:
             related.append(dict(index=other["index"], row=src.get("row"), work=other["work_name"][:600],
                 quantity=str(other.get("volume") or ""), unit=other.get("unit") or "", formula=other.get("formula") or "", comment=str(other.get("comment") or "")[:700]))
+    from normative_local_checks import layer_group
+    declared_layer_group = layer_group(parent_position or position, related)
+    if declared_layer_group:
+        declared_layer_group = {k: str(v) if not isinstance(v, (int, str)) else v
+            for k,v in declared_layer_group.items()}
+    quantity_candidates = tools.quantity_candidates((parent_position or position).work_name+' '+position.work_name+' '+
+        ' '.join(child['work'] for child in relation.get('children', [])),
+        unit=(parent_position or position).unit,
+        height_cm=declared_layer_group['height'] if declared_layer_group else None)
+    if quantity_candidates:
+        # Search the design description using the discovered construction's
+        # terminology, instead of repeating estimate machines from the VOR title.
+        construction = tools.execute(EvidenceRequest(tool='search_project',
+            query=' '.join(quantity_candidates[0]['headers'])[:300]))
+        # Keep one full native design paragraph beside the numeric schedule.
+        # A 500-character preview can otherwise stop at a different construction.
+        for hit in construction.get('pages', []):
+            source = next((s for s in sources if s['id'] == hit.get('source_id')), None)
+            if source and source.get('origin') == 'native':
+                tools.execute(EvidenceRequest(tool='read_source', source_id=source['id']))
+                break
     discovered = dict(sources=sources, quantity_composition=None)
     tracing = TracingRun(context.settings.langfuse_public_key, context.settings.langfuse_secret_key,
         context.settings.langfuse_base_url, context.settings.langfuse_environment, audit_run_id=str(record["id"]),
@@ -233,7 +254,9 @@ def check(context, record, index, payload, actor, *, automatic=False):
         if not credentials.api_key:
             raise ValueError("Модель не настроена")
         client = (context.client_factory or openai.OpenAI)(api_key=credentials.api_key, base_url=credentials.base_url, timeout=60, max_retries=0)
-        inputs = dict(question=payload.question, prepared_quantity_tables=table_discovery, position=dict(work=position.work_name, quantity=position.volume, unit=position.unit,
+        inputs = dict(question=payload.question, prepared_quantity_tables=table_discovery,
+            vor_layer_group=declared_layer_group, quantity_candidates=quantity_candidates,
+            position=dict(work=position.work_name, quantity=position.volume, unit=position.unit,
             comment=position.comment, formula=position.formula, row=own.row if own else None, sections=sections),
             related_vor_positions=related, sources=[{k: (_excerpt(v, 2800 if source["kind"] == "project" else 1600) if k == "text" else v) for k,v in source.items() if k not in {"image_key", "words_key"}} for source in sources],
             work_relations=relation, matching_checks=matching.get('checks') or [],
@@ -249,6 +272,16 @@ def check(context, record, index, payload, actor, *, automatic=False):
             "а формулу и коэффициенты расхода как derived:rate. Не требуй отдельного количества материала в ПД, если оно рассчитано из работы. "
             "Раздели проектные объёмы/слои и сметное нормирование. Учитывай связанные строки: одинаковая площадь "
             "двух технологических слоёв не означает двойной учёт; сопоставляй сумму толщин с полной толщиной ПД. "
+            "vor_layer_group — программно установленная связь ОДНОЙ конструкции по строкам ВОР, а не факт ПД. "
+            "Её height — полная толщина в см: сопоставляй с ней проектную толщину. Не смешивай с другим "
+            "нижним/средним/верхним слоем из соседних строк. Проектная таблица может содержать полную толщину, "
+            "а не отдельную строку для каждого технологического слоя. Извлекай найденные операнды даже при "
+            "неподтверждённом OCR/единице: пометь scope_state=unresolved, не придумывай недостающий источник. "
+            "quantity_candidates — автоматически сгруппированные симметричные колонки одной итоговой строки. "
+            "Отбор НЕ использует число ВОР. Проверь заголовки материала, полную толщину и участок; "
+            "не требуй совпадения готового итога, если проект даёт отдельные площади слева и справа. "
+            "Подходящий вариант верни parameter=quantity, operation=sum, operand_source_ids из варианта. "
+            "numeric_verified/unit_verified=false означает необходимость проверки OCR/единицы, а не отсутствие ячеек. "
             "Разная детализация названия сама по себе не расхождение. Расчётный материал может не иметь отдельной строки "
             "в ПД. Проверяй формулу, единицы и основание коэффициента ОТДЕЛЬНО; не выдавай 1.26 или иной "
             "коэффициент за подтверждённый без источника и его условий. Модель машины в ВОР может относиться "
@@ -332,14 +365,28 @@ def validate_saved(context, record, index, review_id, actor):
     started = time.monotonic()
     row = context.repository.normative_review(record["id"], index, UUID(review_id))
     data = row["payload"]
-    if data['position_check'].get('pipeline_version', 1) >= 2:
-        return row
     position = service.locate_position(context, record, index)
     if row["kind"] != "check" or data["position_key"] != service.position_key(position):
         raise ValueError("Результат относится к другой позиции")
     latest = next((r for r in context.repository.normative_reviews(record["id"], index) if r["kind"] == "check"), None)
     if latest and latest["id"] != row["id"]:
         raise ValueError("У позиции есть более новая проверка; выберите последний результат")
+    if data['position_check'].get('pipeline_version', 1) >= 2:
+        from normative_parameters import enrich, PARAMETER_SCHEMA_VERSION
+        if data['position_check'].get('parameter_schema_version', 0) >= PARAMETER_SCHEMA_VERSION:
+            return row
+        from workspace_service import inputs_for_run
+        positions = {p.index:p for p in inputs_for_run(context, record)}
+        derived = enrich(position, data['position_check'], positions, data.get('work_relations') or {})
+        derived['telemetry'] = dict(interpretation='Повторная проверка числовых цитат и конструкции',
+            queries=[],missing_facts=[],warnings=[f'Локальная проверка поверх {row["id"]}; исходный ответ и расход сохранены отдельно.'],
+            model='local-evidence-validation',provider='local',requests=0,usage={},
+            elapsed_seconds=round(time.monotonic()-started,3),trace_id=None,trace_url=None)
+        payload = deepcopy(data)
+        payload['position_check'] = derived
+        payload['status'] = 'possible_mismatch' if derived.get('state') == 'possible_mismatch' else 'needs_facts'
+        payload['comment'] = (payload.get('comment') or '')+f' Валидация числовых оснований поверх {row["id"]}.'
+        return context.repository.save_normative_review(record['id'],index,'check',payload,actor)
     snapshot = deepcopy(data['position_check'])
     from normative_quantity_search import augment
     snapshot = augment(context, record, position, snapshot)

@@ -54,3 +54,9 @@ def test_source_navigation_does_not_spend_final_validation_reasoning_budget():
     client, credentials, stats, create = invoke('{"interpretation":"read table","queries":["test"]}')
     _ask(client, credentials, '', {}, Plan, Trace(), 'normative-evidence-plan', stats)
     assert create.call_args.kwargs['reasoning_effort']=='none'
+
+
+def test_evidence_validation_returns_json_without_unbounded_hidden_reasoning():
+    client, credentials, stats, create = invoke('{"interpretation":"check","queries":["test"]}')
+    _ask(client, credentials, '', {}, Plan, Trace(), 'normative-evidence-1', stats)
+    assert create.call_args.kwargs['reasoning_effort']=='none'

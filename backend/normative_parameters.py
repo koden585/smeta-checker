@@ -7,6 +7,19 @@ import unicodedata
 from normative_local_checks import layer_group
 from vor_formula import calculate_cell
 
+PARAMETER_SCHEMA_VERSION = 3
+
+
+def construction_conflict(text, work, height_cm=None):
+    def fractions(value):
+        return set(v.replace(',', '.') for v in re.findall(r'\b\d+/\d+(?:[.,]\d+)?', value))
+    wanted, found = fractions(work), fractions(text)
+    if wanted and found and wanted.isdisjoint(found):
+        return True
+    heights = [Decimal(v.replace(',', '.'))*(100 if u in {'м','m'} else 1)
+        for v,u in re.findall(r'\bh\s*=\s*(\d+(?:[.,]\d+)?)\s*(см|[мm])\b', text, re.I)]
+    return bool(height_cm is not None and heights and number(height_cm) not in heights)
+
 
 def number(value):
     try:
@@ -78,6 +91,8 @@ def build_cards(position, result, positions, relation):
     owner = positions.get((relation.get('parent') or {}).get('index'), position)
     row = position.position_source.row if position.position_source else None
     group = layer_group(owner, result.get('related_positions') or [])
+    work_scope = owner.work_name+' '+position.work_name+' '+' '.join(
+        child.get('work', '') for child in relation.get('children') or [])
     height = re.search(r'\bh\s*=\s*(\d+(?:[.,]\d+)?)\s*(мм|см|м)\b', owner.work_name, re.I)
 
     def card(key, label, value, unit, role='project_value', **extra):
@@ -86,13 +101,33 @@ def build_cards(position, result, positions, relation):
 
     def compare(c, kind, expected_value=None):
         expected = measure(expected_value or c['declared_value'], c['unit'])
-        matches = [p for p in proposals if p['parameter'] == kind and p['source_id'] in sources]
+        matches = [p for p in proposals if p['parameter'] == kind and p['source_id'] in sources
+            and (p.get('operation') != 'sum' or sources[p['source_id']]['origin'] == 'calculated_from_cells')]
         if c['role'] == 'coefficient':
             exact = [p for p in matches if number(p['value']) == number(c['declared_value'])]
             matches = exact or matches
         distinct = {(p['source_id'], p['value'], p['unit']) for p in matches}
         if len(distinct) != 1:
             c['reason'] = 'Нужен однозначный источник параметра.' if matches else c['reason']
+            pending = [p for p in proposals if p['parameter'] == kind and p.get('operation') == 'sum'
+                and 2 <= len(p.get('operand_source_ids', [])) <= 12]
+            if not matches and len(pending) == 1:
+                p = pending[0]
+                ids = p['operand_source_ids']
+                operands = [sources[i] for i in ids if i in sources and sources[i]['kind'] == 'project']
+                values = [number(s['text'].rsplit('\n', 1)[-1]) for s in operands]
+                if any(construction_conflict(s['text'], work_scope, group['height'] if group else None) for s in operands):
+                    c['reason'] = 'Выбранные ячейки относятся к другому материалу или проектной толщине; совпадение чисел не подтверждает основание.'
+                    return c
+                if len(operands) == len(ids) == len(set(ids)) and all(v is not None for v in values):
+                    # Showing located operands is useful even when independent
+                    # OCR or their unit is unresolved. Never compare this sum
+                    # or treat it as a confirmed project quantity.
+                    total = sum((v for v in values if v is not None), Decimal(0))
+                    c.update(found_value=str(total), found_unit=p['unit'], source_ids=ids,
+                        source_anchors=[dict(source_id=i, quote=s['text'].rsplit('\n', 1)[-1], rects=s.get('rects', []))
+                            for i,s in zip(ids, operands)],
+                        reason='Слагаемые найдены; принадлежность, единица или независимое подтверждение OCR ещё не проверены. Сравнение не выполнено.')
             if not matches and kind == 'quantity':
                 previous = next((v for v in result.get('items') or []
                     if v.get('topic') == 'Локальная проверка: площадь по структуре OCR-таблицы'), None)
@@ -102,14 +137,19 @@ def build_cards(position, result, positions, relation):
             return c
         p = matches[0]
         source = sources[p['source_id']]
+        if kind in {'quantity', 'thickness'} and construction_conflict(
+                source['text'] if ':cell:' in source['id'] else p.get('scope_quote', ''),
+                work_scope, group['height'] if group else None):
+            c['reason'] = 'Источник относится к другому материалу или проектной толщине; сравнение не выполнено.'
+            return c
         wanted_kind = 'project' if kind in {'quantity', 'thickness'} else 'normative'
-        c.update(found_value=p['value'], found_unit=p['unit'], source_ids=[p['source_id']], quote=p['quote'],
-            source_anchors=[dict(source_id=p['source_id'], quote=p['quote'], rects=source.get('rects', []))])
         found = measure(p['value'], p['unit'])
         unit_present = kind == 'coefficient' or unit_quoted(p['unit'], p['quote'])
         if source['kind'] != wanted_kind or not quoted(p['value'], p['quote'], source['text']) or not expected or not found or not unit_present:
             c['reason'] = 'Число, цитата, тип источника или единица не подтверждены программно.'
             return c
+        c.update(found_value=p['value'], found_unit=p['unit'], source_ids=[p['source_id']], quote=p['quote'],
+            source_anchors=[dict(source_id=p['source_id'], quote=p['quote'], rects=source.get('rects', []))])
         if (source['origin'].startswith('ocr') and not source.get('numeric_verified')) or source['origin'] == 'uncertain_table':
             c['reason'] = 'Распознано OCR: требуется подтверждение по изображению.'
             return c
@@ -269,8 +309,30 @@ def build_cards(position, result, positions, relation):
 def enrich(position, result, positions, relation):
     output = deepcopy(result)
     output['parameter_cards'] = build_cards(position, output, positions, relation)
-    output['parameter_schema_version'] = 1
+    output['parameter_schema_version'] = PARAMETER_SCHEMA_VERSION
+    if output.get('pipeline_version', 1) >= 3:
+        changed = False
+        for item in output.get('items', []):
+            keys = numeric_card_keys(item.get('claim_ids', []))
+            if not keys or item['state'] == 'needs_facts':
+                continue
+            required_state = 'possible_mismatch' if item['state'] == 'possible_mismatch' else 'confirmed'
+            cards = [c for c in output['parameter_cards'] if c['id'] in keys]
+            if not cards or any(c['state'] != required_state for c in cards):
+                item['state'] = 'needs_facts'
+                item['explanation'] += ' Числовое основание не прошло проверку цитаты, OCR, единицы или конструкции; расхождение не доказано.'
+                changed = True
+        if changed:
+            output['state'] = 'possible_mismatch' if any(i['state']=='possible_mismatch' for i in output['items']) else 'needs_facts'
+        gaps = [c for c in output['parameter_cards'] if c.get('required', True) and c['state'] != 'confirmed']
+        if gaps:
+            output['summary'] = ' '.join(c['label']+': '+c['reason'] for c in gaps)[:2500]
     return output
+
+
+def numeric_card_keys(claims):
+    return {'quantity' if claim in {'quantity', 'unit'} else 'thickness'
+        for claim in claims if claim in {'quantity','unit'} or 'thickness' in claim}
 
 
 def inherit_work_evidence(result, parent, index):

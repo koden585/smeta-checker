@@ -35,6 +35,7 @@ class EvidenceRequest(BaseModel):
     unit: str = Field(default='', max_length=30)
     source_id: str = Field(default='', max_length=200)
     row_ids: list[int] = Field(default_factory=list, max_length=12)
+    column_ids: list[int] = Field(default_factory=list, max_length=32)
 
 
 TOOLS = """
@@ -45,7 +46,10 @@ search_project(query): смысл работы/конструкция/участ
 search_tables(query): ведомости объёмов, площади, количества и заголовки таблиц;
 read_page(page, offset): следующие 3500 символов физической страницы;
 read_source(source_id, offset): дочитать конкретный источник; его текст не исчезает;
-read_table(page, table_id, offset): 4 строки с заголовками и идентификаторами ячеек;
+read_table(page, table_id, row_ids, column_ids): точные строки и столбцы с заголовками
+и ID ячеек. Каталог tables содержит columns и total_rows. Для общего количества
+читай итоговые строки, а не первые строки заголовка. Различай Итог по участку и Всего.
+Одинаковое число в колонке другого материала не является основанием.
 search_norms(query): нормативный пункт, термин или код.
 sum_cells(operand_ids, unit): сумма 2–12 числовых ячеек с одной единицей
 из заголовков. operand_ids — source_id, полученные read_table. Сначала
@@ -79,7 +83,7 @@ def compact(inputs, sources, preferred=()):
     # a table never shrinks a previously selected paragraph to 750 characters.
     preferred = set(preferred)
     ordered = sorted(enumerate(sources), key=lambda item: (item[1]['id'] not in preferred, -item[0]))
-    remaining = 37000
+    remaining = max(0, min(37000, MAX_CONTEXT-len(json.dumps(value, ensure_ascii=False))-8000))
     for _, source in ordered:
         brief = {k: source[k] for k in ('id', 'kind', 'page', 'label', 'version_id', 'source_id', 'origin') if k in source}
         text = str(source.get('text', ''))
@@ -106,6 +110,7 @@ class EvidenceTools:
         self.preferred = []
         self.table_search_done = False
         self.snapshot_refs = []
+        self.coverage: dict[str, Any] = {}
         self.blob_store = context.blob_store
         self.filename = 'Подготовленный ПД'
         self.version = None
@@ -151,10 +156,27 @@ class EvidenceTools:
     def _add(self, source):
         existing = next((s for s in self.sources if s['id'] == source['id']), None)
         if existing is None:
-            if len(self.sources) >= 256:
+            if len(self.sources) >= 1024:
                 return {'error': 'source_budget_exhausted'}
             self.sources.append(source)
         return {'source_id': source['id']}
+
+    def quantity_candidates(self, query, *, unit='', height_cm=None) -> list[dict[str, Any]]:
+        """Precompute bounded alternatives; never use the declared VOR amount."""
+        if self.index is None or not self.version:
+            return []
+        from normative_table_candidates import grouped_totals
+        ranked = []
+        for entry in self.coverage.get('available_tables', []):
+            for table in self._tables(entry['page']):
+                for candidate in grouped_totals(table, query, unit=unit, height_cm=height_cm):
+                    ranked.append(dict(**candidate, page=entry['page'], table_id=table['table_id']))
+        ranked.sort(key=lambda c: -c['score'])
+        for candidate in ranked[:4]:
+            result = self.execute(EvidenceRequest(tool='read_table', page=candidate['page'],
+                table_id=candidate['table_id'], row_ids=[candidate['row']], column_ids=candidate['columns']))
+            candidate['operand_source_ids'] = [c['source_id'] for c in result['rows'] if 'source_id' in c]
+        return ranked[:4]
 
     def execute(self, request):
         if request.tool == 'read_source':
@@ -204,16 +226,16 @@ class EvidenceTools:
         if table is None:
             return {'error': 'unknown_table', 'table_ids': [t['table_id'] for t in tables]}
         cells = table['cells']
-        selected = [c for c in cells if (c['row'] in request.row_ids if request.row_ids else request.offset <= c['row'] < request.offset+4)]
+        selected = [c for c in cells if (c['row'] in request.row_ids if request.row_ids else request.offset <= c['row'] < request.offset+4)
+            and (not request.column_ids or c['column'] in request.column_ids)]
         output = []
         for cell in selected:
             header_text = ' | '.join(str(h['text']) for h in cells if h['cell_id'] in cell.get('header_ids', []))
             text = header_text
-            row = sorted((c for c in cells if c['row'] == cell['row']), key=lambda c: c['column'])
-            text += '\n' + ' | '.join(str(c['text']) for c in row)
+            row = sorted((c for c in cells if c['row'] == cell['row'] and c['column'] < 2), key=lambda c: c['column'])
+            text += '\n' + ' | '.join(str(c['text']) for c in row) + '\n' + cell['text']
             cell_id = cell_source_id(self.version, request.page, table['table_id'], cell['cell_id'])
             self.cells[cell_id] = dict(cell=cell, headers=text, header_text=header_text, page=request.page)
-            self.preferred.append(cell_id)
             geometry = (getattr(self.index, 'metadata', {}).get('page_geometry') or {}).get(str(request.page-1))
             rects = []
             if geometry and cell.get('bbox'):
@@ -228,7 +250,7 @@ class EvidenceTools:
         from normative_retrieval import terms
         wanted = terms(request.query)
         matching_rows = sorted({c['row'] for c in cells if wanted & terms(c['text'])})[:20]
-        return {'cells': output, 'matching_rows': matching_rows, 'rows': [dict(**{k: c[k] for k in ('cell_id', 'row', 'column', 'text', 'header_ids', 'bbox', 'quality') if k in c},
+        return {'cells': output, 'matching_rows': matching_rows, 'columns': table_outline(table)['columns'], 'rows': [dict(**{k: c[k] for k in ('cell_id', 'row', 'column', 'text', 'header_ids', 'bbox', 'quality', 'numeric_verified') if k in c},
             **output[i]) for i,c in enumerate(selected)], 'next_offset': request.offset+4, 'row_count': table['row_count']}
 
     def _sum(self, request):
@@ -269,9 +291,7 @@ class EvidenceTools:
             self.preferred.append(ref.get('source_id', ''))
         tables = self._tables(page)
         return dict(**ref, page=page, next_offset=offset+3500 if offset+3500 < len(text) else None,
-            tables=[dict(table_id=t['table_id'], rows=t['row_count'], columns=t['col_count'],
-                total_rows=sorted({c['row'] for c in t['cells'] if c['text'].strip().casefold().rstrip(':') in {'всего','итог','итого'}}),
-                headers=list(dict.fromkeys(c['text'] for c in t['cells'] if c.get('role') == 'header'))[:12]) for t in tables])
+            tables=[table_outline(t) for t in tables])
 
     def _tables(self, page):
         """Read shared, SHA-verified prepared pages, never repeat PDF extraction.
@@ -301,12 +321,27 @@ class EvidenceTools:
         return []
 
 
+def table_outline(table):
+    """Expose complete column ancestry and total row addresses before a paid read."""
+    headers = [c for c in table['cells'] if c.get('role') == 'header' and c['text'].strip()]
+    columns = []
+    for column in range(table['col_count']):
+        path = list(dict.fromkeys(c['text'] for c in headers
+            if c['column'] <= column < c['column']+c.get('colspan', 1)
+            and c.get('colspan', 1) < table['col_count']))
+        columns.append(dict(column=column, headers=path))
+    totals = [dict(row=c['row'], label=c['text']) for c in table['cells']
+        if c['text'].strip().casefold().rstrip(':') in {'всего','итог','итого'}]
+    return dict(table_id=table['table_id'], rows=table['row_count'], column_count=table['col_count'],
+        columns=columns, total_rows=sorted({c['row'] for c in totals}), total_labels=totals)
+
+
 def run(ask, client, credentials, instructions, inputs, schema, trace, stats, tools):
     """At most three model calls; failed acquisition cannot become a verdict."""
     started = time.monotonic()
     history = []
     for step in range(MAX_ROUNDS):
-        supplied = compact(inputs, tools.sources, tools.preferred[-12:])
+        supplied = compact(inputs, tools.sources, tools.preferred)
         bounded_history = deepcopy(history)
         for event in bounded_history:
             result = event['result']
@@ -320,12 +355,15 @@ def run(ask, client, credentials, instructions, inputs, schema, trace, stats, to
         supplied.update(coverage=tools.coverage, tool_results=bounded_history, remaining_steps=MAX_ROUNDS-step-1)
         stage = 'normative-evidence-plan' if step == 0 else f'normative-evidence-{step}'
         step_instructions = instructions+TOOLS
-        if step == 0:
+        if step == 0 and MAX_ROUNDS > 1:
             # Navigation is a separate bounded task, not a full audit of every
             # preliminary claim before the underlying table has been read.
             supplied['sources'] = [{**source, 'text':source['text'][:450],
                 'excerpt_truncated':len(source['text'])>450 or source['excerpt_truncated']} for source in supplied['sources']]
-            step_instructions = TOOLS + '\nСейчас ТОЛЬКО выбери до четырёх точных чтений источников/строк итогов. Не проверяй всю позицию на этом шаге. Верни summary, items=[], parameters=[], requests. На следующем шаге выполни проверку по полученным данным.'
+            step_instructions = TOOLS + '\nСейчас ТОЛЬКО выбери до четырёх точных чтений. Приоритет: проектная конструкция, итоговые строки ведомости с подходящими заголовками columns, затем норматив. Используй row_ids из total_rows и column_ids подходящего материала/единицы. Начало таблицы без чисел не заменяет чтение итогов. Не проверяй всю позицию на этом шаге. summary до 200 символов, items=[], parameters=[], requests. На следующем шаге выполни проверку по полученным данным.'
+            step_instructions += '\nvor_layer_group.height — сумма технологических слоёв одной конструкции ВОР в см; выбирай проектный столбец полной толщины, а не требуй отдельный столбец каждой технологической операции.'
+        if step == MAX_ROUNDS-1:
+            step_instructions += '\nЭто ОКОНЧАТЕЛЬНЫЙ шаг: requests=[] обязательно. Не ищи снова. Сохрани найденные факты, точные ID ячеек и параметры; непроверенные аспекты — needs_facts с конкретной причиной, не ошибка ВОР. summary до 600 символов, до 5 items с пояснениями до 350 символов.'
         supplied['archived_source_ids'] = []
         while len(json.dumps(supplied, ensure_ascii=False)) > MAX_CONTEXT and len(supplied['sources']) > 1:
             source = supplied['sources'].pop()
@@ -342,6 +380,17 @@ def run(ask, client, credentials, instructions, inputs, schema, trace, stats, to
                 requests = [EvidenceRequest(tool='search_tables', query=str(inputs.get('position', {}).get('work', ''))[:300])]
             else:
                 return answer
+        if step == MAX_ROUNDS-1 and getattr(answer, 'items', []):
+            # Preserve useful partial evidence without granting a confirmed
+            # verdict while the model still requests additional source reads.
+            pending = ', '.join(r.tool for r in requests)
+            stats.setdefault('missing_facts', []).append('Не завершён поиск источников: '+pending)
+            for item in answer.items:
+                if item.state == 'confirmed':
+                    item.state = 'needs_facts'
+                    item.explanation += ' Поиск связанных источников не завершён.'
+            answer.requests = []
+            return answer
         if step == MAX_ROUNDS-1 or time.monotonic()-started > 120:
             raise TimeoutError('Evidence acquisition budget exhausted')
         history = []

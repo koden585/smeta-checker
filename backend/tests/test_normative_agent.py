@@ -87,6 +87,27 @@ def test_agent_cannot_turn_exhausted_tool_budget_into_a_verdict():
     assert ask.call_count == 3
 
 
+def test_final_open_search_preserves_partial_evidence_without_confirming_verdict():
+    item=dict(topic='Площадь',state='confirmed',explanation='Нужен ещё источник единицы.',
+        project_source_ids=[],normative_source_ids=[],claim_ids=['quantity'])
+    ask=Mock(return_value=AgentAnswer(summary='Частичный результат',items=[item],
+        requests=[EvidenceRequest(tool='read_page')]))
+    stats={'queries':[]}
+    answer=run(ask,None,None,'',{},AgentAnswer,None,stats,toolkit())
+    assert ask.call_count==3
+    assert answer.items[0].state=='needs_facts'
+    assert answer.requests==[]
+    assert 'read_page' in stats['missing_facts'][0]
+
+
+def test_one_remaining_call_uses_prepared_evidence_instead_of_planning_more_reads():
+    ask=Mock(return_value=AgentAnswer(summary='Недостаточно подтверждённых данных',items=[]))
+    with patch('normative_agent.MAX_ROUNDS',1):
+        run(ask,None,None,'Проверить факты.',{},AgentAnswer,None,{'queries':[]},toolkit())
+    assert 'Проверить факты.' in ask.call_args.args[2]
+    assert 'requests=[] обязательно' in ask.call_args.args[2]
+
+
 def test_generic_composite_quantity_can_clear_verdict_without_road_repair_rules():
     from normative_parameters import enrich
     from normative_position_check import validate_items

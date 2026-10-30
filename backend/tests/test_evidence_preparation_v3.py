@@ -158,3 +158,103 @@ def test_unit_recovery_requires_literal_unit_inside_its_physical_header():
     other=dict(role='header',text='${}$',bbox=[50,10,80,30])
     recover_unit_headers([dict(cells=[other])],words)
     assert other['text']=='${}$'
+
+
+def test_wide_table_read_does_not_evict_previously_selected_normative_text():
+    tools = toolkit()
+    full = 'Нормативный пункт. ' * 90 + 'Условие в конце пункта.'
+    tools.sources.append(dict(id='norm',kind='normative',text=full))
+    tools.execute(EvidenceRequest(tool='read_source',source_id='norm'))
+    table = tools.index.tables[0][0]
+    table['col_count'] = 20
+    table['cells'] += [dict(cell_id=f'wide{i}',row=1,column=i,text=str(i),header_ids=['h']) for i in range(2,20)]
+    tools.execute(EvidenceRequest(tool='read_table',table_id='t1',row_ids=[1]))
+    captured = []
+    def answer(*args):
+        captured.append(args[3])
+        return AgentAnswer(summary='Недостаточно данных',items=[])
+    run(answer,None,None,'',{},AgentAnswer,None,{'queries':[]},tools)
+    assert next(s for s in captured[0]['sources'] if s['id']=='norm')['text'] == full[:450]
+    # Navigation truncates every preview intentionally; subsequent full reads
+    # must still use the entire normative source, regardless of cell count.
+    result = compact({},tools.sources,tools.preferred)
+    assert next(s for s in result['sources'] if s['id']=='norm')['text'] == full
+
+
+def test_table_catalog_preserves_late_columns_and_distinguishes_subtotal_from_total():
+    from normative_agent import table_outline
+    table=dict(table_id='wide',row_count=50,col_count=20,cells=[
+        dict(cell_id='title',role='header',row=0,column=0,colspan=20,text='Ведомость'),
+        dict(cell_id='material',role='header',row=1,column=18,colspan=2,text='Материал Б'),
+        dict(cell_id='unit',role='header',row=2,column=18,colspan=1,text='Площадь м2'),
+        dict(row=25,column=0,text='Итог:'),dict(row=49,column=0,text='Всего:')])
+    result=table_outline(table)
+    assert result['columns'][18]['headers']==['Материал Б','Площадь м2']
+    assert result['total_labels']==[dict(row=25,label='Итог:'),dict(row=49,label='Всего:')]
+
+
+def test_read_table_filters_exact_columns_without_attaching_neighbor_numbers():
+    tools=toolkit()
+    table=tools.index.tables[0][0]
+    table['cells'].append(dict(cell_id='neighbor',row=1,column=0,text='999',header_ids=[]))
+    result=tools.execute(EvidenceRequest(tool='read_table',table_id='t1',row_ids=[1],column_ids=[1]))
+    assert [c['text'] for c in result['rows']]==['12,34']
+    assert all(c['column']==1 for c in result['rows'])
+
+
+def test_unverified_sum_keeps_operand_highlights_but_cannot_confirm_quantity():
+    p=SimpleNamespace(index=0,number='1',work_name='Площадь покрытия',volume='69.12',unit='м2',
+        position_source=None,formula='',calculation={})
+    result=dict(pipeline_version=3,sources=[
+        dict(id='a',kind='project',origin='ocr',text='Материал А\n12,34',rects=[[.1,.1,.2,.2]]),
+        dict(id='b',kind='project',origin='ocr',text='Материал А\n56,78',rects=[[.3,.1,.4,.2]])],
+        parameter_proposals=[dict(parameter='quantity',operation='sum',operand_source_ids=['a','b'],
+            source_id='a',value='999',unit='м2')])
+    card=build_cards(p,result,{0:p},{})[0]
+    assert card['state']=='needs_facts'
+    assert card['found_value']=='69.12'  # Recompute; never trust the proposal value.
+    assert card['source_ids']==['a','b']
+    assert len(card['source_anchors'])==2
+
+
+def test_model_cannot_publish_wrong_layer_as_mismatch_when_numeric_proof_fails():
+    from normative_parameters import enrich
+    from normative_verdict import publish
+    p=SimpleNamespace(index=0,number='1',work_name='Нижний слой h=12 см',volume='10',unit='м2',
+        position_source=None,formula='',calculation={})
+    result=dict(pipeline_version=3,position_key='k',state='possible_mismatch',summary='Неподтверждённые 20 см',
+        sources=[dict(id='p',kind='project',origin='native',text='Нижний слой 24 см.'),
+            dict(id='n',kind='normative',origin='native',text='Норматив',label='Норма')],
+        items=[dict(topic='Толщина',state='possible_mismatch',explanation='Модель прочла 20 см.',
+            claim_ids=['geometry:comment:thickness:1'],project_source_ids=['p'],normative_source_ids=['n'])],
+        parameter_proposals=[dict(parameter='thickness',source_id='p',value='20',unit='см',
+            quote='Нижний слой 20 см.',scope_state='verified',scope_quote='Нижний слой 20 см.')])
+    enriched=enrich(p,result,{0:p},{})
+    assert enriched['items'][0]['state']=='needs_facts'
+    assert enriched['state']=='needs_facts'
+    # Older unrefreshed saved reviews pass through the same guard at publication.
+    result['parameter_cards']=enriched['parameter_cards']
+    report=publish({'Статус аудита':'Обнаружено расхождение'}, {},'k',{'review':result},enabled=True)
+    assert report['Статус аудита']=='Требуется ручная проверка'
+
+
+def test_saved_agent_review_can_be_revalidated_without_model_or_raw_answer_mutation():
+    from copy import deepcopy
+    from normative_position_check import validate_saved
+    p=SimpleNamespace(index=0,number='1',work_name='Смесь 0/31,5',volume='22',unit='м2',
+        position_source=None,formula='',calculation={})
+    data=dict(position_key='k',position_check=dict(pipeline_version=3,parameter_schema_version=2,
+        state='needs_facts',items=[],sources=[],telemetry=dict(requests=2,usage={'output':100})))
+    row=dict(id='39f43d3a-1e86-4c4f-a763-bdba9de1435a',kind='check',payload=data)
+    original=deepcopy(row)
+    repo=Mock()
+    repo.normative_review.return_value=row
+    repo.normative_reviews.return_value=[row]
+    with patch('normative_service.locate_position',return_value=p), patch('normative_service.position_key',return_value='k'), \
+            patch('workspace_service.inputs_for_run',return_value=[p]), patch('normative_position_check._ask') as paid:
+        validate_saved(SimpleNamespace(repository=repo),{'id':'run'},0,row['id'],'test-local')
+    paid.assert_not_called()
+    saved=repo.save_normative_review.call_args.args[3]['position_check']
+    assert saved['parameter_schema_version']==3
+    assert saved['telemetry']['requests']==0
+    assert row==original

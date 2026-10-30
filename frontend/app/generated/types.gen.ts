@@ -932,6 +932,12 @@ export type NormativeContextAnalysis = {
      */
     requests?: number;
     /**
+     * Responses
+     */
+    responses?: Array<{
+        [key: string]: unknown;
+    }>;
+    /**
      * Trace Id
      */
     trace_id?: string | null;
@@ -1192,7 +1198,7 @@ export type NormativeParameterProposal = {
     /**
      * Quote
      */
-    quote: string;
+    quote?: string;
     /**
      * Scope Quote
      */
@@ -1204,7 +1210,7 @@ export type NormativeParameterProposal = {
     /**
      * Source Id
      */
-    source_id: string;
+    source_id?: string;
     /**
      * Unit
      */

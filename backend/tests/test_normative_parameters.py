@@ -13,6 +13,28 @@ def source(id='p1', kind='project', text='Площадь 431,611 м2; толщи
     return dict(id=id, kind=kind, text=text, origin=origin, label='Source')
 
 
+def test_fabricated_quote_never_appears_as_found_pdf_quantity():
+    p=position()
+    cards=build_cards(p,dict(sources=[source()],parameter_proposals=[dict(parameter='quantity',
+        value='431.61',unit='м2',source_id='p1',quote='ВОР 431.61 м2')]),{0:p},{})
+    assert cards[0]['state']=='needs_facts'
+    assert 'found_value' not in cards[0]
+    assert 'source_anchors' not in cards[0]
+
+
+def test_equal_operands_from_another_material_do_not_get_project_highlights():
+    p=position()
+    p.work_name='Устройство слоя из смеси 0/31,5'
+    result=dict(pipeline_version=3,sources=[
+        source('a',text='Смесь 0/63\n345,77'),source('b',text='Смесь 0/63\n85,841')],
+        parameter_proposals=[dict(parameter='quantity',operation='sum',source_id='',
+            operand_source_ids=['a','b'],value='431.611',unit='м2')])
+    card=build_cards(p,result,{0:p},{})[0]
+    assert card['state']=='needs_facts'
+    assert 'другому материалу' in card['reason']
+    assert 'source_anchors' not in card
+
+
 def proposal(parameter, value, unit, quote, id='p1', rules=None):
     return dict(parameter=parameter, value=value, unit=unit, quote=quote, source_id=id, conditions=rules or [])
 

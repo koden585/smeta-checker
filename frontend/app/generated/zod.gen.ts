@@ -292,6 +292,7 @@ export const zNormativeContextAnalysis = z.object({
     provider: z.string(),
     queries: z.array(z.string()).optional(),
     requests: z.int().optional().default(0),
+    responses: z.array(z.record(z.string(), z.unknown())).max(3).optional(),
     trace_id: z.string().nullish(),
     trace_url: z.string().nullish(),
     usage: z.record(z.string(), z.int()).optional(),
@@ -418,10 +419,10 @@ export const zNormativeParameterProposal = z.object({
         'coefficient',
         'unit_scale'
     ]),
-    quote: z.string().max(900),
+    quote: z.string().max(900).optional().default(''),
     scope_quote: z.string().max(900).optional().default(''),
     scope_state: z.enum(['verified', 'unresolved']).optional().default('unresolved'),
-    source_id: z.string().max(80),
+    source_id: z.string().max(80).optional().default(''),
     unit: z.string().max(30),
     value: z.string().max(40)
 });

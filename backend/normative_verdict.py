@@ -69,6 +69,13 @@ def publish(report, stored, position_key, validation, *, enabled=False, derived=
     confirmed = {claim for v in supported if v.get('state') == 'confirmed' for claim in v['claim_ids']}
     needed = required_claims(stored, report['Статус аудита'], derived)
     cards = review.get('parameter_cards') or []
+    if review.get('pipeline_version', 1) >= 3:
+        from normative_parameters import numeric_card_keys
+        # Revalidate older saved reviews too. A source ID alone does not prove
+        # the model's numerical interpretation or a mismatched thickness.
+        contradictions = [v for v in contradictions if not numeric_card_keys(v['claim_ids']) or all(
+            any(c.get('id') == key and c['state'] == 'possible_mismatch' for c in cards)
+            for key in numeric_card_keys(v['claim_ids']))]
     card_gaps = [c for c in cards if c.get('required', True) and c['state'] != 'confirmed']
     def disputed_scope(card):
         key = card.get('id')
