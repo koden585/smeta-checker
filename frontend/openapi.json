@@ -1393,6 +1393,16 @@
             "title": "Text",
             "type": "string"
           },
+          "unit": {
+            "default": "",
+            "title": "Unit",
+            "type": "string"
+          },
+          "unit_verified": {
+            "default": false,
+            "title": "Unit Verified",
+            "type": "boolean"
+          },
           "version_id": {
             "anyOf": [
               {

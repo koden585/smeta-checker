@@ -85,9 +85,10 @@ def compact(inputs, sources, preferred=()):
     ordered = sorted(enumerate(sources), key=lambda item: (item[1]['id'] not in preferred, -item[0]))
     remaining = max(0, min(37000, MAX_CONTEXT-len(json.dumps(value, ensure_ascii=False))-8000))
     for _, source in ordered:
-        brief = {k: source[k] for k in ('id', 'kind', 'page', 'label', 'version_id', 'source_id', 'origin') if k in source}
+        brief = {k: source[k] for k in ('id', 'kind', 'page', 'label', 'version_id', 'source_id', 'origin',
+            'numeric_verified','unit_verified','unit') if k in source}
         text = str(source.get('text', ''))
-        allowance = min(len(text), 7000 if source['id'] in preferred else 500, max(0, remaining-300))
+        allowance = min(len(text), 7000 if source['id'] in preferred else 1500 if source.get('kind') == 'normative' else 500, max(0, remaining-300))
         if allowance == 0:
             continue
         brief.update(text=text[:allowance], excerpt_truncated=len(text) > allowance,
@@ -231,11 +232,15 @@ class EvidenceTools:
         output = []
         for cell in selected:
             header_text = ' | '.join(str(h['text']) for h in cells if h['cell_id'] in cell.get('header_ids', []))
+            from pdf_cell_ocr import column_unit
+            resolved_unit = column_unit(table, cell)
+            if resolved_unit:
+                header_text += '\nЕдиница физического столбца: '+resolved_unit
             text = header_text
             row = sorted((c for c in cells if c['row'] == cell['row'] and c['column'] < 2), key=lambda c: c['column'])
             text += '\n' + ' | '.join(str(c['text']) for c in row) + '\n' + cell['text']
             cell_id = cell_source_id(self.version, request.page, table['table_id'], cell['cell_id'])
-            self.cells[cell_id] = dict(cell=cell, headers=text, header_text=header_text, page=request.page)
+            self.cells[cell_id] = dict(cell=cell, headers=text, header_text=header_text, page=request.page,unit=resolved_unit)
             geometry = (getattr(self.index, 'metadata', {}).get('page_geometry') or {}).get(str(request.page-1))
             rects = []
             if geometry and cell.get('bbox'):
@@ -246,6 +251,7 @@ class EvidenceTools:
             output.append(self._add(dict(id=cell_id, kind='project',
                 version_id=self.version, page=request.page, label=self.filename,
                 text=text, rects=rects, numeric_verified=bool(cell.get('numeric_verified')),
+                unit_verified=bool(resolved_unit),unit=resolved_unit,
                 origin=(cell.get('origin', 'native') if cell.get('quality', 'usable') == 'usable' else 'uncertain_table'))))
         from normative_retrieval import terms
         wanted = terms(request.query)
@@ -254,7 +260,7 @@ class EvidenceTools:
             **output[i]) for i,c in enumerate(selected)], 'next_offset': request.offset+4, 'row_count': table['row_count']}
 
     def _sum(self, request):
-        from normative_parameters import number, unit_quoted
+        from normative_parameters import number, measure
         ids = request.operand_ids
         if not 2 <= len(ids) <= 12 or len(set(ids)) != len(ids) or not request.unit:
             return {'error': 'distinct_numeric_operands_and_unit_required'}
@@ -266,7 +272,7 @@ class EvidenceTools:
                 or c['cell'].get('quality', 'usable') != 'usable' for c in cells):
             return {'error': 'uncertain_cells_require_image_verification'}
         values = [number(c['cell']['text']) for c in cells]
-        if any(v is None for v in values) or any(not unit_quoted(request.unit, c['headers']) for c in cells):
+        if any(v is None for v in values) or any(not c['unit'] or measure('1',request.unit) != measure('1',c['unit']) for c in cells):
             return {'error': 'numeric_cell_or_header_unit_unresolved'}
         values = [v for v in values if v is not None]
         if len({c['page'] for c in cells}) != 1:
@@ -276,6 +282,7 @@ class EvidenceTools:
         text = context + '\n' + ' + '.join(str(v) for v in values) + f' = {total} {request.unit}. Ячейки: ' + ', '.join(ids)
         result = self._add(dict(id='agent:sum:'+str(len(self.sources)), kind='project',
             page=cells[0]['page'], version_id=self.version, label=self.filename, origin='calculated_from_cells', text=text,
+            numeric_verified=True,unit_verified=True,unit=request.unit,
             rects=[rect for source in self.sources if source['id'] in ids for rect in source.get('rects', [])][:40]))
         return dict(**result, equation=text, value=str(total), operands=ids, scope_verified=False)
 

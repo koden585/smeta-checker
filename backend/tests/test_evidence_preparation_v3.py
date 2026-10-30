@@ -255,6 +255,7 @@ def test_saved_agent_review_can_be_revalidated_without_model_or_raw_answer_mutat
         validate_saved(SimpleNamespace(repository=repo),{'id':'run'},0,row['id'],'test-local')
     paid.assert_not_called()
     saved=repo.save_normative_review.call_args.args[3]['position_check']
-    assert saved['parameter_schema_version']==3
+    from normative_parameters import PARAMETER_SCHEMA_VERSION
+    assert saved['parameter_schema_version']==PARAMETER_SCHEMA_VERSION
     assert saved['telemetry']['requests']==0
     assert row==original

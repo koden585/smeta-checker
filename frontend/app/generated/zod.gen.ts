@@ -265,6 +265,8 @@ export const zNormativeCheckSource = z.object({
     rects: z.array(z.array(z.number())).max(40).optional(),
     source_id: z.string().nullish(),
     text: z.string(),
+    unit: z.string().optional().default(''),
+    unit_verified: z.boolean().optional().default(false),
     version_id: z.string().nullish(),
     words_key: z.string().nullish()
 });

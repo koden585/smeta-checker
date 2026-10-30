@@ -40,6 +40,16 @@ def test_requires_scoped_both_sided_evidence_and_complete_coverage():
     assert publish(report(), SOURCE, 'same', validation([item('possible_mismatch')]), enabled=True)['Статус аудита'] == FIX
 
 
+def test_quantity_may_use_pd_only_while_applicability_still_requires_normative_proof():
+    quantity=item(claims=['quantity'])
+    quantity['normative_source_ids']=[]
+    checked=validation([quantity,item(claims=['normative:applicability'])])
+    checked['review']['pipeline_version']=3
+    assert publish(report(),SOURCE,'same',checked,enabled=True)['Статус аудита']=='ОК'
+    checked['review']['items']=checked['review']['items'][:1]
+    assert publish(report(),SOURCE,'same',checked,enabled=True)['Статус аудита']==REVIEW
+
+
 def test_related_material_requires_parent_and_rate_not_just_matching_arithmetic():
     assert {'derived:parent', 'derived:rate'} <= required_claims(SOURCE, FIX, True)
     checked = validation([item()])

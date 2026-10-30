@@ -23,7 +23,7 @@ def test_symmetric_totals_keep_material_thickness_and_measure_subcolumns():
     assert candidates[0]['values']==['10','12']
     assert candidates[0]['unit_verified']
     assert not candidates[0]['scope_verified']
-    assert candidates[1]['columns']==[1,3]
+    assert len(candidates)==1  # Known m3 columns cannot be offered as m2.
 
 
 def test_intermediate_subtotals_are_not_added_as_grand_total_operands():

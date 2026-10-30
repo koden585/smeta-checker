@@ -860,6 +860,14 @@ export type NormativeCheckSource = {
      */
     text: string;
     /**
+     * Unit
+     */
+    unit?: string;
+    /**
+     * Unit Verified
+     */
+    unit_verified?: boolean;
+    /**
      * Version Id
      */
     version_id?: string | null;

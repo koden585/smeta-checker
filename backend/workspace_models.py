@@ -168,6 +168,8 @@ class NormativeContextAnalysis(DTO):
 
 class NormativeCheckSource(DTO):
     numeric_verified: bool = False
+    unit_verified: bool = False
+    unit: str = ''
     rects: list[list[float]] = Field(default_factory=list, max_length=40)
     id: str
     kind: Literal["project", "normative"]

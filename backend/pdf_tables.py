@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-VERSION = "physical-cells-v5-unit-headers"
+VERSION = "physical-cells-v6-cell-refinement"
 
 
 def recover_unit_headers(tables, words):
@@ -21,7 +21,7 @@ def recover_unit_headers(tables, words):
     import unicodedata
     for table in tables:
         for cell in table['cells']:
-            if cell.get('role') != 'header':
+            if cell.get('role') != 'header' or cell.get('colspan',1) != 1:
                 continue
             x0,y0,x1,y1=cell['bbox']
             inside=[w['text'] for w in words if w.get('conf',0)>=75

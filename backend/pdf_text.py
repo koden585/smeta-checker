@@ -981,6 +981,8 @@ class PDFTextSource:
             from pdf_tables import verify_numeric_cells, recover_unit_headers
             recover_unit_headers(tables, (self._ocr_pages.get(idx) or {}).get('words') or [])
             verify_numeric_cells(tables, (self._ocr_pages.get(idx) or {}).get('words') or [])
+            from pdf_cell_ocr import refine_tables
+            refine_tables(self._doc[idx],tables,rotation=int(orientation),cache_dir=self._cache_dir)
             # Reuse the pipeline's locale normalization without changing source words.
             for table in tables:
                 for cell in table["cells"]:

@@ -145,6 +145,20 @@ def test_technical_failure_is_not_engineering_discrepancy_or_manual_ambiguity():
     assert result['Что не так'] == 'Истекло время запроса'
 
 
+def test_project_quantity_does_not_require_a_normative_citation_for_the_number_itself():
+    from normative_position_check import validate_items
+    answer=AgentAnswer(summary='Количество',items=[dict(topic='Количество',state='confirmed',explanation='Число из таблицы ПД.',
+        claim_ids=['quantity'],project_source_ids=['p'],normative_source_ids=[])])
+    result=validate_items(answer.items,[dict(id='p',kind='project')],{'quantity'})
+    assert result[0]['state']=='confirmed'
+
+
+def test_compact_keeps_independent_ocr_and_physical_unit_verification_flags():
+    source=dict(id='cell',kind='project',text='12,34',origin='ocr',numeric_verified=True,unit_verified=True,unit='м2')
+    sent=compact({},[source])['sources'][0]
+    assert sent['numeric_verified'] and sent['unit_verified'] and sent['unit']=='м2'
+
+
 def test_early_position_can_read_table_prepared_for_a_sibling_without_reextracting_pdf():
     tools = toolkit()
     tools.blob_store = object()

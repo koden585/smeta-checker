@@ -35,6 +35,21 @@ def test_equal_operands_from_another_material_do_not_get_project_highlights():
     assert 'source_anchors' not in card
 
 
+def test_calculated_source_cannot_mix_materials_or_layer_thicknesses():
+    from normative_parameters import construction_conflict
+    assert construction_conflict('Смесь 0/31,5 h=0,24 м; смесь 0/63 h=0,20 м','Смесь 0/31,5','24')
+    assert construction_conflict('Смесь 0/31,5 h=0,24 м; смесь 0/31,5 h=0,20 м','Смесь 0/31,5','24')
+    assert not construction_conflict('Смесь 0/31,5 h=0,24 м; смесь 0/31,5 h=0,24 м','Смесь 0/31,5','24')
+
+
+def test_drawing_identifiers_do_not_become_material_grading():
+    from normative_parameters import construction_conflict,material_fractions
+    text='Шифр 006/26-В2-2. Щебеночно-песчаная смесь фр. 0/31,5 h=0,24м'
+    assert material_fractions(text)=={'0/31.5'}
+    assert not construction_conflict(text,'Смесь 0/31,5','24')
+    assert material_fractions('Шифр 006/26, стр. 24')==set()
+
+
 def proposal(parameter, value, unit, quote, id='p1', rules=None):
     return dict(parameter=parameter, value=value, unit=unit, quote=quote, source_id=id, conditions=rules or [])
 

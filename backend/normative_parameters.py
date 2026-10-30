@@ -7,18 +7,24 @@ import unicodedata
 from normative_local_checks import layer_group
 from vor_formula import calculate_cell
 
-PARAMETER_SCHEMA_VERSION = 3
+PARAMETER_SCHEMA_VERSION = 4
+
+
+def material_fractions(text):
+    # A drawing designation such as 006/26 is not aggregate grading. Bind
+    # slash values to material vocabulary instead of scanning arbitrary IDs.
+    text = re.sub(r'\s+', ' ', str(text).casefold())
+    return {a+'/'+b.replace(',', '.') for a,b in re.findall(
+        r'(?:фр(?:акц\w*)?\.?|смес\w*|щпс|тип(?:а)?)\s*[^|]{0,50}?\b(0|[1-9]\d*)/((?:0|[1-9]\d*)(?:[.,]\d+)?)\b',text)}
 
 
 def construction_conflict(text, work, height_cm=None):
-    def fractions(value):
-        return set(v.replace(',', '.') for v in re.findall(r'\b\d+/\d+(?:[.,]\d+)?', value))
-    wanted, found = fractions(work), fractions(text)
-    if wanted and found and wanted.isdisjoint(found):
+    wanted, found = material_fractions(work), material_fractions(text)
+    if wanted and found and not found <= wanted:
         return True
     heights = [Decimal(v.replace(',', '.'))*(100 if u in {'м','m'} else 1)
         for v,u in re.findall(r'\bh\s*=\s*(\d+(?:[.,]\d+)?)\s*(см|[мm])\b', text, re.I)]
-    return bool(height_cm is not None and heights and number(height_cm) not in heights)
+    return bool(height_cm is not None and any(h != number(height_cm) for h in heights))
 
 
 def number(value):
@@ -109,6 +115,8 @@ def build_cards(position, result, positions, relation):
         distinct = {(p['source_id'], p['value'], p['unit']) for p in matches}
         if len(distinct) != 1:
             c['reason'] = 'Нужен однозначный источник параметра.' if matches else c['reason']
+            if not matches and kind=='coefficient':
+                c['reason']='Не найден нормативный источник коэффициента и условий его применения.'
             pending = [p for p in proposals if p['parameter'] == kind and p.get('operation') == 'sum'
                 and 2 <= len(p.get('operand_source_ids', [])) <= 12]
             if not matches and len(pending) == 1:
@@ -138,7 +146,7 @@ def build_cards(position, result, positions, relation):
         p = matches[0]
         source = sources[p['source_id']]
         if kind in {'quantity', 'thickness'} and construction_conflict(
-                source['text'] if ':cell:' in source['id'] else p.get('scope_quote', ''),
+                source['text'] if ':cell:' in source['id'] or source['origin'] == 'calculated_from_cells' else p.get('scope_quote', ''),
                 work_scope, group['height'] if group else None):
             c['reason'] = 'Источник относится к другому материалу или проектной толщине; сравнение не выполнено.'
             return c
@@ -146,7 +154,8 @@ def build_cards(position, result, positions, relation):
         found = measure(p['value'], p['unit'])
         unit_present = kind == 'coefficient' or unit_quoted(p['unit'], p['quote'])
         if source['kind'] != wanted_kind or not quoted(p['value'], p['quote'], source['text']) or not expected or not found or not unit_present:
-            c['reason'] = 'Число, цитата, тип источника или единица не подтверждены программно.'
+            c['reason'] = ('Для коэффициента нужен нормативный источник с условиями применения.' if kind=='coefficient'
+                else 'Число, цитата, тип источника или единица не подтверждены программно.')
             return c
         c.update(found_value=p['value'], found_unit=p['unit'], source_ids=[p['source_id']], quote=p['quote'],
             source_anchors=[dict(source_id=p['source_id'], quote=p['quote'], rects=source.get('rects', []))])
@@ -327,6 +336,11 @@ def enrich(position, result, positions, relation):
         gaps = [c for c in output['parameter_cards'] if c.get('required', True) and c['state'] != 'confirmed']
         if gaps:
             output['summary'] = ' '.join(c['label']+': '+c['reason'] for c in gaps)[:2500]
+        from normative_layer_conditions import layer_condition_proof,TOPIC
+        output['items']=[i for i in output.get('items',[]) if i.get('topic')!=TOPIC]
+        proof=layer_condition_proof(position,output,layer_group(position,output.get('related_positions') or []))
+        if proof:
+            output['items'].append(proof)
     return output
 
 

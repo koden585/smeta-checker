@@ -8,8 +8,9 @@ import unicodedata
 from collections import defaultdict
 from decimal import Decimal
 
-from normative_parameters import number, unit_quoted
+from normative_parameters import number, unit_quoted, material_fractions
 from normative_retrieval import terms
+from pdf_cell_ocr import column_unit
 
 
 def grouped_totals(table, query, *, unit='', height_cm=None):
@@ -39,7 +40,7 @@ def grouped_totals(table, query, *, unit='', height_cm=None):
         if signature:
             groups[tuple(signature)].append((cell, ancestry))
     wanted = terms(query)
-    fractions = set(v.replace(',', '.') for v in re.findall(r'\b\d+/\d+(?:[.,]\d+)?', query))
+    fractions = material_fractions(query)
     output = []
     for signature, members in groups.items():
         if not 2 <= len(members) <= 12:
@@ -50,10 +51,13 @@ def grouped_totals(table, query, *, unit='', height_cm=None):
             continue
         thicknesses = [Decimal(v.replace(',', '.'))*(100 if u in {'m','м'} else 1)
             for v,u in re.findall(r'\bh\s*=\s*(\d+(?:[.,]\d+)?)\s*(см|[мm])\b', text, re.I)]
-        found_fractions = set(v.replace(',', '.') for v in re.findall(r'\b\d+/\d+(?:[.,]\d+)?', text))
+        found_fractions = material_fractions(text)
         if fractions and found_fractions and fractions.isdisjoint(found_fractions):
             continue
         if height_cm is not None and thicknesses and number(height_cm) not in thicknesses:
+            continue
+        known_units = [column_unit(table, c) for c,_ in members]
+        if unit and any(u and not unit_quoted(unit,u) for u in known_units):
             continue
         if height_cm is not None and number(height_cm) in thicknesses:
             score += 10
@@ -65,6 +69,6 @@ def grouped_totals(table, query, *, unit='', height_cm=None):
             calculated_sum=str(sum((v for v in values if v is not None), Decimal(0))),
             headers=list(dict.fromkeys(s[0] for s in signature)),
             numeric_verified=all(c.get('numeric_verified') for c,_ in members),
-            unit_verified=bool(unit) and all(unit_quoted(unit, ' '.join(h['text'] for h in ancestry)) for _,ancestry in members),
+            unit_verified=bool(unit) and all(u and unit_quoted(unit,u) for u in known_units),
             scope_verified=False))
     return sorted(output, key=lambda c: -c['score'])

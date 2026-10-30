@@ -6,6 +6,12 @@ FIX = 'Обнаружено расхождение'
 REVIEW = 'Требуется ручная проверка'
 
 
+def source_supported(item):
+    claims = item.get('claim_ids') or []
+    project_only = bool(claims) and all(c in {'quantity','unit','presence'} or c.startswith('geometry:') for c in claims)
+    return bool(claims and item.get('project_source_ids') and (project_only or item.get('normative_source_ids')))
+
+
 def verified_quantity(review, position_key, unit, *, derived=False):
     """Use a scoped, source-backed quantity in the UI without mutating matching."""
     if derived or not review or review.get('position_key') != position_key:
@@ -64,7 +70,7 @@ def publish(report, stored, position_key, validation, *, enabled=False, derived=
         output['Статус аудита'] = FIX
         output['Что не так'] = ' '.join(arithmetic_errors)
         return output
-    supported = [v for v in items if v.get('project_source_ids') and v.get('normative_source_ids') and v.get('claim_ids')]
+    supported = [v for v in items if source_supported(v)]
     contradictions = [v for v in supported if v.get('state') == 'possible_mismatch']
     confirmed = {claim for v in supported if v.get('state') == 'confirmed' for claim in v['claim_ids']}
     needed = required_claims(stored, report['Статус аудита'], derived)
@@ -87,7 +93,7 @@ def publish(report, stored, position_key, validation, *, enabled=False, derived=
         output['Статус аудита'] = FIX
         output['Что не так'] = ' '.join(c['label']+': '+c['reason'] for c in card_conflicts)
         return output
-    if contradictions:
+    if contradictions and (review.get('pipeline_version',1) < 3 or 'normative:applicability' in confirmed):
         output['Статус аудита'] = FIX
         output['Что не так'] = ' '.join(v['explanation'] for v in contradictions)
     elif items and needed <= confirmed and not card_gaps and all(

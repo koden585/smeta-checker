@@ -1,4 +1,5 @@
 Продолжение 30.10.2026 после WORK_STATE_2026-10-29.txt.
+Более новое состояние: docs/WORK_STATE_2026-10-30_OCR.txt (OCR и общее основание слоёв проверены).
 Ветка: normative-validation-table-evidence. Общая проверка e56214a9-5251-47ca-bff2-fd5bef41a46a остаётся cancelled.
 Docker был выключен; запущен, PostgreSQL завершил стартовую синхронизацию.
 Все контейнеры проекта healthy. Приложение http://localhost:3000.

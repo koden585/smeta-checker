@@ -93,6 +93,7 @@ class PositionCheckTests(unittest.TestCase):
             project_id = next(s['id'] for s in data['sources'] if s['kind'] == 'project')
             answer = dict(summary="Синтетическая проверка одной позиции; исходный прогон сохранён.", items=[dict(topic="Площадь", state="confirmed", explanation="Сверено по переданным источникам.", project_source_ids=["p1"], normative_source_ids=[norm["id"]])])
             answer['items'][0]['project_source_ids'] = [project_id]
+            answer['items'][0]['claim_ids'] = ['normative:applicability']
             return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(answer)))], usage=SimpleNamespace(prompt_tokens=120, completion_tokens=30, total_tokens=150))
 
         context = self.app.state.context
